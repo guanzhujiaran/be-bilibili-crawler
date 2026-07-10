@@ -10,7 +10,7 @@ docker build -t ghcr.io/guanzhujiaran/bilibiliexplosion .
 项目通过 Alembic 管理 6 个 MySQL 数据库的 schema 版本，通过 `-x db=xxx` 指定目标库：
 
 ```bash
-cd FastapiApp
+cd be-bilibili-crawler
 
 # 查看各数据库当前版本
 alembic -x db=biliopusdb  current
@@ -49,7 +49,7 @@ alembic -x db=biliopusdb history
 对所有已入库的抽奖数据执行 SVM 判断，将结果写入 `t_lot_grand_prize_flag` 子表：
 
 ```bash
-cd FastapiApp
+cd be-bilibili-crawler
 
 # 预演模式（查看有多少条待判断，不实际写入）
 uv run python -m scripts.judge_grand_prize --dry-run
@@ -75,7 +75,7 @@ uv run python -m scripts.judge_grand_prize --force-update --llm-base-url http://
 从 `t_lotdyninfo.rawJsonStr` 重新解析并全量更新所有字段（替代原有只回填评论转发数的脚本）：
 
 ```bash
-cd FastapiApp
+cd be-bilibili-crawler
 
 # 统计有 rawJsonStr 的记录数
 uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --count
