@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.tmp
+*.csv
+*.csv.gz
+*.svg
+*.txt
+*.zip
+*.pt
+*.jpg
+*.png
+*.log
+.venv/
+venv/
+.virtual_documents
+.ipynb_checkpoints
+jupyter
+.history
+.lh
+.idea/
+.vscode
+# 保持原先被强制纳入的 requirements.txt
+!requirements.txt
+
+# Node
+node_modules
+
+# Models / onnx
+*/siamese.onnx
+*/yolov11n_captcha.onnx
+
+# Env
+.env
+.env.dev
+.env.fastapi.dev
+
+# Runtime / build artifacts
+dist/
+log/
+volumes/
+
+# Project-specific
+Service/PlayWright/user_data
+Service/toutiao/src/Tools/Enc/node_modules
+Service/GrpcModule/Utils/极验/Geetest_html
+Service/samsclub/api/app_storage.json
+__test/
