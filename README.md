@@ -61,13 +61,13 @@ uv run python -m scripts.judge_grand_prize
 uv run python -m scripts.judge_grand_prize --batch-size 500
 
 # 强制重新判断所有记录（覆盖已有结果）
-uv run python -m scripts.judge_grand_prize --force-update
+uv run python -m scripts.judge_grand_prize
 
 # 使用本地的gpu ollama 进行判断，保存到服务器端数据库
-uv run python -m scripts.judge_grand_prize --force-update --llm-base-url http://localhost:11434/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514
+uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:11434/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514
 
 ## 使用本地的gpu ollama 进行判断，保存到本地数据库
-uv run python -m scripts.judge_grand_prize --force-update --llm-base-url http://localhost:11434/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host localhost --db-port 10000 --db-user root --db-password 114514
+uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:12000/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host localhost --db-port 10000 --db-user root --db-password 114514
 ```
 
 ## rawJsonStr 数据回填脚本

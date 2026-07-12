@@ -31,23 +31,36 @@ def gen_trace_id() -> str:
     return f"{trace_id_uid}{trace_id_hex}:{trace_id_uid[-10:]}{trace_id_hex}:0:0"
 
 
-def request_wrapper(func: Callable):
+def request_wrapper(func: Callable, max_error_retries: int = 3):
     """
     一个通用的请求重试装饰器
+
+    - 已知可忽略的错误（代理/412/352 等）会一直重试直到成功。
+    - 其余异常（如接口返回 -500 等业务错误）最多重试 max_error_retries 次，
+      仍然失败则抛出异常，交由上层标记任务失败并跳过。
     """
 
     async def wrapper(*args, **kwargs):
+        error_retry_count = 0
         while True:
             try:
                 resp_dict = await func(*args, **kwargs)
                 return resp_dict
-            except (RequestKnownError, Request412Error, Request352Error, RequestProxyResponseError) as e:
+            except (RequestKnownError, Request412Error, Request352Error, RequestProxyResponseError):
                 # 已知可忽略的错误，直接重试
                 continue
             except TypeError as type_err:
-                raise e from type_err
+                raise type_err
             except Exception as e:
-                bapi_log.exception(f"方法：【{func.__name__}】 请求失败！\n{e}\n{type(e)}")
+                error_retry_count += 1
+                bapi_log.exception(
+                    f"方法：【{func.__name__}】 请求失败！(第{error_retry_count}/{max_error_retries}次)\n{e}\n{type(e)}"
+                )
+                if error_retry_count >= max_error_retries:
+                    bapi_log.error(
+                        f"方法：【{func.__name__}】 连续失败 {max_error_retries} 次，跳过该任务！"
+                    )
+                    raise
                 await asyncio.sleep(10)
 
     return wrapper

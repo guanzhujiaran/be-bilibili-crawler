@@ -22,7 +22,7 @@ from python_socks._errors import ProxyConnectionError, ProxyTimeoutError, ProxyE
 from socksio import ProtocolError
 from CONFIG import CONFIG
 from Utils.GrpcUtils.GrpcMsgTools import raw_resp_content_2_dict
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from log.base_log import BiliGrpcApi_logger, Voucher352_logger
 from Service.GrpcModule.Models.CustomRequestErrorModel import Request352Error
 from Service.GrpcModule.Models.GrpcApiBaseModel import MetaDataWrapper
@@ -482,8 +482,10 @@ class BiliGrpc:
                         f'{grpc_req_message}\n'
                         f'{resp.text}\n'
                         f'{resp.content.hex()}')
-                    await a_pushme('[Bili]解析grpc消息失败，解析结果为空',
-                                   f'解析grpc消息失败！{url}{grpc_req_message}{resp.text}{resp.content.hex()}')
+                    await a_push_error(
+                        subject="运行异常",
+                        content=f'[Bili]解析grpc消息失败，解析结果为空\n解析grpc消息失败！{url}{grpc_req_message}{resp.text}{resp.content.hex()}',
+                    )
                     if proxy:
                         await handle_proxy_succ(proxy_tab=proxy, )
                     return {}

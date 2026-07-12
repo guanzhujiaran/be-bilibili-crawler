@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+FROM ghcr.nju.edu.cn/astral-sh/uv:python3.13-bookworm-slim
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 ENV RUSTUP_UPDATE_ROOT=https://mirrors.aliyun.com/rustup/rustup
 ENV RUSTUP_DIST_SERVER=https://mirrors.aliyun.com/rustup
@@ -29,7 +29,7 @@ RUN npm config set registry https://registry.npmmirror.com && \
 
 COPY pyproject.toml .python-version uv.lock ./
 
-RUN uv sync -v
+RUN uv sync --no-dev
 # ENV PLAYWRIGHT_DOWNLOAD_HOST=https://registry.npmmirror.com/-/binary/playwright
 RUN uv run playwright install chromium
 

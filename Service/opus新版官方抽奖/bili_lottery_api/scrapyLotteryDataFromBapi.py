@@ -17,7 +17,7 @@ from Service.BaseCrawler.plugin.statusPlugin import (
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info, get_lot_notice
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.redisTool.RedisManager import RedisManagerBase
 
 BusinessIdType = Annotated[int, Field(gt=0)]  # 正整数
@@ -171,7 +171,10 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                     )
         except Exception as e:
             self.log.exception(f"[{__name__}] 发生异常！{e}")
-            await a_pushme(title=f"爬取B站lottery异常", content=str(e))
+            await a_push_error(
+                subject="运行异常",
+                content=f"爬取B站lottery异常\n{str(e)}",
+            )
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from Models.base.custom_pydantic import CustomBaseModelHashable, CustomBaseModel
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.model.base import ParamsType, WorkerStatus
 from Utils.通用.Common import GLOBAL_SCHEDULER
-from Utils.推送.PushMe import async_pushme_try_catch_decorator, a_pushme
+from Utils.推送.PushMe import async_pushme_try_catch_decorator, a_push_error
 import asyncio
 from typing import Callable
 from dao.commStorageRedisObj import comm_storage_redis_obj
@@ -159,9 +159,9 @@ class BaseScheduler:
                 self.logger.exception(
                     f"[{self.exec_info.info.crawler_name}] 爬虫执行出错：{e}"
                 )
-                await a_pushme(
-                    title=f"{self.exec_info.info.crawler_name} 执行异常",
-                    content=f"错误详情：{str(e)}",
+                await a_push_error(
+                    subject="运行异常",
+                    content=f"{self.exec_info.info.crawler_name} 执行异常\n错误详情：{str(e)}",
                 )
         else:
             self.logger.info(

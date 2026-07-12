@@ -8,7 +8,7 @@ from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus, ParamsType
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
 from Utils.通用.Common import asyncio_gather
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 
 
 class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
@@ -384,7 +384,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         except Exception as e:
             if self.log_error:
                 self.log.exception(self.format_log(f"爬取异常：{e}"))
-                await a_pushme(title=f"爬取任务[{self.__class__.__name__}]异常", content=f'{worker_model}\n{e}')
+                await a_push_error(
+                    subject="运行异常",
+                    content=f"爬取任务[{self.__class__.__name__}]异常\n{worker_model}\n{e}",
+                )
             await asyncio.sleep(self.worker_error_delay)
             return WorkerStatus.fail
 

@@ -17,7 +17,7 @@ from Models.v1.samsclub.samsclub_model import SamsClubAppStorage, SamsClubGrayCo
     SamsClubGrayConfigStrategyDetails
 from Service.samsclub.exceptions.error import UnknownError
 from Service.samsclub.tools.headers_gen import SamsClubHeadersGen, sort_headers_with_missing_last
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.代理.SealedRequests import my_async_httpx
 
 StringNumber = NewType('StringNumber', str)
@@ -203,7 +203,10 @@ class SamsClubApi:
             resp_dict = response.json()
         except Exception as e:
             self.log.exception(f'json序列化失败：{response.request}\n{response.text}')
-            await a_pushme(f'samsclub API请求失败！', f'json序列化失败，可能被风控！：{response.request}\n{response.text}')
+            await a_push_error(
+                subject="运行异常",
+                content=f'samsclub API请求失败！\njson序列化失败，可能被风控！：{response.request}\n{response.text}',
+            )
             await asyncio.sleep(1800)
             await self.init_api_info()
             return False
@@ -225,7 +228,10 @@ class SamsClubApi:
                     if is_updated_encrypt_key:
                         return False
                     self.log.critical(f"被强制登出，等待token更新：{resp_dict}")
-                    await a_pushme(f'山姆会员商店token失效', f'{resp_dict}')
+                    await a_push_error(
+                        subject="运行异常",
+                        content=f'山姆会员商店token失效\n{resp_dict}',
+                    )
                     while 1:
                         if auth_token != self.headers_gen.auth_token:
                             break

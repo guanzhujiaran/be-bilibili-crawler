@@ -523,9 +523,11 @@ async def api_SubmitFeedback(
 def get_all_scrapy_status():
     return CommonResponseModel(
         data=AllLotScrapyStatusResp(
+            official_scrapy_status=get_scrapy_status("refresh_bili_official"),
+            reserve_scrapy_status=get_scrapy_status("reserve"),
+            other_space_scrapy_status=get_scrapy_status("other_space"),
             dyn_scrapy_status=get_scrapy_status("dyn"),
             topic_scrapy_status=get_scrapy_status("topic"),
-            reserve_scrapy_status=get_scrapy_status("reserve"),
         )
     )
 

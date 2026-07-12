@@ -22,8 +22,8 @@ async def life_span(app: FastAPI):
     try:
         await test_database_connections()
     except OperationalError as e:
-        myfastapi_logger.critical(f"数据库连接测试失败: {e}")
-        raise SystemExit(1)
+        myfastapi_logger.critical(f"数据库（{CONFIG.database.MYSQL._base_url}）连接测试失败: {e}")
+        raise e
     # 测试各个服务的端口和 host 连通性（含 message-service 的 /health 探测）
     await test_service_ports_and_hosts()
 
@@ -89,10 +89,12 @@ async def test_database_connections():
             await engine.dispose()
             myfastapi_logger.info(f"数据库 '{db_name}' 连接成功")
         except OperationalError as e:
-            myfastapi_logger.critical(f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
+            myfastapi_logger.critical(
+                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
             raise
         except Exception as e:
-            myfastapi_logger.critical(f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
+            myfastapi_logger.critical(
+                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
             raise SystemExit(f"数据库 '{db_name}' 连接失败") from e
 
 
@@ -145,31 +147,41 @@ async def test_service_ports_and_hosts():
 
     kind="port" -> TCP 端口探测（test_port_connectivity）；
     kind="http" -> HTTP 端点探测（test_http_endpoint，path 为可选路径）。
+
+    critical=True 的服务若连接失败，将直接终止启动（SystemExit），
+    其它非关键服务仅记录警告，不阻断启动。
     """
     myfastapi_logger.critical("开始测试各服务端口和 host 连通性...")
 
     failed_services = []
+    failed_critical_services = []
 
-    # (name, host, port, kind, path)
+    # (name, host, port, kind, path, critical)
     services_to_test = [
-        ("MySQL", settings.MYSQL_HOST, int(settings.MYSQL_PORT), "port", ""),
-        ("Redis", settings.REDIS_HOST, int(settings.REDIS_PORT), "port", ""),
-        ("RabbitMQ", settings.RABBITMQ_HOST, int(settings.RABBITMQ_PORT), "port", ""),
-        ("Milvus", settings.MILVUS_HOST, int(settings.MILVUS_PORT), "port", ""),
-        ("Unidbg", settings.UNIDBG_HOST, int(settings.UNIDBG_PORT), "http", ""),
-        ("V2Ray", settings.V2RAY_HOST, int(settings.V2RAY_PORT), "http", ""),
-        ("llama.cpp", settings.LLAMA_HOST, int(settings.LLAMA_PORT), "http", ""),
-        ("message-service", settings.MESSAGE_SERVICE_HOST, int(settings.MESSAGE_SERVICE_PORT), "http", "/health"),
+        ("MySQL", settings.MYSQL_HOST, int(settings.MYSQL_PORT), "port", "", True),
+        ("Redis", settings.REDIS_HOST, int(settings.REDIS_PORT), "port", "", True),
+        ("RabbitMQ", settings.RABBITMQ_HOST, int(
+            settings.RABBITMQ_PORT), "port", "", True),
+        ("Milvus", settings.MILVUS_HOST, int(settings.MILVUS_PORT), "port", "", True),
+        ("Unidbg", settings.UNIDBG_HOST, int(settings.UNIDBG_PORT), "http", "", False),
+        ("V2Ray", settings.V2RAY_HOST, int(settings.V2RAY_PORT), "http", "", False),
+        ("llama.cpp", settings.LLAMA_HOST, int(settings.LLAMA_PORT), "http", "", True),
+        ("message-service", settings.MESSAGE_SERVICE_HOST,
+         int(settings.MESSAGE_SERVICE_PORT), "http", "/health", True),
     ]
 
-    for name, host, port, kind, path in services_to_test:
+    for name, host, port, kind, path, critical in services_to_test:
         if kind == "port":
-            if not await test_port_connectivity(host, port, name):
-                failed_services.append(f"{name} ({host}:{port})")
+            ok = await test_port_connectivity(host, port, name)
+            address = f"{host}:{port}"
         else:
             url = f"http://{host}:{port}{path}"
-            if not await test_http_endpoint(url, name):
-                failed_services.append(f"{name} ({url})")
+            ok = await test_http_endpoint(url, name)
+            address = url
+        if not ok:
+            failed_services.append(f"{name} ({address})")
+            if critical:
+                failed_critical_services.append(f"{name} ({address})")
 
     if failed_services:
         myfastapi_logger.critical("=" * 60)
@@ -179,6 +191,17 @@ async def test_service_ports_and_hosts():
         myfastapi_logger.critical("=" * 60)
     else:
         myfastapi_logger.critical("✅ 所有服务端口和 host 连通性测试通过!")
+
+    # 关键服务未启动 -> 直接报错并拒绝启动
+    if failed_critical_services:
+        myfastapi_logger.critical("=" * 60)
+        myfastapi_logger.critical(
+            f"以下关键服务未启动，禁止服务启动: {len(failed_critical_services)} 个")
+        for failed_service in failed_critical_services:
+            myfastapi_logger.critical(f"  🚫 {failed_service}")
+        myfastapi_logger.critical("=" * 60)
+        raise SystemExit(
+            f"关键依赖服务未启动，拒绝启动: {', '.join(failed_critical_services)}")
 
 
 __all__ = ["life_span"]

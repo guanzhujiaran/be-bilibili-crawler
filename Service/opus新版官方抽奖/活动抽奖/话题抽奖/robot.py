@@ -15,7 +15,7 @@ from Service.opus新版官方抽奖.活动抽奖.话题抽奖.SqlHelper import t
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.db.models import TClickAreaCard, TTopicCreator, TTopicItem, \
     TTrafficCard, \
     TFunctionalCard, TTopDetails, TTopic, TCapsule
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 
 
 class TopicParams(CustomBaseModelHashable):
@@ -203,7 +203,10 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             await self.run(TopicParams(topic_id=self.start_topic_id))
         except Exception as e:
             topic_lot_logger.error(f'发生异常！{e}')
-            await a_pushme(title=f'爬取话题异常', content=str(e))
+            await a_push_error(
+                subject="运行异常",
+                content=f'爬取话题异常\n{str(e)}',
+            )
 
 
 topic_robot = TopicRobot()

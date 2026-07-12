@@ -30,7 +30,7 @@ if not settings.SHOW_LOG:
     logger.add(sink=sys.stdout, level="ERROR", colorize=True)
 
 from log.base_log import myfastapi_logger
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.FastAPI.FastapiLifespan import life_span
 from controller.v1.lotttery_database.bili import LotteryData
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
@@ -99,10 +99,9 @@ async def global_middleware(request: Request, call_next):
         }
         myfastapi_logger.exception(f"FastAPI请求异常: {error_detail}")
         err_title = str(err).replace("\n", "")
-        await a_pushme(
-            f"FastAPI请求异常！URL: {request.url}\n错误详情: {err_title}",
-            traceback.format_exc(),
-            None,
+        await a_push_error(
+            subject="FastAPI请求异常",
+            content=f"URL: {request.url}\n错误详情: {err_title}\n{traceback.format_exc()}",
         )
 
         raise HTTPException(

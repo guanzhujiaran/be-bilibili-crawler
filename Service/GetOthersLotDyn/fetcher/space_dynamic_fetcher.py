@@ -23,7 +23,7 @@ from Service.GetOthersLotDyn.Sql.models import TLotuserinfo, TLotuserspaceresp
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_space_dynamic_req_with_proxy
 from Utils.通用.Common import asyncio_gather
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.通用.CommMethods import methods
@@ -191,10 +191,9 @@ class BiliSpaceUserItem:
                 if code != 0:
                     get_others_lot_log.critical(
                         f'获取用户uid={self.uid}空间动态失败，offset={cur_offset}，code={code}，msg={msg}')
-                    await a_pushme(
-                        'GetOthersLotDyn',
-                        f'获取用户uid={self.uid}空间动态失败，offset={cur_offset}，code={code}，msg={msg}',
-                        'text'
+                    await a_push_error(
+                        subject="运行异常",
+                        content=f'GetOthersLotDyn\n获取用户uid={self.uid}空间动态失败，offset={cur_offset}，code={code}，msg={msg}',
                     )
                     if code == 4101128:
                         get_others_lot_log.critical(
@@ -240,10 +239,9 @@ class BiliSpaceUserItem:
             else:
                 get_others_lot_log.critical(
                     f'获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}')
-                await a_pushme(
-                    'GetOthersLotDyn',
-                    f'获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}',
-                    'text'
+                await a_push_error(
+                    subject="运行异常",
+                    content=f'GetOthersLotDyn\n获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}',
                 )
                 break
             self.offset = cur_offset

@@ -16,7 +16,7 @@ from Service.GrpcModule.Grpc.Bapi.Constants import URL_GAIA_GET_AXE, URL_BILI_MA
 from Service.GrpcModule.Grpc.Bapi.RequestHandler import prepare_request_data
 from Service.GrpcModule.Grpc.Bapi.Utils import request_wrapper, appsign, gen_trace_id
 from Service.GrpcModule.Grpc.Bapi.models import LatestVersionBuild
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.代理.redisProxyRequest.RedisRequestProxy import request_with_proxy_internal
 from Utils.加密.wbi加密 import gen_dm_args, get_wbi_params
@@ -166,9 +166,11 @@ async def get_lot_notice(
                 return resp  # 只允许code为-9999的或者是0的响应返回！其余的都是有可能代理服务器的响应而非b站自己的响应
             bapi_log.critical(
                 f"get_lot_notice响应代码错误:\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}")
-            await a_pushme("get_lot_notice响应代码错误！",
-                           f"https://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_type="
-                           f"{business_type}&business_id={business_id}\nget_lot_notice Error:\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}")
+            await a_push_error(
+                subject="运行异常",
+                content=f"get_lot_notice响应代码错误！\nhttps://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_type="
+                f"{business_type}&business_id={business_id}\nget_lot_notice Error:\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}",
+            )
             await asyncio.sleep(100)
             continue
         # resp_business_id = resp.get("data", {}).get("business_id")

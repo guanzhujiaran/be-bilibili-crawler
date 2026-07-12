@@ -20,7 +20,7 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 
 
 # 全局锁，确保所有 lottery_id 的处理串行化，避免死锁
@@ -36,9 +36,9 @@ async def handle_exception(
 ):
     error_msg = f"[ERROR]队列:{module_name}\n异常类型:{type(e)}\n异常:{e}\n时间:{time.strftime('%Y-%m-%d %H:%M:%S')}\n参数:{params}"
     MQ_logger.exception(error_msg)
-    await a_pushme(
-        f"抽奖MQ错误 - {module_name} - {e}",
-        json.dumps(error_msg, ensure_ascii=False)
+    await a_push_error(
+        subject="运行异常",
+        content=f"抽奖MQ错误 - {module_name} - {e}\n{json.dumps(error_msg, ensure_ascii=False)}",
     )
     await msg.nack()
 

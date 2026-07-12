@@ -125,14 +125,8 @@ class RouterPaths(StrEnum):
     
     # ==================== 后台服务路由 ====================
     # --- 爬虫状态获取 ---
-    GET_DYNAMIC_SCRAPY_STATUS = "/GetDynamicScrapyStatus"  # 动态爬虫状态
-    GET_TOPIC_SCRAPY_STATUS = "/GetTopicScrapyStatus"  # 话题爬虫状态
-    GET_RESERVE_SCRAPY_STATUS = "/GetReserveScrapyStatus"  # 预约爬虫状态
+    GET_SINGLE_SCRAPY_STATUS = "/GetSingleScrapyStatus"  # 查询单个爬虫状态（按参数）
     GET_ALL_SCRAPY_STATUS = "/GetAllLotScrapyStatus"  # 所有爬虫状态
-    GET_OTHERS_LOT_SPACE_STATUS = "/GetOthersLotSpaceStatus"  # 他人空间爬虫状态
-    GET_OTHERS_LOT_DYN_STATUS = "/GetOthersLotDynStatus"  # 他人动态爬虫状态
-    GET_REFRESH_BILI_OFFICIAL_STATUS = "/GetRefreshBiliOfficialStatus"  # 刷新官方抽奖状态
-    GET_REFRESH_BILI_RESERVE_STATUS = "/GetRefreshBiliReserveStatus"  # 刷新预约抽奖状态
     GET_PROXY_STATUS = "/GetProxyStatus"  # 代理状态
     
     # --- 定时任务 ---
@@ -227,14 +221,8 @@ class RouterNames(StrEnum):
     
     # ==================== 后台服务路由 ====================
     # --- 爬虫状态获取 ---
-    GET_DYNAMIC_SCRAPY_STATUS = "get_dynamic_scrapy_status"  # 动态爬虫状态
-    GET_TOPIC_SCRAPY_STATUS = "get_topic_scrapy_status"  # 话题爬虫状态
-    GET_RESERVE_SCRAPY_STATUS = "get_reserve_scrapy_status"  # 预约爬虫状态
+    GET_SINGLE_SCRAPY_STATUS = "get_single_scrapy_status"  # 查询单个爬虫状态（按参数）
     GET_ALL_SCRAPY_STATUS = "get_all_scrapy_status"  # 所有爬虫状态
-    GET_OTHERS_LOT_SPACE_STATUS = "get_others_lot_space_status"  # 他人空间爬虫状态
-    GET_OTHERS_LOT_DYN_STATUS = "get_others_lot_dyn_status"  # 他人动态爬虫状态
-    GET_REFRESH_BILI_OFFICIAL_STATUS = "get_refresh_bili_official_status"  # 刷新官方抽奖状态
-    GET_REFRESH_BILI_RESERVE_STATUS = "get_refresh_bili_reserve_status"  # 刷新预约抽奖状态
     GET_PROXY_STATUS = "get_proxy_status"  # 代理状态
     
     # --- 定时任务 ---

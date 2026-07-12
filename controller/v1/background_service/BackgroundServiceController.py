@@ -6,8 +6,8 @@ from Models.common import CommonResponseModel
 from Models.v1.background_service.background_service_model import (
     AllLotScrapyStatusResp,
     BackgroundServiceName,
-    ProgressStatusResp,
     ProxyStatusResp,
+    ScrapyTypeEnum,
 )
 from Models.v1.background_service.scheduler_status_model import (
     GlobalSchedulerStatusModel,
@@ -43,36 +43,22 @@ def start_monitor_tasks(show_log: bool):
 
 
 @router.get(
-    RouterPaths.GET_DYNAMIC_SCRAPY_STATUS,
-    name=RouterNames.GET_DYNAMIC_SCRAPY_STATUS,
-    description="获取动态爬虫状态",
+    RouterPaths.GET_SINGLE_SCRAPY_STATUS,
+    name=RouterNames.GET_SINGLE_SCRAPY_STATUS,
+    description="根据爬虫类型查询单个爬虫的状态",
     response_model=CommonResponseModel[Union[Any, None]],
     response_model_exclude_none=True,
 )
-def get_dynamic_scrapy_status():
-    return CommonResponseModel(data=get_scrapy_status("dyn"))
+def get_single_scrapy_status(scrapy_name: ScrapyTypeEnum):
+    """
+    根据传入的爬虫类型查询对应的单个爬虫实时状态
 
-
-@router.get(
-    RouterPaths.GET_TOPIC_SCRAPY_STATUS,
-    name=RouterNames.GET_TOPIC_SCRAPY_STATUS,
-    description="获取话题爬虫状态",
-    response_model=CommonResponseModel[Union[Any, None]],
-    response_model_exclude_none=True,
-)
-def get_topic_scrapy_status():
-    return CommonResponseModel(data=get_scrapy_status("topic"))
-
-
-@router.get(
-    RouterPaths.GET_RESERVE_SCRAPY_STATUS,
-    name=RouterNames.GET_RESERVE_SCRAPY_STATUS,
-    description="获取预约爬虫状态",
-    response_model=CommonResponseModel[Union[Any, None]],
-    response_model_exclude_none=True,
-)
-def get_reserve_scrapy_status():
-    return CommonResponseModel(data=get_scrapy_status("reserve"))
+    :param scrapy_name: 爬虫类型，必须是 ScrapyTypeEnum 中的合法值
+        （dyn / topic / reserve / other_space / other_dyn /
+         refresh_bili_official / refresh_bili_reserve）
+    :return: 对应爬虫的状态信息
+    """
+    return CommonResponseModel(data=get_scrapy_status(scrapy_name.value))
 
 
 @router.get(
@@ -92,46 +78,6 @@ def get_all_scrapy_status():
             topic_scrapy_status=get_scrapy_status("topic"),
         )
     )
-
-
-@router.get(
-    RouterPaths.GET_OTHERS_LOT_SPACE_STATUS,
-    name=RouterNames.GET_OTHERS_LOT_SPACE_STATUS,
-    description="获取其他人空间爬虫的状态",
-    response_model=CommonResponseModel[Union[ProgressStatusResp, None]],
-)
-def get_others_lot_space_status():
-    return CommonResponseModel(data=get_scrapy_status("other_space"))
-
-
-@router.get(
-    RouterPaths.GET_OTHERS_LOT_DYN_STATUS,
-    name=RouterNames.GET_OTHERS_LOT_DYN_STATUS,
-    description="获取其他人动态爬虫的状态",
-    response_model=CommonResponseModel[Union[ProgressStatusResp, None]],
-)
-def get_others_lot_dyn_status():
-    return CommonResponseModel(data=get_scrapy_status("other_dyn"))
-
-
-@router.get(
-    RouterPaths.GET_REFRESH_BILI_OFFICIAL_STATUS,
-    name=RouterNames.GET_REFRESH_BILI_OFFICIAL_STATUS,
-    description="获取刷新B站官方和充电抽奖结果状态",
-    response_model=CommonResponseModel[Union[ProgressStatusResp, None]],
-)
-def get_refresh_bili_official_status():
-    return CommonResponseModel(data=get_scrapy_status("refresh_bili_official"))
-
-
-@router.get(
-    RouterPaths.GET_REFRESH_BILI_RESERVE_STATUS,
-    name=RouterNames.GET_REFRESH_BILI_RESERVE_STATUS,
-    description="获取刷新B站预约抽奖结果状态",
-    response_model=CommonResponseModel[Union[ProgressStatusResp, None]],
-)
-def get_refresh_bili_reserve_status():
-    return CommonResponseModel(data=get_scrapy_status("refresh_bili_reserve"))
 
 
 @router.get(

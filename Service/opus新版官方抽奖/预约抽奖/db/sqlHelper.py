@@ -17,7 +17,7 @@ from Service.opus新版官方抽奖.预约抽奖.db.models import (
     TReserveRoundInfo,
     TUpReserveRelationInfo,
 )
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 lock = asyncio.Lock()
@@ -111,8 +111,9 @@ class _SqlHelper(SqlHelperBase):
                     origin_dynamic_id=str(reserve_info.dynamicId),
                 )
             else:
-                await a_pushme(
-                    "预约信息抽奖jumpUrl有问题", f"{json.dumps(origin_resp_dict)}"
+                await a_push_error(
+                    subject="运行异常",
+                    content=f"预约信息抽奖jumpUrl有问题\n{json.dumps(origin_resp_dict)}",
                 )
         reserve_info.raw_JSON = origin_resp_dict
         if round_id:

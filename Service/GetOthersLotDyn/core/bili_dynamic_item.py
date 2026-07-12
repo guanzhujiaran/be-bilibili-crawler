@@ -17,7 +17,7 @@ from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_polymer_web_dynamic_detail
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 
 _is_use_available_proxy = True
@@ -456,7 +456,10 @@ class BiliDynamicItem:
         except Exception as e:
             get_others_lot_log.exception(
                 f'判断抽奖动态时发生异常，dynamic_id={dynamic_detail.dynamic_id if dynamic_detail else "None"}\nerror={e}')
-            await a_pushme(f'【fastapi】判断抽奖动态异常', f"dynamic_id={dynamic_detail.dynamic_id if dynamic_detail else 'None'}\nerror={e}")
+            await a_push_error(
+                subject="运行异常",
+                content=f'【fastapi】判断抽奖动态异常\ndynamic_id={dynamic_detail.dynamic_id if dynamic_detail else "None"}\nerror={e}',
+            )
             await asyncio.sleep(30)
             return await self.judge_lottery(lotRound_id)
         judge_result = BiliDynamicItemJudgeLotteryResult(

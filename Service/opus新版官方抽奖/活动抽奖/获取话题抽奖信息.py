@@ -20,7 +20,7 @@ from Service.opus新版官方抽奖.活动抽奖.model.EraBlackBoard import EraT
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.SqlHelper import topic_sqlhelper
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.db.models import TTrafficCard
 from Utils.通用.Common import asyncio_gather
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_pushme, a_push_error
 from Utils.代理.SealedRequests import my_async_httpx
 from Utils.通用.Common import log_max_count_retry_wrapper
 
@@ -491,7 +491,10 @@ class ExtractTopicLottery:
                     result = await self.handle_topic_lottery_url(jump_url, _id)
                 except Exception as e:
                     topic_lot_logger.exception(f'{x.jump_url}\n{x.id}ErrorError！！！处理话题抽奖信息失败！\n{e}')
-                    await a_pushme('处理话题抽奖信息失败！', f'ErrorError！！！处理话题抽奖信息失败！\n{e}')
+                    await a_push_error(
+                        subject="运行异常",
+                        content=f'处理话题抽奖信息失败！\nErrorError！！！处理话题抽奖信息失败！\n{e}',
+                    )
                     result = 3
                 topic_lot_logger.info(f'{x.jump_url}\t当前traffic_card:{x.id}，状态：{result}')
                 await self.sql.update_traffic_card_status(result, x.id)

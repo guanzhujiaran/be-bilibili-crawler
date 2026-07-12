@@ -21,6 +21,7 @@ from Service.BaseCrawler.plugin.statusPlugin import (
     SequentialNullStopPlugin,
 )
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info
+from Utils.GrpcUtils.response.check_resp import ReserveRelationInfoResponseError
 from fastapi.background import BackgroundTasks
 from Service.opus新版官方抽奖.Model.BaseLotModel import BaseSuccCounter, ProgressCounter
 from Service.opus新版官方抽奖.预约抽奖.db.models import (
@@ -78,11 +79,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             round_id=self.now_round_id,
             is_finished=True,
             round_start_ts=self.round_start_ts,
-            round_add_num=self.totoal_count1
-            + self.totoal_count2
+            round_add_num=self.totoal_count
             - 1
-            - self.none_num1
-            - self.none_num2,
+            - self.none_num,
             round_lot_num=len(latest_reserve_lots),
         )
         await self.sqlHelper.add_reserve_round_info(new_round_info)
@@ -133,10 +132,8 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
 
     def __init__(self):
         # region 统计类数据
-        self.totoal_count2 = 0
-        self.totoal_count1 = 0
-        self.none_num2 = 0
-        self.none_num1 = 0
+        self.totoal_count = 0
+        self.none_num = 0
         self.round_start_ts = 0
         # endregion
 
@@ -288,7 +285,16 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         :return: WorkerStatus
         """
         while True:
-            _, resp_dict = await self.handle_fetch_reserve_info(sid, is_refresh)
+            try:
+                _, resp_dict = await self.handle_fetch_reserve_info(sid, is_refresh)
+            except ReserveRelationInfoResponseError as e:
+                # 接口业务错误（如 -500）：wrapper 已重试若干次仍失败，
+                # 这里记录后直接跳过，返回 fail 且不再重新入队（该爬虫 requeue_on_fetch_fail=False）。
+                reserve_lot_logger.warning(
+                    f"预约[{sid}]接口错误，重试后仍失败，跳过且不入队：{e}"
+                )
+                self.list_getfail.append({"ids": sid, "error": str(e)})
+                return WorkerStatus.fail
             if is_refresh:
                 return WorkerStatus.complete
             dycode = resp_dict.get("code")
@@ -391,64 +397,47 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         self.now_round_id = (
             now_round.round_id + 1 if now_round.is_finished else now_round.round_id
         )
-        self.none_num1 = 0
-        self.totoal_count1 = 0
-        for ids_index in range(len(self.reserve_ids_worker_model_list)):
-            self.none_num1 = (
-                self.null_stop_plugin.sequential_null_count
-                if int(time.time()) - self.dynamic_timestamp.dynamic_timestamp
-                < self.EndTimeSeconds
-                else -self.null_time_quit
-            )
-            async with self.ids_change_lock:
-                self.reserve_worker_model = self.reserve_ids_worker_model_list[
-                    ids_index
-                ]
-            async with self.dynamic_ts_lock:
-                self.dynamic_timestamp = DynamicTimestampInfo()
-            await self.run(self.reserve_ids_worker_model_list[ids_index].params)
-            self.reserve_worker_model = (
-                self.stats_plugin.end_params
-            )  # 加上这个才是最终的ids，否则ids并不会改变
-            self.totoal_count1 = self.stats_plugin.succ_count
-            self.reserve_ids_worker_model_list[ids_index] = self.reserve_worker_model
-            reserve_lot_logger.critical(
-                f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
-                f"{self.dynamic_timestamp.get_time_str_until_now()}\n"
-                f"最终成功的ids：http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_success_params}\n"
-                f"最终ids: http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_params}\n"
-            )
-        none_num2 = (
+        # 只采用最大的那个 ids，只爬取一次
+        self.reserve_worker_model = max(
+            self.reserve_ids_worker_model_list,
+            key=lambda x: x.params.reserve_id,
+        )
+        async with self.dynamic_ts_lock:
+            self.dynamic_timestamp = DynamicTimestampInfo()
+        await self.run(self.reserve_worker_model.params)
+        self.reserve_worker_model = (
+            self.stats_plugin.end_params
+        )  # 加上这个才是最终的ids，否则ids并不会改变
+        self.totoal_count = self.stats_plugin.succ_count
+        self.none_num = (
             self.null_stop_plugin.sequential_null_count
             if int(time.time()) - self.dynamic_timestamp.dynamic_timestamp
             < self.EndTimeSeconds
             else -self.null_time_quit
         )
-        self.totoal_count2 = self.stats_plugin.succ_count
-        finnal_rid_list = [
-            str(
-                self.reserve_ids_worker_model_list[0].params.reserve_id
-                - self.rollback_num
-                - self.none_num1
-            ),
-            str(
-                self.reserve_ids_worker_model_list[1].params.reserve_id
-                - self.rollback_num
-                - self.none_num2
-            ),
-        ]
+        finnal_rid = str(
+            self.reserve_worker_model.params.reserve_id
+            - self.rollback_num
+            - self.none_num
+        )
         reserve_lot_logger.critical(
-            f"{self.reserve_ids_worker_model_list}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
+            f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
+            f"{self.dynamic_timestamp.get_time_str_until_now()}\n"
+            f"最终成功的ids：http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_success_params}\n"
+            f"最终ids: http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_params}\n"
+        )
+        reserve_lot_logger.critical(
+            f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
             f"{self.dynamic_timestamp.get_time_str_until_now()}秒，"
             f"ids：{self.dynamic_timestamp.ids}，退出！"
-            f"当前rid记录分别回滚{self.rollback_num + self.none_num1}和{self.rollback_num + none_num2}条"
-            f"最终写入文件rid记录：{finnal_rid_list}"
+            f"当前rid记录回滚{self.rollback_num + self.none_num}条"
+            f"最终写入文件rid记录：{finnal_rid}"
         )
         await comm_storage_redis_obj.set_val(
             comm_storage_redis_obj.RedisMap.reserve_scrapy_bot_rid_ls,
-            "\n".join(finnal_rid_list),
+            finnal_rid,
         )
-        reserve_lot_logger.critical(f"结束rid设置完成\t{finnal_rid_list}")
+        reserve_lot_logger.critical(f"结束rid设置完成\t{finnal_rid}")
 
     async def generate_update_reserve_lotterys_by_round_id(
         self, round_id
@@ -522,17 +511,22 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         """
         if not os.path.exists(os.path.join(self.current_dir, "log")):
             os.mkdir(os.path.join(self.current_dir, "log"))
+        # 不再区分大小 ids，只采用大的那个 ids（默认从 4996187 开始），只爬取一次
         self.reserve_ids_worker_model_list = [
-            WorkerModel(params=ReserveParams(reserve_id=1871812), seqId=0),
-            WorkerModel(params=ReserveParams(reserve_id=4996187), seqId=1),
+            WorkerModel(params=ReserveParams(reserve_id=4996187), seqId=0),
         ]
+        self.reserve_worker_model = self.reserve_ids_worker_model_list[0]
         try:
             if file_contents := await comm_storage_redis_obj.get_val(
                 comm_storage_redis_obj.RedisMap.reserve_scrapy_bot_rid_ls
             ):
+                # 只采用最大的那个 ids
+                rid_list = [
+                    int(x) for x in file_contents.split("\n") if str(x).strip()
+                ]
+                max_rid = max(rid_list)
                 self.reserve_ids_worker_model_list = [
-                    WorkerModel(params=ReserveParams(reserve_id=int(x)), seqId=i)
-                    for i, x in enumerate(file_contents.split("\n"))
+                    WorkerModel(params=ReserveParams(reserve_id=max_rid), seqId=0),
                 ]
                 self.reserve_worker_model = self.reserve_ids_worker_model_list[0]
             else:

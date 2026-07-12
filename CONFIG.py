@@ -206,6 +206,9 @@ class Settings(BaseSettings):
     RABBITMQ_PASSWORD: str
     # 全局推送渠道配置（PushChannelConfig pydantic 模型，与 message-service / rpa-browser 共用同一份）
     message_config: PushChannelConfig = PushChannelConfig()
+    # 本服务标识（写入推送告警标题，便于定位「哪台服务器的哪个服务」报错）
+    SERVER_NAME: str = "be-bilibili-crawler"
+    SERVER_ADDRESS: str = ""  # 缺省自动取本机 hostname
     UNIDBG_HOST: str
     UNIDBG_PORT: str
     V2RAY_HOST: str
@@ -216,7 +219,7 @@ class Settings(BaseSettings):
     MILVUS_HOST: str
     MILVUS_PORT: str
     # message-service 健康检查地址
-    MESSAGE_SERVICE_HOST: str = "message-service"
+    MESSAGE_SERVICE_HOST: str = "be-message-service"
     MESSAGE_SERVICE_PORT: str = "18739"
 
     model_config = SettingsConfigDict(

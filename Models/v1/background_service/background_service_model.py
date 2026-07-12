@@ -21,6 +21,17 @@ class BackgroundServiceName(str, Enum):
     LOTTERY_API_ROBOT_RESERVE_SCHEDULER = "LOTTERY_API_ROBOT_RESERVE_SCHEDULER"
     GMFLV2_SCHEDULER = "GMFLV2_SCHEDULER"
     STUCK_CHECK_SCHEDULER = "STUCK_CHECK_SCHEDULER"
+
+
+class ScrapyTypeEnum(str, Enum):
+    """可查询的爬虫类型枚举，对应 get_scrapy_status 的合法入参"""
+    DYN = "dyn"
+    TOPIC = "topic"
+    RESERVE = "reserve"
+    OTHER_SPACE = "other_space"
+    OTHER_DYN = "other_dyn"
+    REFRESH_BILI_OFFICIAL = "refresh_bili_official"
+    REFRESH_BILI_RESERVE = "refresh_bili_reserve"
     
 
 

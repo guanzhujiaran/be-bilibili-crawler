@@ -10,7 +10,7 @@ from typing import Union
 import aiofiles
 
 from Service.opus新版官方抽奖.Model.GenerateCvModel import CvContent, OpusType
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from Utils.代理.SealedRequests import my_async_httpx
 from Utils.加密.wbi加密 import get_wbi_params
 
@@ -143,7 +143,7 @@ class GenerateCvBase:
         if req.json().get('code') == 0:
             return req.json().get('data').get('aid')
         else:
-            await a_pushme(f'提交专栏【{title}】失败！', req.text)
+            await a_push_error(subject="运行异常", content=f'提交专栏【{title}】失败！\n{req.text}')
 
     async def submit_cv(self, title, banner_url, article_content, summary, words, category, list_id, tid, reprint, tags,
                         image_urls,
@@ -209,7 +209,7 @@ class GenerateCvBase:
                 print(req.text)
                 return True
             else:
-                await a_pushme(f'提交专栏【{title}】失败！', req.text)
+                await a_push_error(subject="运行异常", content=f'提交专栏【{title}】失败！\n{req.text}')
         return True
 
     # endregion
@@ -300,7 +300,7 @@ class GenerateCvBase:
         if req.json().get('code') == 0:
             return req.json().get('data').get('aid')
         else:
-            await a_pushme(f'保存专栏【{title}】失败！', req.text)
+            await a_push_error(subject="运行异常", content=f'保存专栏【{title}】失败！\n{req.text}')
 
     async def dynamic_feed_create_opus(self, draft_id_str: Union[str, int], title: str, article_content: CvContent,
                                        category: int = 15, list_id: int = 0):
@@ -365,7 +365,7 @@ class GenerateCvBase:
         if req.json().get('code') == 0:
             return req.json().get('data').get('aid')
         else:
-            await a_pushme(f'提交专栏【{title}】失败！', req.text)
+            await a_push_error(subject="运行异常", content=f'提交专栏【{title}】失败！\n{req.text}')
 
     # endregion
 
@@ -384,7 +384,7 @@ class GenerateCvBase:
                 await f.write(content)
         except Exception as e:
             print(f'保存文章【{title}】失败！\n{str(e)}')
-            await a_pushme(f'保存文章【{title}】失败！', f'保存文章【{title}】失败！\n{str(e)}')
+            await a_push_error(subject="运行异常", content=f'保存文章【{title}】失败！\n保存文章【{title}】失败！\n{str(e)}')
 
     async def pub_cv(self,
                      title: str,

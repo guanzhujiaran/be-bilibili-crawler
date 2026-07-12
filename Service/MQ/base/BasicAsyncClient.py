@@ -9,7 +9,7 @@ from pika.exchange_type import ExchangeType
 from CONFIG import CONFIG
 from log.base_log import MQ_logger
 from Models.MQ.BaseMQModel import QueueName, ExchangeName, RoutingKey
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 
 
 def _mq_retry_wrapper(max_retries: int = 5, delay: int = 30):
@@ -34,8 +34,10 @@ def _mq_retry_wrapper(max_retries: int = 5, delay: int = 30):
                     else:
                         MQ_logger.exception(
                             f"【MQ发布消息】执行{func.__name__}失败第{retries}次，彻底失败！！参数：{args, kwargs}")
-                        await a_pushme(f'【MQ发布消息】执行{func.__name__}失败第{retries}次，彻底失败！！{e}',
-                               f'参数：{args, kwargs}\n{traceback.format_exc()}')
+                        await a_push_error(
+                            subject="运行异常",
+                            content=f'【MQ发布消息】执行{func.__name__}失败第{retries}次，彻底失败！！{e}\n参数：{args, kwargs}\n{traceback.format_exc()}',
+                        )
                         break
                     await asyncio.sleep(delay)  # 等待后再重试
             return None  # 如果超出了最大重试次数，返回 None 或者可以根据需求自定义错误返回值

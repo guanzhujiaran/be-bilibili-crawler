@@ -3,11 +3,9 @@
 后台服务接口测试
 
 测试端点 (前缀: /api/v1/background_service):
-    GET  /GetDynamicScrapyStatus       /GetTopicScrapyStatus
-    GET  /GetReserveScrapyStatus       /GetAllLotScrapyStatus
-    GET  /GetOthersLotSpaceStatus      /GetOthersLotDynStatus
-    GET  /GetRefreshBiliOfficialStatus /GetRefreshBiliReserveStatus
-    GET  /GetProxyStatus               /GlobalSchedule/GetJobs
+    GET  /GetSingleScrapyStatus?scrapy_name=dyn   查询单个爬虫状态（按参数）
+    GET  /GetAllLotScrapyStatus       /GetProxyStatus
+    GET  /GlobalSchedule/GetJobs
     GET  /GlobalScheduler/Status       /BackgroundService/AllStat
     POST /BackgroundService/Start      /BackgroundService/Stop
     POST /BackgroundService/Restart
@@ -35,19 +33,38 @@ async def client(app):
 class TestScrapyStatus:
 
     @pytest.mark.asyncio
-    async def test_dynamic_scrapy_status(self, client):
-        response = await client.get(f"{PREFIX}/GetDynamicScrapyStatus")
-        assert response.status_code == 200
+    async def test_single_scrapy_status_valid(self, client):
+        """遍历所有合法爬虫类型，确保单爬虫状态接口均可用"""
+        valid_types = [
+            "dyn",
+            "topic",
+            "reserve",
+            "other_space",
+            "other_dyn",
+            "refresh_bili_official",
+            "refresh_bili_reserve",
+        ]
+        for scrapy_name in valid_types:
+            response = await client.get(
+                f"{PREFIX}/GetSingleScrapyStatus",
+                params={"scrapy_name": scrapy_name},
+            )
+            assert response.status_code == 200, f"{scrapy_name} 应返回 200"
 
     @pytest.mark.asyncio
-    async def test_topic_scrapy_status(self, client):
-        response = await client.get(f"{PREFIX}/GetTopicScrapyStatus")
-        assert response.status_code == 200
+    async def test_single_scrapy_status_invalid(self, client):
+        """传入非法爬虫类型应被枚举校验拦截（422）"""
+        response = await client.get(
+            f"{PREFIX}/GetSingleScrapyStatus",
+            params={"scrapy_name": "not_exist"},
+        )
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_reserve_scrapy_status(self, client):
-        response = await client.get(f"{PREFIX}/GetReserveScrapyStatus")
-        assert response.status_code == 200
+    async def test_single_scrapy_status_missing(self, client):
+        """缺少 scrapy_name 参数时应返回 422"""
+        response = await client.get(f"{PREFIX}/GetSingleScrapyStatus")
+        assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_all_scrapy_status(self, client):
@@ -57,26 +74,6 @@ class TestScrapyStatus:
         assert "dyn_scrapy_status" in data
         assert "topic_scrapy_status" in data
         assert "reserve_scrapy_status" in data
-
-    @pytest.mark.asyncio
-    async def test_others_lot_space_status(self, client):
-        response = await client.get(f"{PREFIX}/GetOthersLotSpaceStatus")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_others_lot_dyn_status(self, client):
-        response = await client.get(f"{PREFIX}/GetOthersLotDynStatus")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_refresh_bili_official_status(self, client):
-        response = await client.get(f"{PREFIX}/GetRefreshBiliOfficialStatus")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_refresh_bili_reserve_status(self, client):
-        response = await client.get(f"{PREFIX}/GetRefreshBiliReserveStatus")
-        assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_proxy_status(self, client):

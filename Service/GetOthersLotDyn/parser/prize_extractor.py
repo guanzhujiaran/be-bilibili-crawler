@@ -37,7 +37,7 @@ class PrizeExtractResult(BaseModel):
     is_lot: bool = Field(default=False, description="是否是抽奖动态")
     need_repost: bool = Field(default=False, description="是否需要转发")
     required_topic_text: str = Field(
-        default="", description="需要携带的话题文本，如 #抽奖#，无则为空字符串")
+        default="", description="转发/评论所需要携带的话题文本，如 #抽奖#，无则为空字符串")
     is_grand_prize: bool = Field(
         default=False, description="是否大奖，奖品价值高/知名品牌/电子产品")
 

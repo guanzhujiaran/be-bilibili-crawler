@@ -5,7 +5,7 @@ from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import joinedload
 from CONFIG import CONFIG
-from Utils.推送.PushMe import a_pushme
+from Utils.推送.PushMe import a_push_error
 from dao.base.sqlHelperBase import SqlHelperBase
 from log.base_log import sams_club_logger
 from Service.samsclub.Sql.models import (
@@ -165,8 +165,10 @@ class SQLHelper(SqlHelperBase):
         async with self.async_session() as db:
             for item in data_list:
                 if type(item) is not dict:
-                    await a_pushme(f'[ERR] [{os.path.relpath(__file__)}.{self.__class__.__name__}]',
-                                   f"Error: item is not dict: {item}")
+                    await a_push_error(
+                        subject="运行异常",
+                        content=f'[ERR] [{os.path.relpath(__file__)}.{self.__class__.__name__}]\nError: item is not dict: {item}',
+                    )
                     continue
                 await self._upsert_single_grouping(item, db)
             await db.commit()
