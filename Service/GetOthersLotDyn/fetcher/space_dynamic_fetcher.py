@@ -52,7 +52,8 @@ def _extract_space_dynamic_times(space_req_dict: dict) -> list[int]:
         module_author = (card_dict.get('modules') or {}).get('module_author') or {}
         pub_ts = module_author.get('pub_ts')
         if pub_ts is not None:
-            time_list.append(pub_ts)
+            # 接口返回的 pub_ts 可能为字符串，统一转成 int 以匹配返回类型注解
+            time_list.append(int(pub_ts) if isinstance(pub_ts, str) else pub_ts)
     return time_list
 
 
