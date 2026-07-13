@@ -1,9 +1,9 @@
 import asyncio
 import random
-from typing import AsyncGenerator, Literal
+from typing import AsyncGenerator, Literal, List
 from pydantic import ConfigDict
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
-from Service.BaseCrawler.config import CrawlerConfig
+from Service.BaseCrawler.config import CrawlerConfig, PluginConfig
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus
 from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Models.base.custom_pydantic import CustomBaseModelHashable
@@ -21,25 +21,22 @@ class TestParamsType(CustomBaseModelHashable):
 class TestCrawlerConfig(CrawlerConfig):
     """测试爬虫配置"""
     model_config = ConfigDict(extra="ignore")
-    max_sem: int = 100
+    max_sem: int = 2
     requeue_on_fetch_fail: bool = True
     requeue_on_timeout: bool = True
     max_retries: int = -1
     worker_max_timeout: int | None = None
     log_timeout_error: bool = False
     log_error: bool = False
+    plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
 
 
 class TestCrawler(UnlimitedCrawler):
     Config = TestCrawlerConfig
-    def __init__(self, gen_num: int = 1000000, max_sem: int = 100):
-        self.stats_plugin = StatsPlugin(self)
-
-        super().__init__(
-            config=TestCrawlerConfig(),
-            plugins=[self.stats_plugin],  # 启用 StatsPlugin
-            max_sem=max_sem,
-        )
+    def __init__(self, gen_num: int = 1000000):
+        # 配置（max_sem / logger / 插件等）统一由 TestCrawlerConfig 控制；
+        # 其中的 StatsPlugin 会按 PluginConfig.plugin_name（"stats_plugin"）自动绑定到 self
+        super().__init__()
         self._count = 0
         print("初始化")
         self.params_arr = []
@@ -170,7 +167,7 @@ class TestCrawler(UnlimitedCrawler):
 
 
 async def _test():
-    a = TestCrawler(gen_num=10, max_sem=2)
+    a = TestCrawler(gen_num=10)
     await a.main()
 
 

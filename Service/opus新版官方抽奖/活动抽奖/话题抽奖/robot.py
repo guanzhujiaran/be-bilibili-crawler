@@ -2,13 +2,11 @@ import asyncio
 import time
 from typing import Union, List, AsyncGenerator
 
-from log.base_log import topic_lot_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import TopicRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin, SequentialNullStopPlugin
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_web_topic
 from Service.opus新版官方抽奖.Model.BaseLotModel import BaseSuccCounter
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.SqlHelper import topic_sqlhelper
@@ -60,15 +58,13 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
         self.__max_stop_times = 5  # 遇到超过时间的话题次数
         self._cur_stop_times: int = 0
         self._max_stop_count = 50
+        self.null_stop_max_consecutive = self._max_stop_count
         self.sql = topic_sqlhelper
         self._latest_topic_id = 0
         self._traffic_card_lock = asyncio.Lock()  # 活动数据锁
-        self.stats_plugin = StatsPlugin(self)
-        self.null_counter_plugin = SequentialNullStopPlugin(self, max_consecutive_nulls=self._max_stop_count)
-        super().__init__(
-            _logger=topic_lot_logger,
-            plugins=[self.stats_plugin, self.null_counter_plugin],
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 TopicRobotConfig 控制；
+        # 其中的插件会按 PluginConfig.plugin_name 自动绑定到 self（stats_plugin / null_stop_plugin）
+        super().__init__()
 
         self.has_get_failed_topic_ids = False
         self.get_failed_topic_ids = []

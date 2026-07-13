@@ -13,6 +13,7 @@ from Utils.代理.redisProxyRequest.GetProxyFromNet import get_proxy_methods
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
 from Service.opus新版官方抽奖.预约抽奖.etc.scrapyReserveJsonData import reserve_robot
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
+from Service.GetOthersLotDyn.core.robot import get_others_lot_dyn_robot
 from Service.opus新版官方抽奖.bili_lottery_api.refresh_bili_lot_database import (
     refresh_bili_lot_database_crawler,
 )
@@ -29,6 +30,7 @@ class BackgroundService:
     GET_RESERVE_INFO: GenericCrawlerScheduler | None = None
     GET_DYN: GenericCrawlerScheduler | None = None
     GET_TOPIC: GenericCrawlerScheduler | None = None
+    GET_OTHERS_LOT_DYN: GenericCrawlerScheduler | None = None
     REFRESH_BILI_LOTDATA_DATABASE: GenericCrawlerScheduler | None = None
     LOTTERY_API_ROBOT_DYN_SCHEDULER: GenericCrawlerScheduler | None = None
     LOTTERY_API_ROBOT_RESERVE_SCHEDULER: GenericCrawlerScheduler | None = None
@@ -76,6 +78,12 @@ class BackgroundService:
             crawler=topic_robot,
             cron_expr="0 3 * * *",
             default_interval_seconds=15 * 3600,
+        )
+        self.GET_OTHERS_LOT_DYN = GenericCrawlerScheduler(
+            crawler=get_others_lot_dyn_robot,
+            cron_expr="0 8 * * *",
+            default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.GET_OTHERS_LOT_DYN.value,
         )
         self.REFRESH_BILI_LOTDATA_DATABASE = GenericCrawlerScheduler(
             crawler=refresh_bili_lot_database_crawler,

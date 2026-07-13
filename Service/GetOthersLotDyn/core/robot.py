@@ -1,22 +1,38 @@
-import asyncio
-from typing import Set
+from typing import Any, Set, AsyncGenerator
+from pydantic import ConfigDict
 
 from log.base_log import get_others_lot_logger as get_others_lot_log
 from Models.get_other_lot_dyn.dyn_robot_model import RobotScrapyInfo
+from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
 from Service.GetOthersLotDyn.fetcher.space_dynamic_fetcher import BiliSpaceUserItem
 from CONFIG import settings
 from Service.GetOthersLotDyn.Sql.models import TLotmaininfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper, get_other_lot_redis_manager
 from Service.opus新版官方抽奖.Model.BaseLotModel import ProgressCounter
-from Utils.通用.Common import asyncio_gather
+from Utils.通用.Common import sem_gen
 from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 
+from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.config import GetOthersLotDynRobotConfig
+from Service.BaseCrawler.model.base import WorkerStatus
 
-class GetOthersLotDynRobot:
+
+class RobotTaskParams(CustomBaseModelHashable):
+    """任务参数包装：直接持有领域对象引用，交由 UnlimitedCrawler 的 worker 池处理"""
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    obj: object
+
+    def __hash__(self) -> int:
+        return hash(id(self.obj))
+
+
+class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
     """
     获取其他人的抽奖动态
     """
+
+    Config = GetOthersLotDynRobotConfig
 
     def __init__(self):
         self.isPreviousRoundFinished = False  # 上一轮抽奖是否结束
@@ -30,42 +46,52 @@ class GetOthersLotDynRobot:
         self.space_succ_counter = ProgressCounter()
         self.dyn_succ_counter = ProgressCounter()
         self.goto_check_dynamic_item_set: Set[BiliDynamicItem] = set()
+        # 当前阶段：1=第一阶段空间动态；2=第二阶段(发起抽奖用户)空间动态；3=判定是否为抽奖
+        self._phase: int = 1
+        self._current_phase_objs: list = []
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 GetOthersLotDynRobotConfig 控制；
+        # max_sem 由 main() 中的 _set_concurrency 按阶段动态调整，故此处无需传入
+        super().__init__()
 
-    # region 获取uidlist中的空间动态
+    def _set_concurrency(self, n: int) -> None:
+        """不同阶段并发要求不同，按需调整 worker 数量与信号量"""
+        self.max_sem = n
+        self.sem = sem_gen(n)
 
-    async def __do_space_task(self, __bili_space_user: BiliSpaceUserItem, isPubLotUser: bool):
-        self.space_succ_counter.running_params.add(__bili_space_user.uid)
-        await __bili_space_user.get_user_space_dynamic_id(
-            isPubLotUser=isPubLotUser,
-            SpareTime=self.SpareTime,
-            succ_counter=self.space_succ_counter
-        )
-        self.space_succ_counter.running_params.discard(__bili_space_user.uid)
-        self.space_succ_counter.succ_count += 1
+    # region UnlimitedCrawler 抽象方法实现
 
-    async def get_all_space_dyn_id(
-            self,
-            bili_space_user_items: Set[BiliSpaceUserItem],
-            isPubLotUser=False
-    ):
-        self.space_succ_counter.total_num = len(bili_space_user_items)
-        semaphore = asyncio.Semaphore(settings.get_others_lot.space_dyn_concurrency)
+    async def is_stop(self) -> bool:
+        return False
 
-        async def _sem_task(item: BiliSpaceUserItem):
-            async with semaphore:
-                await self.__do_space_task(item, isPubLotUser)
+    async def key_params_gen(
+        self, params: RobotTaskParams | None = None
+    ) -> AsyncGenerator[RobotTaskParams, None]:
+        for obj in self._current_phase_objs:
+            yield RobotTaskParams(obj=obj)
 
-        tasks = set()
-        for i in bili_space_user_items:
-            task = asyncio.create_task(
-                _sem_task(i),
-                name=f'{i.uid}'
-            )
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-        await asyncio_gather(*tasks, log=get_others_lot_log)
-        get_others_lot_log.info(f'完成{len(bili_space_user_items)}个用户的空间动态获取')
-        self.space_succ_counter.is_running = False
+    async def handle_fetch(self, params: RobotTaskParams) -> WorkerStatus:
+        obj = params.obj
+        if self._phase in (1, 2):
+            is_pub = self._phase == 2
+            uid = obj.uid
+            self.space_succ_counter.running_params.add(uid)
+            try:
+                await obj.get_user_space_dynamic_id(
+                    isPubLotUser=is_pub,
+                    SpareTime=self.SpareTime,
+                    succ_counter=self.space_succ_counter,
+                )
+            finally:
+                self.space_succ_counter.running_params.discard(uid)
+            self.space_succ_counter.succ_count += 1
+        elif self._phase == 3:
+            self.dyn_succ_counter.running_params.add(self.__hash__())
+            try:
+                await obj.judge_lottery(lotRound_id=self.nowRound.lotRound_id)
+            finally:
+                self.dyn_succ_counter.running_params.discard(self.__hash__())
+            self.dyn_succ_counter.succ_count += 1
+        return WorkerStatus.complete
 
     # endregion
 
@@ -162,36 +188,38 @@ class GetOthersLotDynRobot:
         await init_bili_space_user()
         get_others_lot_log.info('机器人初始化完成')
 
-    async def __judge_dynamic(self,
-                              item: BiliDynamicItem,
-                              lotRound_id: int,
-                              ):
-        """
-        判断抽奖
-        :param item:
-        :param lotRound_id:
-        :return:
-        """
-        self.dyn_succ_counter.running_params.add(self.__hash__())
-        await item.judge_lottery(lotRound_id=lotRound_id)
-        self.dyn_succ_counter.running_params.discard(self.__hash__())
-        self.dyn_succ_counter.succ_count += 1
-        return
-
     async def main(self):
         await self.__init()
-        # 获取抽奖号的空间
-        await self.get_all_space_dyn_id(self.bili_space_user_items_set, isPubLotUser=False)
+        # ---- 第一阶段：获取抽奖号的空间动态 ----
+        self._phase = 1
+        self._current_phase_objs = list(self.bili_space_user_items_set)
+        self.space_succ_counter = ProgressCounter()
+        self.space_succ_counter.total_num = len(self._current_phase_objs)
+        self.space_succ_counter.is_running = True
+        self._set_concurrency(settings.get_others_lot.space_dyn_concurrency)
+        await self.run(init_params=None)
+        self.space_succ_counter.is_running = False
+
         pub_lot_uid_set: Set[BiliSpaceUserItem] = set()
         for x in self.bili_space_user_items_set:
             pub_lot_uid_set.update(x.pub_lot_users)
         get_others_lot_log.critical(f'第一阶段完成，开始获取{len(pub_lot_uid_set)}个发起抽奖用户的空间动态')
-        # 获取那些发起抽奖的人的空间
-        await self.get_all_space_dyn_id(pub_lot_uid_set, isPubLotUser=True)
+
+        # ---- 第二阶段：获取发起抽奖用户的空间动态 ----
+        self._phase = 2
+        self._current_phase_objs = list(pub_lot_uid_set)
+        self.space_succ_counter = ProgressCounter()
+        self.space_succ_counter.total_num = len(self._current_phase_objs)
+        self.space_succ_counter.is_running = True
+        self._set_concurrency(settings.get_others_lot.space_dyn_concurrency)
+        await self.run(init_params=None)
+        self.space_succ_counter.is_running = False
+
         total_lot_uid_set: Set[BiliSpaceUserItem] = set()
         total_lot_uid_set.update(self.bili_space_user_items_set)
         total_lot_uid_set.update(pub_lot_uid_set)
         get_others_lot_log.critical(f'第二阶段完成，共获取了{len(pub_lot_uid_set)}个发起抽奖用户的空间动态')
+        self.goto_check_dynamic_item_set = set()
         for x in total_lot_uid_set:
             self.goto_check_dynamic_item_set.update(x.dynamic_infos)
             for y in x.pub_lot_users:
@@ -199,23 +227,14 @@ class GetOthersLotDynRobot:
 
         get_others_lot_log.critical(
             f'共{len(self.goto_check_dynamic_item_set)}条动态待判断是否为抽奖')
-        self.dyn_succ_counter.total_num = len(self.goto_check_dynamic_item_set)
-        semaphore = asyncio.Semaphore(settings.get_others_lot.judge_dyn_concurrency)
-
-        async def _sem_judge(item: BiliDynamicItem):
-            async with semaphore:
-                await self.__judge_dynamic(
-                    item, self.nowRound.lotRound_id)
-
-        tasks = set()
-        for x in self.goto_check_dynamic_item_set:
-            task = asyncio.create_task(
-                _sem_judge(x),
-                name=f'{x.dynamic_id} {x.dynamic_rid} {x.dynamic_type}'
-            )
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-        await asyncio_gather(*tasks, log=get_others_lot_log)
+        # ---- 第三阶段：判断每条动态是否为抽奖 ----
+        self._phase = 3
+        self._current_phase_objs = list(self.goto_check_dynamic_item_set)
+        self.dyn_succ_counter = ProgressCounter()
+        self.dyn_succ_counter.total_num = len(self._current_phase_objs)
+        self.dyn_succ_counter.is_running = True
+        self._set_concurrency(settings.get_others_lot.judge_dyn_concurrency)
+        await self.run(init_params=None)
         self.dyn_succ_counter.is_running = False
         await self._after_scrapy()
         self.nowRound.isRoundFinished = 1
@@ -237,3 +256,8 @@ class GetOthersLotDynRobot:
         self.nowRound.uselessNum = len(all_useless_dyn_info)
         self.scrapy_info.all_lot_dyn_info_list = all_t_lot_dyn_info
         self.scrapy_info.all_useless_info_list = all_useless_dyn_info
+
+
+# 全局单例：与其它爬虫保持一致，模块加载时构造一次，由调度器 / GetOthersLotDyn 复用。
+# main() 内部会重新初始化轮次与用户列表等关键状态，故可安全跨轮次复用。
+get_others_lot_dyn_robot = GetOthersLotDynRobot()

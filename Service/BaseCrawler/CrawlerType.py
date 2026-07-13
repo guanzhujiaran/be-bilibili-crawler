@@ -1,4 +1,4 @@
-from typing import Any, AsyncGenerator, Generic, List, ClassVar
+from typing import Any, AsyncGenerator, Generic, List, ClassVar, TypeVar
 from abc import abstractmethod
 import asyncio
 from types import EllipsisType
@@ -9,6 +9,8 @@ from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus, ParamsType
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
 from Utils.通用.Common import asyncio_gather
 from Utils.推送.PushMe import a_push_error
+
+P = TypeVar("P", bound=CrawlerPlugin)
 
 
 class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
@@ -22,7 +24,18 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     - 自动管理任务队列和 worker 线程池
 
     使用示例：
+        from Service.BaseCrawler.config import CrawlerConfig, PluginConfig
+        from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
+
+        class MyCrawlerConfig(CrawlerConfig):
+            max_sem: int = 20
+            logger: Any = myfastapi_logger
+            # plugin_name 即注册到 self 上的属性名（反射自动赋值，无需手写 self.xxx = ...）
+            plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
+
         class MyCrawler(UnlimitedCrawler[MyParams]):
+            Config = MyCrawlerConfig
+
             async def is_stop(self) -> bool:
                 # 判断是否应该停止生成新任务
                 return False
@@ -36,6 +49,15 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 # 处理单个任务
                 await self.fetch_data(params)
                 return WorkerStatus.complete
+
+    配置说明：
+        max_sem / logger / plugins 及各类业务开关统一由 ``Config``（CrawlerConfig 子类）
+        管理，运行时由 CONFIG.get_crawler_config 集中注入（注册表在 Service.BaseCrawler.config 中），
+        实现「每个爬虫一份独立配置」。``__init__`` 不再接受任何外部传参。
+
+        插件声明为 ``PluginConfig(plugin_name, plugin_cls)``，爬虫初始化时会通过反射
+        执行 ``setattr(self, plugin_name, plugin_cls(self))``，子类直接用
+        ``self.<plugin_name>``（如 ``self.stats_plugin``）即可访问，无需手动绑定。
     """
 
     _plugins: List[CrawlerPlugin[ParamsType]]
@@ -43,73 +65,64 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     # 运行时由 CONFIG 集中注入对应配置（见 CONFIG.get_crawler_config）
     Config: ClassVar[type[CrawlerConfig]] = CrawlerConfig
 
-    def __init__(
-        self,
-        config: CrawlerConfig | None = None,
-        plugins: List[CrawlerPlugin[ParamsType]] | None = None,
-        *args,
-        **kwargs,
-    ):
+    def _load_config(self) -> CrawlerConfig:
         """
-        初始化无限爬虫
+        加载爬虫配置。
+
+        默认直接返回 ``self.Config`` 对应的集中配置实例。
+        若需要在运行时注入动态值（如根据业务类型选择 logger / max_sem），
+        子类可重写本方法，返回 ``CONFIG.get_crawler_config(self.Config).model_copy(update=...)``。
+        """
+        return CONFIG.get_crawler_config(self.Config)
+
+    def __init__(self):
+        """
+        初始化无限爬虫。
+
+        所有运行参数（max_sem、logger、plugins 等）均来自 ``self.Config`` 对应的配置实例，
+        不再接受任何外部传参。各插件会按 Config 中声明的 ``plugin_name`` 自动绑定到
+        ``self.<plugin_name>``，子类直接用该属性即可（也可通过 ``self.get_plugin(PluginType)`` 查找）。
+        """
+        # 直接使用 self.Config 对应的集中配置实例（由 CONFIG 注入）
+        self.config = self._load_config()
+
+        self.requeue_on_fetch_fail = self.config.requeue_on_fetch_fail
+        self.requeue_on_timeout = self.config.requeue_on_timeout
+        self.max_retries = self.config.max_retries
+        self.worker_max_timeout = self.config.worker_max_timeout
+        self.log_timeout_error = self.config.log_timeout_error
+        self.log_error = self.config.log_error
+        self.worker_error_delay = self.config.worker_error_delay
+
+        super().__init__(max_sem=self.config.max_sem, _logger=self.config.logger)
+
+        self._plugins = []
+        for plugin_cfg in self.config.plugins:
+            plugin = plugin_cfg.plugin_cls(self)
+            # 通过反射自动把插件绑定到 self.<plugin_name>，子类无需再手动写 self.xxx = SomePlugin(self)
+            setattr(self, plugin_cfg.plugin_name, plugin)
+            self.__register_plugin(plugin)
+
+    def get_plugin(self, plugin_cls: type[P]) -> P:
+        """
+        从已注册插件中按类型获取插件实例。
+
+        用于按类型查找已注册插件。插件通常已在 ``__init__`` 中按 Config 声明的
+        ``plugin_name`` 自动绑定到 ``self.<plugin_name>``，本方法作为补充检索手段。
 
         Args:
-            config (CrawlerConfig, optional): 爬虫配置对象。
-                若不传，则使用 CONFIG 集中管理的、与当前类 ``Config`` 对应的配置实例，
-                运行时可通过环境变量 / .env 文件（双下划线覆盖）调整，实现「每个爬虫一份独立配置」。
-                也可直接传入一个已构造好的 CrawlerConfig 实例。
+            plugin_cls: 插件类型，如 StatsPlugin、SequentialNullStopPlugin
 
-            plugins (List[CrawlerPlugin[ParamsType]], optional): 插件列表，用于扩展功能
-                常见插件：StatsPlugin（统计）、SequentialNullStopPlugin（连续空结果停止）等
-                默认为 None（不使用插件）
-
-            *args, **kwargs: 传递给父类 BaseCrawler 的参数
-                包括：max_sem（最大并发数）、_logger（日志对象）等。
-                其中 max_sem 也可在 CrawlerConfig 中配置；若同时作为关键字参数传入，
-                则以关键字参数为准。其余历史配置项（requeue_on_fetch_fail 等）若仍以
-                关键字参数传入，将作为覆盖值应用到 config 上（兼容旧调用方式）。
-
-        示例：
-            crawler = MyCrawler(
-                plugins=[StatsPlugin(self), SequentialNullStopPlugin(self, max_consecutive_nulls=100)],
-                max_sem=2,
-                _logger=logger
-            )
+        Returns:
+            匹配到的插件实例
         """
-        # 兼容旧调用方式：允许通过关键字参数直接覆盖配置项
-        # （已不推荐，建议改为在子类的 Config 类中配置，从而受全局 Settings 控制）
-        legacy_overrides = {
-            f: kwargs.pop(f)
-            for f in list(CrawlerConfig.model_fields)
-            if f in kwargs
-        }
-
-        cfg = config or CONFIG.get_crawler_config(self.Config)
-        if legacy_overrides:
-            cfg = cfg.model_copy(update=legacy_overrides)
-
-        self.config = cfg
-        self.requeue_on_fetch_fail = cfg.requeue_on_fetch_fail
-        self.requeue_on_timeout = cfg.requeue_on_timeout
-        self.max_retries = cfg.max_retries
-        self.worker_max_timeout = cfg.worker_max_timeout
-        self.log_timeout_error = cfg.log_timeout_error
-        self.log_error = cfg.log_error
-        self.worker_error_delay = cfg.worker_error_delay
-
-        if plugins is None:
-            plugins = []
-        if not isinstance(plugins, list):
-            raise TypeError(f"plugins must be list, got {type(plugins).__name__}")
-
-        # max_sem 由 config 提供，关键字参数优先
-        if "max_sem" not in kwargs:
-            kwargs["max_sem"] = cfg.max_sem
-
-        super().__init__(*args, **kwargs)
-        self._plugins = []
-        for plugin in plugins:
-            self.__register_plugin(plugin)
+        for plugin in self._plugins:
+            if isinstance(plugin, plugin_cls):
+                return plugin  # type: ignore[return-value]
+        raise ValueError(
+            f"插件 {plugin_cls.__name__} 未在 {self.__class__.__name__} 中注册，"
+            f"请检查其 Config.plugins 是否包含对应工厂。"
+        )
 
     @property
     def plugins(self) -> List[CrawlerPlugin[ParamsType]]:

@@ -53,15 +53,6 @@ async def life_span(app: FastAPI):
         back_ground_tasks = BackgroundServiceController.start_monitor_tasks(
             show_log=show_log)
         myfastapi_logger.critical("其他服务已开启！可以开启服务了喵~")
-        try:
-            from Service.GetOthersLotDyn.core.get_others_lot_dyn import get_others_lot_dyn
-            myfastapi_logger.critical("启动时预填充用户列表...")
-            supp_summary = await get_others_lot_dyn._supplement_users()
-            myfastapi_logger.critical(
-                f"启动补充完成: {supp_summary['before_count']} -> {supp_summary['after_count']}个用户"
-            )
-        except Exception as e:
-            myfastapi_logger.error(f"启动时补充用户列表失败: {e}")
     yield
     myfastapi_logger.critical("正在取消其他服务")
     [x.cancel() for x in back_ground_tasks]

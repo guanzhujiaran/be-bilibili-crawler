@@ -2,14 +2,12 @@ import asyncio
 import time
 from datetime import datetime
 from typing import Any, AsyncGenerator
-from log.base_log import get_rm_following_list_logger
 
 from Models.base.custom_pydantic import CustomBaseModel
 from Models.get_other_lot_dyn.dyn_robot_model import BiliSpaceUserParamsType
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import GetRmFollowingListV2Config
 from Service.BaseCrawler.model.base import WorkerStatus, WorkerModel
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Service.GetOthersLotDyn.Sql.models import TLotmaininfo, TLotdyninfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GetOthersLotDyn import BiliSpaceUserItem
@@ -27,13 +25,9 @@ class LotUpInfo(CustomBaseModel):
 class GetRmFollowingListV2(UnlimitedCrawler[BiliSpaceUserParamsType]):
     Config = GetRmFollowingListV2Config
     def __init__(self):
-        self.status = StatsPlugin(self)
-        super().__init__(
-            _logger=get_rm_following_list_logger,
-            plugins=[
-                self.status
-            ]
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 GetRmFollowingListV2Config 控制；
+        # 其中的 StatsPlugin 会按 PluginConfig.plugin_name（"status"）自动绑定到 self
+        super().__init__()
         self.following_params_queue = asyncio.Queue()
         self._lock = asyncio.Lock()
         self.check_up_sep_days = 15  # 每个uid的检查间隔的天数，超过这个时间就重新访问b站api检查

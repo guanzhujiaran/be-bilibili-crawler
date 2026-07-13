@@ -17,7 +17,7 @@ TResult = TypeVar("TResult")
 FuncT = TypeVar("FuncT", bound=Callable[..., Awaitable[Any]])
 
 
-def sem_gen(sem_limit=100):
+def sem_gen(sem_limit=100)->asyncio.Semaphore:
     return asyncio.Semaphore(sem_limit)
 
 
@@ -115,6 +115,11 @@ async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
     """
     if '(pymysql.err.OperationalError) (1054,' in err.args[0]: # 数据操作错了
         return False
+    # 1040: 连接数过多，并发太高，等待 MySQL 释放连接后重试
+    if '(pymysql.err.OperationalError) (1040,' in err.args[0]:
+        log.error(f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}")
+        await asyncio.sleep(120)
+        return True
     match err.args[0]:
         case 1129:
             log.error(f"{func} \t{err}")

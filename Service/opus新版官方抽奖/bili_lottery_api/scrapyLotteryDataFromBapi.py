@@ -4,16 +4,12 @@ from typing import AsyncGenerator, Literal, Annotated
 
 from pydantic import Field
 
-from log.base_log import official_lot_logger, reserve_lot_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
+from CONFIG import CONFIG
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import LotteryApiRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 
-from Service.BaseCrawler.plugin.statusPlugin import (
-    SequentialNullStopPlugin,
-    StatsPlugin,
-)
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info, get_lot_notice
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
@@ -66,10 +62,17 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
     async def handle_fetch(self, params: BusinessParams) -> WorkerStatus:
         return await self.pipeline(params.business_type, params.business_id)
 
+    def _load_config(self) -> LotteryApiRobotConfig:
+        """运行时由调用方注入 logger 与 max_sem（sem_num）。"""
+        return CONFIG.get_crawler_config(self.Config).model_copy(
+            update={"max_sem": self.sem_limit, "logger": self._injected_log}
+        )
+
     def __init__(
         self, log, business_type: BusinessType, sem_num=1
     ):
         self.__business_type: BusinessType = business_type
+        self._injected_log = log
         self.default_dyn_rid = 346492727
         self.default_reserve_sid = 4234284
         self.sem_limit = sem_num
@@ -80,12 +83,9 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
 
         self._cur_stop_times = 0
         self.latest_ts = 0
-        self.stats_plugin = StatsPlugin(self)
-        super().__init__(
-            max_sem=self.sem_limit,
-            _logger=log,
-            plugins=[self.stats_plugin],
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 LotteryApiRobotConfig 控制，
+        # 其中 logger 与 max_sem 由调用方通过 _load_config 动态注入
+        super().__init__()
 
     async def solve_dyn_data(self, data: dict, rid: int) -> WorkerStatus:
         business_id = data.get("business_id")

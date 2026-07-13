@@ -16,10 +16,6 @@ from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import ReserveScrapyRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus, WorkerModel
 
-from Service.BaseCrawler.plugin.statusPlugin import (
-    StatsPlugin,
-    SequentialNullStopPlugin,
-)
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info
 from Utils.GrpcUtils.response.check_resp import ReserveRelationInfoResponseError
 from fastapi.background import BackgroundTasks
@@ -138,13 +134,13 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         # endregion
 
         self.sem_limit = 1  # 因为用的是自己的代理，所以速度可以慢点
-        self.stats_plugin = StatsPlugin(self)
         self.null_time_quit = 10000  # 遇到连续n条data为None的树据 则退出
-        self.null_stop_plugin = SequentialNullStopPlugin(self, self.null_time_quit)
-        super().__init__(
-            plugins=[self.stats_plugin, self.null_stop_plugin],
-            _logger=reserve_lot_logger,
-        )
+        # SequentialNullStopPlugin 的连续 null 阈值，在 super().__init__() 之前设置，
+        # 插件初始化时会自动读取 self.null_stop_max_consecutive
+        self.null_stop_max_consecutive = self.null_time_quit
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 ReserveScrapyRobotConfig 控制；
+        # 其中的插件会按 PluginConfig.plugin_name 自动绑定到 self（stats_plugin / null_stop_plugin）
+        super().__init__()
 
         self._use_custom_proxy = True
         self._is_use_available_proxy = False  # 是否套用急需完成的api的那套设置

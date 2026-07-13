@@ -270,9 +270,12 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
     def __init__(
         self,
         crawler: "BaseCrawler[ParamsType]",
-        max_consecutive_nulls: int = 5,
+        max_consecutive_nulls: int | None = None,
     ):
         super().__init__(crawler)
+        if max_consecutive_nulls is None:
+            # 允许宿主爬虫在 super().__init__() 之前设置 self.null_stop_max_consecutive
+            max_consecutive_nulls = getattr(crawler, "null_stop_max_consecutive", 5)
         self._max_consecutive_nulls: int = max_consecutive_nulls
         # --- 核心状态变量 ---
         # 向量化存储所有任务的状态。使用 WorkerStatus Enum。

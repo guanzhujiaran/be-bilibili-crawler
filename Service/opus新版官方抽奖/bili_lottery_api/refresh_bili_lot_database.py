@@ -1,7 +1,6 @@
 import time
 from typing import AsyncGenerator, Any
 from dao.biliLotteryStatisticRedisObj import lottery_data_statistic_redis
-from log.base_log import background_task_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Models.lottery_database.bili.LotteryDataModels import (
     BiliLotStatisticLotTypeEnum,
@@ -16,7 +15,6 @@ from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import RefreshBiliLotDatabaseConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
 )
@@ -43,12 +41,8 @@ class RBDParamsType(CustomBaseModelHashable):
 class RefreshBiliLotDatabaseCrawler(UnlimitedCrawler[RBDParamsType]):
     Config = RefreshBiliLotDatabaseConfig
     def __init__(self):
-        max_sem = 1
-        self.status_plugin = StatsPlugin(self)
-        super().__init__(
-            _logger=background_task_logger,
-            plugins=[self.status_plugin],
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 RefreshBiliLotDatabaseConfig 控制
+        super().__init__()
         self.reserve_robot = reserve_robot
         self.extract_official_lottery = ExtractOfficialLottery()
 

@@ -15,11 +15,9 @@ import curl_cffi.requests.exceptions
 from pydantic import Field
 
 from CONFIG import CONFIG
-from log.base_log import sql_log
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import GetProxyMethodsConfig
 from Service.BaseCrawler.model.base import WorkerStatus, CustomBaseModelHashable
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Utils.通用.Common import retry_wrapper, asyncio_gather
 from Utils.代理.SealedRequests import my_async_httpx
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
@@ -90,12 +88,8 @@ class GetProxyMethods(UnlimitedCrawler[ProxyParams]):
         self.get_proxy_sep_time = 2 * 3600  # 获取代理的间隔
         self.check_proxy_flag = False  # 是否检查ip可用，因为没有稳定的代理了，所以默认不去检查代理是否有效
         self.GetProxy_Flag = False
-        self.status_plugin = StatsPlugin(self)
-        # 配置（超时/重试等）统一由 GetProxyMethodsConfig（pydantic-settings）控制
-        super().__init__(
-            _logger=sql_log,
-            plugins=[self.status_plugin],
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 GetProxyMethodsConfig 控制
+        super().__init__()
 
     # region a从代理网站获取代理
 

@@ -1,8 +1,6 @@
 import time
 from typing import Any, AsyncGenerator
 
-from log.base_log import live_monitor_logger
-
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import BiliLiveCrawlerConfig
 from Service.BaseCrawler.model.base import ParamsType, WorkerStatus
@@ -29,9 +27,8 @@ class BiliLiveCrawler(UnlimitedCrawler[int]):
         pass
 
     def __init__(self):
-        super().__init__(
-            _logger=live_monitor_logger
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 BiliLiveCrawlerConfig 控制
+        super().__init__()
         self.live_area_list = []
 
     async def main(self):

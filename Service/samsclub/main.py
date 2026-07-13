@@ -6,7 +6,6 @@ import time
 from pathlib import Path
 from typing import Any, AsyncGenerator
 import aiofiles
-from log.base_log import sams_club_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Models.v1.background_service.background_service_model import ProgressStatusResp
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
@@ -15,8 +14,6 @@ from Service.BaseCrawler.config import (
     SamsClubSPUDetailCrawlerConfig,
 )
 from Service.BaseCrawler.model.base import WorkerStatus
-
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Service.samsclub.Sql.SqlHelper import sql_helper
 from Service.samsclub.api.samsclub_api import sams_club_api
 from Utils.通用.SleepTimeGen import SleepTimeGenerator
@@ -64,11 +61,9 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
         self.sql_helper = sql_helper
         self.fetch_grouping_id_ts = 0
         self.api.headers_gen.version_str = "5.0.125"
-        self.stats_plugin = StatsPlugin(self)
-        super().__init__(
-            plugins=[self.stats_plugin],
-            _logger=sams_club_logger
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 SamsClubCrawlerConfig 控制；
+        # 其中的 StatsPlugin 会按 PluginConfig.plugin_name（"stats_plugin"）自动绑定到 self
+        super().__init__()
         self.task_params_list = []
         self.unfinished_tasks = []
         self.main_lock = asyncio.Lock()
@@ -213,11 +208,9 @@ class SamsClubSPUDetailCrawler(UnlimitedCrawler[SamsClubSPUDetailCrawlerParams])
         self.sql_helper = sql_helper
         self.fetch_grouping_id_ts = 0
         self.api.headers_gen.version_str = "5.0.125"
-        self.stats_plugin = StatsPlugin(self)
-        super().__init__(
-            plugins=[self.stats_plugin],
-            _logger=sams_club_logger
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 SamsClubSPUDetailCrawlerConfig 控制；
+        # 其中的 StatsPlugin 会按 PluginConfig.plugin_name（"stats_plugin"）自动绑定到 self
+        super().__init__()
         self.main_lock = asyncio.Lock()
 
     async def is_stop(self) -> bool:

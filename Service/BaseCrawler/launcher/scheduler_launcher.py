@@ -5,6 +5,7 @@ from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable, CustomBaseModel
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import ParamsType, WorkerStatus
 from Utils.通用.Common import GLOBAL_SCHEDULER
 from Utils.推送.PushMe import async_pushme_try_catch_decorator, a_push_error
@@ -136,7 +137,7 @@ class BaseScheduler:
 
     @async_pushme_try_catch_decorator
     async def run(self):
-        self.logger.debug(
+        self.logger.critical(
             f"[{self.exec_info.info.crawler_name}] 定时任务被触发，正在检查是否需要执行..."
         )
 
@@ -245,8 +246,12 @@ if __name__ == "__main__":
         def __hash__(self):
             return hash(self.a)
 
+    class MockCrawlerConfig(CrawlerConfig):
+        max_sem = 1
+
     class MockCrawler(UnlimitedCrawler[MockParams]):
         """模拟的爬虫类，仅用于测试"""
+        Config = MockCrawlerConfig
 
         async def handle_fetch(self, params: ParamsType) -> WorkerStatus | Any:
             self.log.info(f"[MockCrawler] 模拟爬虫正在执行 handle_fetch...{params}")
@@ -270,7 +275,7 @@ if __name__ == "__main__":
         if not GLOBAL_SCHEDULER.running:
             GLOBAL_SCHEDULER.start()
         # 创建爬虫和调度器
-        crawler = MockCrawler(max_sem=1)
+        crawler = MockCrawler()
         scheduler = GenericCrawlerScheduler(
             crawler=crawler,
             cron_expr="*/1 * * * *",  # 每分钟执行一次

@@ -9,11 +9,9 @@ import json
 import time
 from typing import Any, AsyncGenerator
 from CONFIG import CONFIG
-from log.base_log import official_lot_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import DynDetailScrapyConfig
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_lot_notice, reserve_relation_info
 from Service.GrpcModule.Grpc.grpc_api import bili_grpc
 from Service.GrpcModule.GrpcSrc.DynObjectClass import dynAllDetail
@@ -57,7 +55,6 @@ class DynDetailParams(CustomBaseModelHashable):
 class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
     Config = DynDetailScrapyConfig
     def __init__(self):
-        max_sem = 20
         self.offset = 10  # 每次获取rid的数量，数值最好不要超过10，太大的话传输会出问题
         self.BiliGrpc = bili_grpc
         self.succ_times = 0
@@ -80,11 +77,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         self.stop_limit_time = 2 * 3600  # 提前多少时间停止
         self.succ_counter = SuccCounter()
         self._BiliLotDataPublisher = None
-        self.status_plugin = StatsPlugin(self)
-        super().__init__(
-            _logger=official_lot_logger,
-            plugins=[self.status_plugin],
-        )
+        # 配置（logger / 超时 / 重试 / 插件等）统一由 DynDetailScrapyConfig 控制
+        super().__init__()
 
     async def handle_fetch(self, params: DynDetailParams):
         detail = (await self.get_grpc_single_dynDetail(params.rid))[0]

@@ -5,7 +5,10 @@ from typing import Sequence
 
 from log.base_log import get_others_lot_logger as get_others_lot_log
 from CONFIG import settings
-from Service.GetOthersLotDyn.core.robot import GetOthersLotDynRobot
+from Service.GetOthersLotDyn.core.robot import (
+    GetOthersLotDynRobot,
+    get_others_lot_dyn_robot,
+)
 from Service.GetOthersLotDyn.filter.lottery_filter import is_need_lot, solve_return_lot
 from Service.GetOthersLotDyn.Sql.models import TLotmaininfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper, TargetUserItem, get_other_lot_redis_manager
@@ -55,8 +58,8 @@ class GetOthersLotDyn:
         get_others_lot_log.info(
             f'上次获取第三方抽奖动态时间：{datetime.datetime.fromtimestamp(self.get_dyn_ts)}')
         if int(time.time()) - self.get_dyn_ts >= settings.get_others_lot.get_dyn_interval:
-            self.robot = None
-            self.robot = GetOthersLotDynRobot()
+            # 复用全局单例机器人（与其它爬虫保持一致，不再每次新建）
+            self.robot = get_others_lot_dyn_robot
             await self.robot.main()
             await get_other_lot_redis_manager.set_get_dyn_ts(int(time.time()))
             # 数据采集完成后立即查库充实用户列表

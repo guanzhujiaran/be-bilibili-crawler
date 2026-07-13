@@ -6,19 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import AsyncAdaptedQueuePool
 
-from Service.BaseCrawler.config import (
-    CrawlerConfig,
-    GetProxyMethodsConfig,
-    DynDetailScrapyConfig,
-    GetRmFollowingListV2Config,
-    ReserveScrapyRobotConfig,
-    TopicRobotConfig,
-    LotteryApiRobotConfig,
-    RefreshBiliLotDatabaseConfig,
-    SamsClubCrawlerConfig,
-    SamsClubSPUDetailCrawlerConfig,
-    BiliLiveCrawlerConfig,
-)
+from Service.BaseCrawler.config import CrawlerConfig, get_crawler_config
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -221,13 +209,6 @@ class Settings(BaseSettings):
     # message-service 健康检查地址
     MESSAGE_SERVICE_HOST: str = "be-message-service"
     MESSAGE_SERVICE_PORT: str = "18739"
-
-    model_config = SettingsConfigDict(
-        env_file=(
-            os.path.join(_current_dir, ".env.fastapi.prod"),
-            os.path.join(_current_dir, ".env.fastapi.dev"),
-        )
-    )
     SHOW_LOG: int = 0
     IS_DEV: int = 1  # 默认开发环境
 
@@ -237,19 +218,12 @@ class Settings(BaseSettings):
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []
 
-    # ===== 爬虫通用配置（集中管理，部署时用双下划线环境变量覆盖） =====
-    # 例如：DYN_DETAIL__MAX_SEM=30  ->  settings.dyn_detail.max_sem
-    proxy: GetProxyMethodsConfig = GetProxyMethodsConfig()
-    dyn_detail: DynDetailScrapyConfig = DynDetailScrapyConfig()
-    rm_following: GetRmFollowingListV2Config = GetRmFollowingListV2Config()
-    reserve: ReserveScrapyRobotConfig = ReserveScrapyRobotConfig()
-    topic: TopicRobotConfig = TopicRobotConfig()
-    lottery_api: LotteryApiRobotConfig = LotteryApiRobotConfig()
-    refresh_lot: RefreshBiliLotDatabaseConfig = RefreshBiliLotDatabaseConfig()
-    sams_club: SamsClubCrawlerConfig = SamsClubCrawlerConfig()
-    sams_club_spu: SamsClubSPUDetailCrawlerConfig = SamsClubSPUDetailCrawlerConfig()
-    bili_live: BiliLiveCrawlerConfig = BiliLiveCrawlerConfig()
-
+    model_config = SettingsConfigDict(
+        env_file=(
+            os.path.join(_current_dir, ".env.fastapi.prod"),
+            os.path.join(_current_dir, ".env.fastapi.dev"),
+        )
+    )
 
 settings = Settings()
 
@@ -413,26 +387,16 @@ class _CONFIG:
     _pc_ua = UserAgent(platforms=["desktop", "tablet"])
     _mobile_ua = UserAgent(platforms=["mobile"])
 
-    # 爬虫配置注册表：config 类 -> 由全局 settings 注入的实例（集中管理）
-    _crawler_config_registry: dict[type[CrawlerConfig], CrawlerConfig] = {
-        GetProxyMethodsConfig: settings.proxy,
-        DynDetailScrapyConfig: settings.dyn_detail,
-        GetRmFollowingListV2Config: settings.rm_following,
-        ReserveScrapyRobotConfig: settings.reserve,
-        TopicRobotConfig: settings.topic,
-        LotteryApiRobotConfig: settings.lottery_api,
-        RefreshBiliLotDatabaseConfig: settings.refresh_lot,
-        SamsClubCrawlerConfig: settings.sams_club,
-        SamsClubSPUDetailCrawlerConfig: settings.sams_club_spu,
-        BiliLiveCrawlerConfig: settings.bili_live,
-    }
+    # 爬虫配置注册表由 Service.BaseCrawler.config 模块自管理（不写入全局 Settings）。
+    # 这里仅做转发，保持 CONFIG.get_crawler_config 作为统一入口。
 
     def get_crawler_config(self, config_cls: type[CrawlerConfig]) -> CrawlerConfig:
         """按爬虫的 ``Config`` 类返回集中管理的配置实例。
 
+        配置实例来自 ``Service.BaseCrawler.config`` 的注册表，
         未知类（如测试用的临时子类）回退为默认实例。
         """
-        return self._crawler_config_registry.get(config_cls, config_cls())
+        return get_crawler_config(config_cls)
 
     @property
     def rand_ua(self):
