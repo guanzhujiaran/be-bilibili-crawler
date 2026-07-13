@@ -36,8 +36,6 @@ node_modules
 .env.fastapi.dev
 
 # Runtime / build artifacts
-dist/
-log/
 volumes/
 
 # Project-specific
