@@ -46,3 +46,4 @@ Service/toutiao/src/Tools/Enc/node_modules
 Service/GrpcModule/Utils/极验/Geetest_html
 Service/samsclub/api/app_storage.json
 __test/
+Service/GrpcModule/GrpcSrc/监控up动态/data/monitor_uid_list.json
