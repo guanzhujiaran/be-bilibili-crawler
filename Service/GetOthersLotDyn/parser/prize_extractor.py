@@ -1,6 +1,6 @@
-"""基于 Qwen + LangChain Ollama 的抽奖信息提取器
+"""基于云端 LLM + LangChain 的抽奖信息提取器
 
-使用 ChatOllama.with_structured_output() 进行结构化信息提取，LLM 直接返回 Pydantic 模型。
+使用 ChatOpenAI.with_structured_output() 进行结构化信息提取，LLM 直接返回 Pydantic 模型。
 
 提供两个入口函数，分别对应 biliopusdb 和 dyndetail 两个数据库的 t_lot_extra_info 需求:
 - extract_prize_info_for_biliopusdb() → 适用于普通抽奖动态 (ref_id + lot_type)
@@ -8,25 +8,27 @@
 
 核心特性：
 - with_structured_output 驱动 LLM 调用，无需 agent 层
-- LLM 调用有 30s 超时保护，超时/失败自动回退到 CommMethods 正则判断
-- 采样参数通过 get_llm() 关键字参数传入
+- 仅使用云端 LLM（get_all_free_llms），不再使用本地大模型进行抽奖判断
+- 无回退：依次尝试所有已配置的免费(云端) LLM，全部失败时直接抛错，
+  不进行任何正则/本地回退；由调用方跳过保存（留空），等待手动脚本
+  judge_grand_prize 回填大奖判断结果
+- 采样参数通过 get_all_free_llms() 关键字参数传入
 """
+from langchain_openai import ChatOpenAI
 import asyncio
 import json
 import time
 import re
+import traceback
 from datetime import datetime
 import opencc
 from loguru import logger
 from pydantic import BaseModel, Field
-from Service.llm_service import get_llm, SamplingPreset
-from Utils.通用.CommMethods import methods
+from Service.llm_service import get_all_free_llms, SamplingPreset
+from Utils.推送.PushMe import a_push_error
 
 # 繁体转简体转换器（线程安全，可全局复用）
 _t2s_converter = opencc.OpenCC('t2s.json')
-
-# 正则回退方法实例
-_fallback = methods()
 
 
 class PrizeExtractResult(BaseModel):
@@ -67,38 +69,49 @@ _AGENT_SYSTEM_PROMPT = """从文本中提取抽奖信息。
 def _build_system_prompt(pub_time: datetime | None) -> str:
     """构建系统提示词，可选附加动态发布时间作为时间参考"""
     if pub_time:
-        return _AGENT_SYSTEM_PROMPT + f"\n\n动态发布时间：{pub_time.strftime('%Y-%m-%d')}，开奖时间应不早于此时间。"
+        return _AGENT_SYSTEM_PROMPT + f"\n\n发布时间：{pub_time.strftime('%Y-%m-%d')}，开奖时间应不早于此时间。"
     return _AGENT_SYSTEM_PROMPT
 
 
 def _preprocess_text(dyn_content: str) -> str:
     """文本预处理：去除链接、繁体转简体"""
-    removed_links = re.findall(r'https?://[^\s\u4e00-\u9fff]*', dyn_content)
-    if removed_links:
-        logger.debug(f"去除链接: {removed_links}")
     text = re.sub(r'https?://[^\s\u4e00-\u9fff]*', '', dyn_content)
     return _t2s_converter.convert(text)
-
-
-def _fallback_extract(text: str) -> PrizeExtractResult:
-    """LLM 失败时的正则回退判断，基于 CommMethods 的方法"""
-    is_lot = _fallback.choujiangxinxipanduan(text) is None
-    need_repost = _fallback.zhuanfapanduan(text) == 1
-    pre_msg = _fallback.pre_msg_processing(text)
-    required_topic_text = pre_msg if "#" in pre_msg else ""
-    return PrizeExtractResult(
-        is_lot=is_lot,
-        need_repost=need_repost,
-        required_topic_text=required_topic_text,
-    )
 
 
 # ================================================================
 # 核心提取逻辑（共享）
 # ================================================================
 
-async def _do_extract(*, dyn_content: str, dyn_publish_time: datetime | None = None, force_local: bool = False) -> PrizeExtractResp:
-    """一次性提取所有抽奖相关信息（内部共享实现）"""
+async def _push_cloud_unavailable_error(exc: Exception) -> None:
+    """云端 LLM 全部不可用/失败时推送错误告警（由 PushMe 内部限流/去重）"""
+    try:
+        await a_push_error(
+            subject="云端LLM抽奖判断不可用",
+            content=(
+                "云端 LLM 当前全部不可用，抽奖判断（含大奖判断）将跳过保存，"
+                "相关记录留空，请检查云端 LLM 配置或可用性，稍后由手动脚本 judge_grand_prize 回填。\n"
+                f"错误类型：{type(exc).__name__}\n"
+                f"错误信息：{exc}\n"
+                f"错误堆栈：\n{traceback.format_exc()}"
+            ),
+        )
+    except Exception as push_err:
+        logger.exception(f"推送云端不可用告警失败: {push_err}")
+
+
+async def _do_extract(
+    *,
+    dyn_content: str,
+    dyn_publish_time: datetime | None = None,
+    chat_openai_client: ChatOpenAI | None = None,
+) -> PrizeExtractResp:
+    """一次性提取所有抽奖相关信息（内部共享实现）
+
+    仅使用云端 LLM 进行抽奖判断，不再使用本地大模型，也不做任何回退
+    （正则/SVM 等）。当所有云端 LLM 调用均失败时直接抛出 RuntimeError，
+    由调用方决定是否跳过保存（留空），等待手动脚本 judge_grand_prize 回填。
+    """
     start_ts = time.time()
     if not dyn_content or not dyn_content.strip():
         return PrizeExtractResp(
@@ -114,41 +127,52 @@ async def _do_extract(*, dyn_content: str, dyn_publish_time: datetime | None = N
             consume_time=time.time() - start_ts,
             result=PrizeExtractResult(),
         )
+    if chat_openai_client:
+        all_llms = [chat_openai_client]
+    else:
+        try:
+            all_llms = get_all_free_llms(
+                **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256),
+            )
+        except RuntimeError as e:
+            # 未配置任何云端 LLM：不再回退，直接抛错
+            await _push_cloud_unavailable_error(e)
+            raise
 
-    try:
-        logger.debug(f"开始调用 LLM 提取抽奖信息，文本: {text}")
-        llm = get_llm(
-            force_local=force_local,
-            **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256),
-        )
-        structured_llm = llm.with_structured_output(PrizeExtractResult)
-        messages = [
-            {"role": "system", "content": _build_system_prompt(dyn_publish_time)},
-            {"role": "user", "content": text},
-        ]
-        result: PrizeExtractResult = await asyncio.wait_for(
-            structured_llm.ainvoke(messages),
-            timeout=600.0,
-        )
-        logger.debug(f"LLM 提取抽奖信息结果: {result}")
-        return PrizeExtractResp(
-            dyn_content=text,
-            consume_time=time.time() - start_ts,
-            result=result)
-    except asyncio.TimeoutError:
-        logger.error("LLM extract_prize_info 超时（600s），回退到正则判断")
-        return PrizeExtractResp(
-            dyn_content=dyn_content,
-            consume_time=time.time() - start_ts,
-            result=_fallback_extract(text),
-        )
-    except Exception as e:
-        logger.error(f"LLM extract_prize_info failed: {e}, falling back to regex")
-        return PrizeExtractResp(
-            dyn_content=dyn_content,
-            consume_time=time.time() - start_ts,
-            result=_fallback_extract(text),
-        )
+    last_err: Exception | None = None
+    for idx, llm in enumerate(all_llms):
+        try:
+            msg_content = _build_system_prompt(dyn_publish_time)
+            structured_llm = llm.with_structured_output(PrizeExtractResult)
+            messages = [
+                {"role": "system", "content": msg_content},
+                {"role": "user", "content": text},
+            ]
+            result: PrizeExtractResult = await structured_llm.ainvoke(
+                messages,
+                extra_body={"chat_template_kwargs": {
+                    "enable_thinking": False}
+                }
+            )
+            logger.info(
+                f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}")
+            return PrizeExtractResp(
+                dyn_content=text,
+                consume_time=time.time() - start_ts,
+                result=result)
+        except Exception as e:
+            logger.exception(
+                f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
+                f"（{type(e).__name__}: {e}），尝试下一个")
+            last_err = e
+            continue
+
+    # 全部免费 LLM 均失败：不再回退，直接抛错，由调用方跳过保存
+    await _push_cloud_unavailable_error(
+        last_err or RuntimeError("全部免费 LLM 均调用失败"))
+    raise RuntimeError(
+        f"全部 {len(all_llms)} 个免费 LLM 均调用失败"
+    ) from last_err
 
 
 # ================================================================
@@ -159,7 +183,7 @@ async def extract_prize_info_for_biliopusdb(
     *,
     dyn_content: str,
     dyn_publish_time: datetime | None = None,
-    force_local: bool = False,
+    chat_openai_client: ChatOpenAI | None = None,
 ) -> PrizeExtractResp:
     """
     面向 biliopusdb (普通抽奖动态) 的抽奖信息提取。
@@ -168,20 +192,22 @@ async def extract_prize_info_for_biliopusdb(
       - prize_names, lottery_time → 用于 t_others_lot_info 表缓存
       - is_lot, need_repost, required_topic_text → 用于抽奖判断
       - is_grand_prize → 用于 t_lot_extra_info (ref_id + lot_type='common')
-
+      - chat_openai_client -> 支持传入自定义的客户端来执行操作
     调用方通常进一步通过 SqlHelper.save_prize() / save_extra_info() 入库。
+    仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
+    不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
     return await _do_extract(
         dyn_content=dyn_content,
         dyn_publish_time=dyn_publish_time,
-        force_local=force_local,
+        chat_openai_client=chat_openai_client,
     )
 
 
 async def extract_prize_info_for_dyndetail(
     *,
     dyn_content: str,
-    force_local: bool = False,
+    chat_openai_client: ChatOpenAI | None = None,
 ) -> PrizeExtractResp:
     """
     面向 dyndetail (官方/充电抽奖) 的抽奖信息提取。
@@ -190,20 +216,14 @@ async def extract_prize_info_for_dyndetail(
     不关注 prize_names / lottery_time（官方抽奖已有固定字段）。
 
     调用方通常通过 grpc_sql_helper._upsert_extra_info() / batch_save_extra_info() 入库。
+    仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
+    不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
     return await _do_extract(
         dyn_content=dyn_content,
         dyn_publish_time=None,  # 官方抽奖不传发布时间
-        force_local=force_local,
+        chat_openai_client=chat_openai_client,
     )
-
-
-# ================================================================
-# 向后兼容别名
-# ================================================================
-
-# extract_prize_info 保持向后兼容，指向 biliopusdb 版本
-extract_prize_info = extract_prize_info_for_biliopusdb
 
 
 if __name__ == "__main__":
@@ -220,10 +240,10 @@ if __name__ == "__main__":
 非常感谢小伙伴的长评，很棒很棒！！！这期视频会因为你的长评而更有意义（更重要的是你看到了视频最后，发现了我提出羞耻感祛魅这个观点，而不是只看到了视频里性别处境、男女地位等浮于表面的话题）。对了，先说一下《明亮的夜晚》这本书在豆瓣上的评分：9.0，超过2万5千人的给出了评价，还能有9分这样的高分，相当了不起，所以你说你还没看这本书——可以看一下，很值得！
 
 不得不说，你看完你的评论我就知道你基本理解了本期视频及文案想要表达的内容，那么就就着视频尾部的“羞耻感祛魅”这个话题延伸再分享一下看完《明亮的夜晚》时，为什么突然有了这个理解，崔恩荣在小说里几乎没有提到“羞耻感”，但那一段——“我不想经历真心实意地深爱一个人的那种撕心裂肺的痛苦。我想远离这种感情上的可能性，在不冷不热的关系中安全地生活。还有比欺骗自己更容易的事吗？离婚后我经历的痛苦时光不只是因为丈夫的欺骗，也是我欺骗自己的结果。扪心自问，其中更让我痛苦的正是我对自己的欺骗。”要留意这一段，明明女主经历了那么多不公平的事情，读者的情绪和同理心也都站到了女主那边去，这一段的出现却着实在引导读者思考女主的问题，跟着她的内心一同回顾结婚动机，也就是造成离婚局面的最初决定，然后得出“不只是丈夫的欺骗，也是我欺骗自己的结果”，这个“自省”的逻辑是很有深意的，崔恩荣为什么要这么做？为什么女主会有一个这样的表态？"""
-        result = await extract_prize_info_for_biliopusdb(dyn_content=text, force_local=True)
+        result = await extract_prize_info_for_biliopusdb(dyn_content=text)
         print(f"biliopusdb 提取结果: {result}")
 
-        result2 = await extract_prize_info_for_dyndetail(dyn_content=text, force_local=True)
+        result2 = await extract_prize_info_for_dyndetail(dyn_content=text)
         print(f"dyndetail 提取结果: {result2}")
 
     async def _to_csv():
@@ -246,11 +266,10 @@ if __name__ == "__main__":
             result = await extract_prize_info_for_biliopusdb(
                 dyn_content=d.dynContent,
                 dyn_publish_time=d.pubTime,
-                force_local=True,
             )
             prize_extract_results.append(result)
         pd = DataFrame([r.model_dump() for r in prize_extract_results])
         pd.to_csv("dyn_content_result.csv", index=False, encoding="utf-8",
-                   quoting=csv.QUOTE_NONNUMERIC)
+                  quoting=csv.QUOTE_NONNUMERIC)
 
     asyncio.run(_test())

@@ -48,11 +48,11 @@ from dao.biliLotteryStatisticSqlHelper import lottery_data_statistic_sql_helper
 
 
 class SQLHelper(SqlHelperBase):
-    def __init__(self):
+    def __init__(self, mysql_db_url: str | None = None):
         # 爬虫专用连接池，设置 is_crawler=True
-        super().__init__(
-            mysql_db_url=CONFIG.database.MYSQL.dyn_detail_URI, is_crawler=True
-        )
+        if mysql_db_url is None:
+            mysql_db_url = CONFIG.database.MYSQL.dyn_detail_URI
+        super().__init__(mysql_db_url=mysql_db_url, is_crawler=True)
 
     # region 返回和提交内容预处理
 
@@ -680,15 +680,17 @@ class SQLHelper(SqlHelperBase):
             lot_data_dict.get("third_prize_cmt"),
         ]
         lottery_text = " ".join(filter(lambda a: a, prize_cmts)).strip()
+        grand_prize_ok = False
+        is_grand_prize = 0
         if lottery_text:
             try:
                 result = await extract_prize_info_for_dyndetail(dyn_content=lottery_text)
                 is_grand_prize = int(result.result.is_grand_prize)
+                grand_prize_ok = True
             except Exception as e:
-                self.log.error(f"LLM 大奖判断失败，默认 0: {e}")
-                is_grand_prize = 0
-        else:
-            is_grand_prize = 0
+                # LLM 大奖判断失败：不再回退，跳过写入，留空待手动脚本 judge_grand_prize 回填
+                self.log.error(f"LLM 大奖判断失败，跳过写入 t_lot_extra_info，留待手动脚本填充: {e}")
+                grand_prize_ok = False
 
         async with self.async_session() as session:
             lottery_id = lot_data_dict.get("lottery_id")
@@ -702,9 +704,10 @@ class SQLHelper(SqlHelperBase):
             await session.merge(lot_data_obj)
             await session.flush()  # 确保 lotdata 父行先写入，否则 t_lot_extra_info 外键约束会失败
 
-            # 将 SVM 大奖判断结果写入独立子表 t_lot_extra_info
+            # 将大模型大奖判断结果写入独立子表 t_lot_extra_info（仅当判断成功时；
+            # 失败则跳过，留空等待手动脚本 judge_grand_prize 回填）
             lottery_id = lot_data_dict.get("lottery_id")
-            if lottery_id is not None:
+            if lottery_id is not None and grand_prize_ok:
                 await self._upsert_extra_info(
                     session=session,
                     lottery_id=int(lottery_id),
@@ -759,6 +762,23 @@ class SQLHelper(SqlHelperBase):
                         lottery_id=lottery_id,
                         is_grand_prize=is_grand_prize,
                     )
+
+    @log_sql_retry_wrapper()
+    async def save_extra_info(
+        self, lottery_id: int, is_grand_prize: int
+    ) -> None:
+        """保存/更新单条附加信息到 t_lot_extra_info（原子 upsert）。
+
+        逐条保存，便于手动回填脚本“处理完一个立即保存一个”，
+        避免批量写入中途失败时丢失已判断的结果。
+        """
+        async with self.async_session() as session:
+            await self._upsert_extra_info(
+                session=session,
+                lottery_id=int(lottery_id),
+                is_grand_prize=is_grand_prize,
+            )
+            await session.commit()
 
     @log_sql_retry_wrapper()
     async def get_extra_info_map(

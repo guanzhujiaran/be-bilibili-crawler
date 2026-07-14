@@ -5,7 +5,7 @@
   - 互动数据 (commentCount / repostCount / likeCount)
   - 作者昵称 (authorName)、发布时间 (pubTime)、正文 (dynContent)、链接 (dynamicUrl)
   - 抽奖类型 (officialLotType)：重新判断 官方/充电/预约
-  - is_lot：官方抽奖=1，预约/充电=0，其余用 extract_prize_info
+  - is_lot：官方抽奖=1，预约/充电=0，其余用 extract_prize_info_for_biliopusdb
   - isManualReply：转为 0/1 (bool)
   - t_lot_extra_info：need_comment / need_repost
 
@@ -48,7 +48,7 @@ from log.base_log import myfastapi_logger
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 from Service.GetOthersLotDyn.parser.dynamic_detail_parser import parse_dynamic_item
-from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info
+from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
 from Service.GetOthersLotDyn.filter.manual_reply_judge import manual_reply_judge
 from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
 from sqlalchemy import and_, or_, select, update, func
@@ -210,7 +210,7 @@ async def _process_and_build_full_updates(dyn: TLotdyninfo) -> BackfillResult | 
         )
 
         # prize extract result (一次模型调用提取全部信息)
-        prize_result = await extract_prize_info(dyn_content=dynamic_content) if dynamic_content else None
+        prize_result = await extract_prize_info_for_biliopusdb(dyn_content=dynamic_content) if dynamic_content else None
         need_repost = prize_result.result.need_repost if prize_result else False
 
         # manual_judge (need_comment)
@@ -220,7 +220,7 @@ async def _process_and_build_full_updates(dyn: TLotdyninfo) -> BackfillResult | 
                 manual_reply_judge.call, 'manual_reply_judge', dynamic_content
             )
 
-        # is_lot 逻辑：官方抽奖=1，预约/充电=0，其余用 extract_prize_info
+        # is_lot 逻辑：官方抽奖=1，预约/充电=0，其余用 extract_prize_info_for_biliopusdb
         if is_official_lot:
             is_lot = True
             need_repost = True

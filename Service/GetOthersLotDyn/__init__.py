@@ -13,7 +13,6 @@ from Service.GetOthersLotDyn.parser.dynamic_detail_parsed import DynamicDetailPa
 from Service.GetOthersLotDyn.parser.dynamic_detail_parser import parse_dynamic_item
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     PrizeExtractResult,
-    extract_prize_info,
     extract_prize_info_for_biliopusdb,
     extract_prize_info_for_dyndetail,
 )

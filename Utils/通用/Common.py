@@ -1,5 +1,6 @@
 import asyncio
 import concurrent.futures
+import re
 from functools import wraps
 from typing import Callable, TypeVar, Awaitable, Any, Optional
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -109,6 +110,64 @@ async def run_in_executor(func, *args):
     return await future
 
 
+def _log_db_connection_info(log, err: OperationalError) -> None:
+    """打印当前 MySQL 连接配置与目标数据库，便于排查连接/库不存在错误。
+
+    提取 host/port/user、报错中的目标库名，以及 CONFIG 中已配置的全部数据库 URI
+    （密码脱敏），帮助快速定位「连错主机 / 库不存在」等问题。
+    """
+    try:
+        from CONFIG import settings, CONFIG as _APP_CONFIG
+    except Exception as _imp_err:  # 兜底：导入失败不影响主流程
+        log.error(f"[MySQL诊断] 无法读取 CONFIG 用于诊断: {_imp_err}")
+        return
+
+    base_url = f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}"
+    user = settings.MYSQL_USER
+
+    # 从报错中解析目标数据库名（如 Unknown database 'biliopusdb'）
+    m = re.search(r"Unknown database '([^']+)'", str(err.args[0]))
+    target_db = m.group(1) if m else "(无法从报错解析)"
+
+    # 收集已配置的数据库 URI（密码脱敏）
+    configured: list[tuple[str, str]] = []
+    try:
+        mysql_cfg = _APP_CONFIG.database.MYSQL
+        for name, attr in [
+            ("biliopusdb(get_other_lot)", "get_other_lot_URI"),
+            ("bilidb", "bili_db_URI"),
+            ("bili_reserve", "bili_reserve_URI"),
+            ("dyndetail", "dyn_detail_URI"),
+            ("proxy_db", "proxy_db_URI"),
+            ("samsclub", "sams_club_URI"),
+        ]:
+            uri = getattr(mysql_cfg, attr, "")
+            if uri:
+                configured.append((name, re.sub(r":([^:@/]+)@", ":****@", uri)))
+    except Exception:
+        configured = []
+
+    lines = [
+        "=" * 64,
+        "[MySQL 连接诊断] 发生 OperationalError，请核对以下连接信息：",
+        f"  HOST:PORT = {base_url}",
+        f"  USER      = {user}",
+        f"  报错中的目标数据库 = {target_db}",
+        "  已配置的数据库(库名 -> URI)：",
+    ]
+    for name, uri in configured:
+        lines.append(f"    - {name}: {uri}")
+    lines += [
+        "  排查建议：",
+        "    1) 确认 HOST:PORT 指向的是否为预期的生产 MySQL；",
+        "    2) 确认该 MySQL 实例上是否已创建报错中的目标数据库；",
+        "    3) 检查 .env 的 MYSQL_HOST/PORT/USER/PASSWORD，",
+        "       或使用 --db-host/--db-port/--db-user/--db-password 覆盖。",
+        "=" * 64,
+    ]
+    log.error("\n".join(lines))
+
+
 async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
     """
         返回是否需要继续重试
@@ -132,10 +191,13 @@ async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
             await asyncio.sleep(120)
         case CR.CR_CONN_HOST_ERROR:  # mysql配置不正确或者mysql暂时挂了，在重启
             log.error(f"{func} \t{err}")
+            _log_db_connection_info(log, err)
             await asyncio.sleep(120)
-        case _:  # 未知代码
+        case _:  # 未知代码（含 1049 Unknown database 等配置/库错误）
             log.error(f"未知mysql错误代码：{func} \t{err}")
-            await asyncio.sleep(120)
+            _log_db_connection_info(log, err)
+            # 未知代码多为配置/库不存在等不可恢复错误，停止无限重试并抛出
+            return False
 
     return True
 

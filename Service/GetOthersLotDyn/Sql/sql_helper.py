@@ -8,7 +8,7 @@ from typing import Union, List, Sequence, Optional
 
 from pydantic import BaseModel
 
-from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info
+from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
 from sqlalchemy import select, and_, func, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import selectinload
@@ -98,8 +98,9 @@ class __SqlHelper(SqlHelperBase):
     使用独立的爬虫连接池，限制并发
     """
 
-    def __init__(self):
-        mysql_db_url = CONFIG.database.MYSQL.get_other_lot_URI
+    def __init__(self, mysql_db_url: str | None = None):
+        if mysql_db_url is None:
+            mysql_db_url = CONFIG.database.MYSQL.get_other_lot_URI
         super().__init__(mysql_db_url=mysql_db_url)
         self.add_dyn_info_lock = asyncio.Lock()
 
@@ -440,7 +441,7 @@ class __SqlHelper(SqlHelperBase):
                 await session.commit()
 
         if DynInfo.dynContent and DynInfo.dynId:
-            extract_result = await extract_prize_info(dyn_content=DynInfo.dynContent)
+            extract_result = await extract_prize_info_for_biliopusdb(dyn_content=DynInfo.dynContent)
             if extract_result.result.prize_names or extract_result.result.lottery_time:
                 await self.save_prize(DynInfo.dynId, extract_result.result.prize_names, extract_result.result.lottery_time)
             if extract_result.result.is_grand_prize:

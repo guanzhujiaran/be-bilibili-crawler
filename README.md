@@ -1,9 +1,8 @@
 构建docker镜像，需要能访问github的机器。
+
 ```bash
 docker build -t ghcr.io/guanzhujiaran/bilibiliexplosion .
 ```
-
-
 
 ## 数据库版本管理 (Alembic)
 
@@ -35,14 +34,14 @@ alembic -x db=biliopusdb history
 
 ### 数据库对应关系
 
-| `-x db=` | 数据库 | 主要表 |
-|-----------|--------|--------|
-| `biliopusdb` | 普通抽奖动态库 | `t_lotdyninfo` / `t_lot_grand_prize_flag` 等 |
-| `bilidb` | 话题抽奖库 | `t_topic` / `t_traffic_card` 等 |
-| `bili_reserve` | 预约抽奖库 | `t_up_reserve_relation_info` 等 |
-| `dyndetail` | 动态详情库 | `bilidyndetail` / `lotdata` 等 |
-| `proxy_db` | 代理数据库 | `proxy_tab` / `available_proxy` |
-| `samsclub` | 山姆会员店库 | `spu_info` / `spu_category` 等 |
+| `-x db=`       | 数据库         | 主要表                                       |
+| -------------- | -------------- | -------------------------------------------- |
+| `biliopusdb`   | 普通抽奖动态库 | `t_lotdyninfo` / `t_lot_grand_prize_flag` 等 |
+| `bilidb`       | 话题抽奖库     | `t_topic` / `t_traffic_card` 等              |
+| `bili_reserve` | 预约抽奖库     | `t_up_reserve_relation_info` 等              |
+| `dyndetail`    | 动态详情库     | `bilidyndetail` / `lotdata` 等               |
+| `proxy_db`     | 代理数据库     | `proxy_tab` / `available_proxy`              |
+| `samsclub`     | 山姆会员店库   | `spu_info` / `spu_category` 等               |
 
 ## SVM 大奖判断脚本
 
@@ -68,6 +67,11 @@ uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:11434
 
 ## 使用本地的gpu ollama 进行判断，保存到本地数据库
 uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:12000/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host localhost --db-port 10000 --db-user root --db-password 114514
+
+# modelscope notebook 运行
+uv run python -m scripts.judge_grand_prize --llm-base-url https://2034000-proxy-1111.dsw-gateway-cn-hangzhou.data.aliyun.com/v1 --llm-token ollama --llm-model /mnt/workspace/models/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514 --llm-headers '{"Cookie":"xxxx"}' --concurrency 8
+
+
 ```
 
 ## rawJsonStr 数据回填脚本
@@ -94,6 +98,7 @@ uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --force
 ```
 
 回填字段包括：
+
 - 互动数据：`commentCount` / `repostCount` / `likeCount`
 - 基本信息：`authorName` / `pubTime` / `dynContent` / `dynamicUrl`
 - 抽奖类型：`officialLotType` / `officialLotId`（重新判断 官方/充电/预约）

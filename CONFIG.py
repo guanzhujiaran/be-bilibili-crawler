@@ -279,28 +279,42 @@ class PushNotifyConfig(BaseModel):
 class DataBaseConfig:
     @dataclass
     class _MYSQL:
-        _base_url: str = f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}"
-        _pwd: str = settings.MYSQL_PASSWORD
-        _user: str = settings.MYSQL_USER
-        proxy_db_URI: str = (
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/proxy_db?charset=utf8mb4&autocommit=true"
-        )
-        bili_db_URI: str = (
-            # 话题抽奖
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/bilidb?charset=utf8mb4&autocommit=true"
-        )
-        bili_reserve_URI: str = (
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/bili_reserve?charset=utf8mb4&autocommit=true"
-        )
-        get_other_lot_URI: str = (
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/biliopusdb?charset=utf8mb4&autocommit=true"
-        )
-        dyn_detail_URI: str = (
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/dyndetail?charset=utf8mb4&autocommit=true"
-        )
-        sams_club_URI: str = (
-            f"mysql+aiomysql://{_user}:{_pwd}@{_base_url}/samsclub?charset=utf8mb4&autocommit=true"
-        )
+        # 字段默认值仅在 dataclass 装饰器应用时求值一次，为避免在模块导入时
+        # 就把 settings 固化进 URI（导致运行时 CLI 覆盖无法生效），这里把 URI
+        # 的拼装延迟到 __post_init__，每次实例化都重新读取当前 settings。
+        _base_url: str = ""
+        _pwd: str = ""
+        _user: str = ""
+        proxy_db_URI: str = ""
+        bili_db_URI: str = ""
+        bili_reserve_URI: str = ""
+        get_other_lot_URI: str = ""
+        dyn_detail_URI: str = ""
+        sams_club_URI: str = ""
+
+        def __post_init__(self):
+            self._base_url = f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}"
+            self._pwd = settings.MYSQL_PASSWORD
+            self._user = settings.MYSQL_USER
+            self.proxy_db_URI = (
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/proxy_db?charset=utf8mb4&autocommit=true"
+            )
+            self.bili_db_URI = (
+                # 话题抽奖
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/bilidb?charset=utf8mb4&autocommit=true"
+            )
+            self.bili_reserve_URI = (
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/bili_reserve?charset=utf8mb4&autocommit=true"
+            )
+            self.get_other_lot_URI = (
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/biliopusdb?charset=utf8mb4&autocommit=true"
+            )
+            self.dyn_detail_URI = (
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/dyndetail?charset=utf8mb4&autocommit=true"
+            )
+            self.sams_club_URI = (
+                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/samsclub?charset=utf8mb4&autocommit=true"
+            )
 
     @dataclass
     class _REDISINFO:

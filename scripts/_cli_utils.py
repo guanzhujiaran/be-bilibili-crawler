@@ -13,6 +13,13 @@ def add_llm_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--llm-base-url", type=str, default=None, help="LLM API base URL")
     g.add_argument("--llm-token", type=str, default=None, help="LLM API token / key")
     g.add_argument("--llm-model", type=str, default=None, help="模型名称，如 gpt-4o / qwen3.5")
+    g.add_argument(
+        "--llm-headers",
+        type=str,
+        default=None,
+        help="注入到 ChatOpenAI 请求的自定义 HTTP 头 (JSON 字符串)，"
+             "用于创建 ChatOpenAI 实例（如鉴权/路由头）",
+    )
 
 
 def add_db_args(parser: argparse.ArgumentParser) -> None:
@@ -24,11 +31,34 @@ def add_db_args(parser: argparse.ArgumentParser) -> None:
     g.add_argument("--db-password", type=str, default=None, help="MySQL 密码")
 
 
+def build_mysql_uri(db_name: str, args: argparse.Namespace | None = None) -> str:
+    """按 CLI 覆盖（优先）或 settings（兜底）构造指向指定库的 MySQL URI。
+
+    用于脚本内显式 new SqlHelper 实例，确保 --db-* 参数真正生效
+    （绕过模块级单例在导入时固化的连接池）。
+    """
+    from CONFIG import settings
+    host = getattr(args, "db_host", None) if args else None
+    port = getattr(args, "db_port", None) if args else None
+    user = getattr(args, "db_user", None) if args else None
+    pwd = getattr(args, "db_password", None) if args else None
+    host = host or settings.MYSQL_HOST
+    port = port or settings.MYSQL_PORT
+    user = user or settings.MYSQL_USER
+    pwd = pwd or settings.MYSQL_PASSWORD
+    return (
+        f"mysql+aiomysql://{user}:{pwd}@{host}:{port}/{db_name}"
+        f"?charset=utf8mb4&autocommit=true"
+    )
+
+
 def apply_cli_overrides(args: argparse.Namespace) -> None:
     """将命令行参数注入 CONFIG / Settings，覆盖 .env 默认值"""
     from CONFIG import settings, CONFIG, DataBaseConfig, LLMApiConfig
 
     # ---- 大模型配置 ----
+    # 只要显式传入任意一个 --llm-* 参数，就【完全取代】.env 中的 llm_apis，
+    # 且仅使用命令行定义的内容，不再混入 .env 配置，也不再补硬编码默认值。
     llm_overrides: dict[str, str] = {}
     if args.llm_base_url:
         llm_overrides["base_url"] = args.llm_base_url
@@ -38,11 +68,10 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
         llm_overrides["model_name"] = args.llm_model
 
     if llm_overrides:
-        llm_overrides.setdefault("base_url", "http://localhost:11434/v1")
-        llm_overrides.setdefault("token", "ollama")
-        llm_overrides.setdefault("model_name", "qwen3.5")
         settings.llm_apis = [LLMApiConfig(**llm_overrides)]
-        print(f"[CLI] LLM 覆盖: {llm_overrides['base_url']} / {llm_overrides['model_name']}")
+        model_name = llm_overrides.get("model_name", "(未指定)")
+        print(f"[CLI] LLM 覆盖（仅使用命令行指定项）: "
+              f"{llm_overrides['base_url']} / {model_name}")
 
     # ---- 数据库配置 ----
     need_rebuild = any([

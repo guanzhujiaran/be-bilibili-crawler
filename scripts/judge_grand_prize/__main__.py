@@ -23,12 +23,14 @@
 可选参数:
     --type all|common|reserve|official  抽奖类型 (默认: all=全部)
     --batch-size 200                    每批处理数量 (默认: 200)
+    --concurrency 1                     并发处理数量，0/负数按 1 处理 (默认: 1)
     --dry-run                           仅打印将要处理的数量，不实际写入
     --force-update                      强制重新判断所有记录（即使已有flag）
     --limit N                           限制最大处理数量，0=不限制 (默认: 0)
     --llm-base-url                      大模型 API 地址 (覆盖 .env)
     --llm-token                         大模型 API token (覆盖 .env)
     --llm-model                         模型名称 (覆盖 .env)
+    --llm-headers                       自定义 HTTP 头 (JSON 字符串)，用于创建 ChatOpenAI 实例
     --db-host                           MySQL 主机 (覆盖 .env)
     --db-port                           MySQL 端口 (覆盖 .env)
     --db-user                           MySQL 用户名 (覆盖 .env)
@@ -36,10 +38,12 @@
 
 注意:
     - 所有抽奖类型的大奖判断结果均写入独立子表 t_lot_extra_info
+    - 采用“处理完一个立即保存一个”的策略，避免批量写入中途失败导致结果丢失
     - 普通抽奖使用 (ref_id=dynId, lot_type='common')
     - 预约抽奖使用 (ref_id=ids, lot_type='reserve')
     - 官方/充电抽奖使用 (business_id, 通过 Grpc SQLHelper)
     - 基于 Qwen3.5-0.8B + vLLM 推理，替代原有 SVM 模型
+    - --concurrency 控制 LLM 判断的并发数，提高吞吐；默认 1 为串行
 """
 
 import argparse
@@ -47,7 +51,7 @@ import asyncio
 import sys
 import time
 from pathlib import Path
-
+from langchain_openai import ChatOpenAI
 # 确保项目根目录在 sys.path 中
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
@@ -55,6 +59,46 @@ if str(_project_root) not in sys.path:
 
 
 
+
+
+def _make_chat_openai_client(headers: dict | None) -> ChatOpenAI | None:
+    """根据当前 settings.llm_apis 配置 + 自定义 headers 构造一个 ChatOpenAI 实例。
+
+    仅当传入非空 headers 且存在可用的云端 LLM 配置时才会真正创建实例；
+    否则返回 None（由 extract 走默认云端 LLM 流程）。
+
+    参数:
+        headers: 注入到 ChatOpenAI 请求的自定义 HTTP 头（如鉴权/路由头）。
+    """
+    if not headers:
+        return None
+    from CONFIG import settings
+    from langchain_openai import ChatOpenAI
+    from pydantic import SecretStr
+
+    usable = [c for c in settings.llm_apis if c.base_url and c.model_name]
+    if not usable:
+        return None
+    cfg = usable[0]
+    return ChatOpenAI(
+        model=cfg.model_name,
+        base_url=cfg.base_url,
+        api_key=SecretStr(cfg.token) if cfg.token else SecretStr("not-needed"),
+        default_headers=headers,
+    )
+
+
+def _resolve_chat_openai_client(
+    headers: dict | None,
+    llm_args: ChatOpenAI | None,
+) -> ChatOpenAI | None:
+    """统一解析最终用于提取的 ChatOpenAI 客户端。
+
+    优先级: 直接传入的 llm_args（已建好的 ChatOpenAI 实例） > 用 headers 新建的实例 > None。
+    """
+    if isinstance(llm_args, ChatOpenAI):
+        return llm_args
+    return _make_chat_openai_client(headers)
 
 
 def _format_stats(stats: dict, title: str, total_elapsed: float) -> None:
@@ -69,11 +113,51 @@ def _format_stats(stats: dict, title: str, total_elapsed: float) -> None:
     print(f"  错误:     {stats['errors']}")
 
 
+async def _run_workers_concurrent(workers: list, concurrency: int) -> dict:
+    """并发执行一组 worker 协程并汇总统计。
+
+    workers: 一组 awaitable，每个 worker 应返回 'grand' / 'not_grand' / 'error' 之一。
+    concurrency: 最大并发数（<=1 时退化为串行）。
+    每个 worker 内部应“处理完一个立即保存一个”，避免批量保存在中途失败时丢失结果。
+    """
+    sem = asyncio.Semaphore(max(1, concurrency))
+
+    async def _wrap(w):
+        async with sem:
+            return await w
+
+    counts = {
+        "processed": 0,
+        "grand_prize": 0,
+        "not_grand_prize": 0,
+        "errors": 0,
+    }
+    results = await asyncio.gather(
+        *(_wrap(w) for w in workers), return_exceptions=True
+    )
+    for r in results:
+        if isinstance(r, Exception):
+            counts["errors"] += 1
+            continue
+        if r == "grand":
+            counts["grand_prize"] += 1
+            counts["processed"] += 1
+        elif r == "not_grand":
+            counts["not_grand_prize"] += 1
+            counts["processed"] += 1
+        else:
+            counts["errors"] += 1
+    return counts
+
+
 async def judge_common_lottery(
     batch_size: int = 200,
     dry_run: bool = False,
     force_update: bool = False,
     limit: int = 0,
+    headers: dict | None = None,
+    llm_args: ChatOpenAI | None = None,
+    concurrency: int = 1,
 ) -> dict:
     """
     对所有普通抽奖动态 (TLotdyninfo) 执行 LLM 大奖判断并写入 t_lot_extra_info。
@@ -81,7 +165,9 @@ async def judge_common_lottery(
     返回统计信息。
     """
     from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info
+    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
+
+    chat_openai_client = _resolve_chat_openai_client(headers, llm_args)
 
     stats = {
         "total_records": 0,
@@ -98,6 +184,7 @@ async def judge_common_lottery(
     print(f"  Dry-Run: {dry_run}")
     print(f"  强制更新: {force_update}")
     print(f"  最大数量: {'无限制' if limit == 0 else limit}")
+    print(f"  并发数:   {concurrency}")
     print("=" * 60)
 
     if force_update:
@@ -119,6 +206,23 @@ async def judge_common_lottery(
         print(f"[Dry-Run] 将处理 {len(dyn_ids)} 条记录，不实际写入数据库。")
         return stats
 
+    async def _judge_one(dyn_id: int, content: str) -> str:
+        try:
+            result = await extract_prize_info_for_biliopusdb(
+                dyn_content=content,
+                chat_openai_client=chat_openai_client)
+            is_grand = int(result.result.is_grand_prize)
+            # 处理完一个立即保存一个，防止中途失败丢失结果
+            await SqlHelper.save_extra_info(
+                ref_id=dyn_id,
+                lot_type="common",
+                is_grand_prize=is_grand,
+            )
+            return "grand" if is_grand == 1 else "not_grand"
+        except Exception as e:
+            print(f"  dynId={dyn_id} 失败: {e}")
+            return "error"
+
     total_batches = (len(dyn_ids) + batch_size - 1) // batch_size
     start_time = time.time()
 
@@ -138,23 +242,10 @@ async def judge_common_lottery(
             print(f"  [批次 {batch_num}/{total_batches}] 内容均为空，跳过")
             continue
 
-        for dyn_id, content in batch_items:
-            try:
-                result = await extract_prize_info(dyn_content=content)
-                is_grand = int(result.result.is_grand_prize)
-                await SqlHelper.save_extra_info(
-                    ref_id=dyn_id,
-                    lot_type="common",
-                    is_grand_prize=is_grand,
-                )
-                stats["processed"] += 1
-                if is_grand == 1:
-                    stats["grand_prize"] += 1
-                else:
-                    stats["not_grand_prize"] += 1
-            except Exception as e:
-                print(f"  [批次 {batch_num}] dynId={dyn_id} 失败: {e}")
-                stats["errors"] += 1
+        workers = [_judge_one(dyn_id, content) for dyn_id, content in batch_items]
+        counts = await _run_workers_concurrent(workers, concurrency)
+        for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
+            stats[k] += counts[k]
 
         batch_elapsed = time.time() - batch_start
         total_elapsed = time.time() - start_time
@@ -178,6 +269,9 @@ async def judge_reserve_lottery(
     dry_run: bool = False,
     force_update: bool = False,
     limit: int = 0,
+    headers: dict | None = None,
+    llm_args: ChatOpenAI | None = None,
+    concurrency: int = 1,
 ) -> dict:
     """
     对所有预约抽奖 (t_up_reserve_relation_info) 执行 LLM 大奖判断，
@@ -186,8 +280,10 @@ async def judge_reserve_lottery(
     返回统计信息。
     """
     from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info
+    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
     from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import bili_reserve_sqlhelper
+
+    chat_openai_client = _resolve_chat_openai_client(headers, llm_args)
 
     stats = {
         "total_records": 0,
@@ -205,6 +301,7 @@ async def judge_reserve_lottery(
     print(f"  Dry-Run: {dry_run}")
     print(f"  强制更新: {force_update}")
     print(f"  最大数量: {'无限制' if limit == 0 else limit}")
+    print(f"  并发数:   {concurrency}")
     print("=" * 60)
 
     all_records = await bili_reserve_sqlhelper.get_all_reserve_lottery()
@@ -241,6 +338,23 @@ async def judge_reserve_lottery(
         print(f"[Dry-Run] 将处理 {len(target_records)} 条记录，不实际写入数据库。")
         return stats
 
+    async def _judge_one(record) -> str:
+        try:
+            result = await extract_prize_info_for_biliopusdb(
+                dyn_content=record.text,
+                chat_openai_client=chat_openai_client)
+            is_grand = int(result.result.is_grand_prize)
+            # 处理完一个立即保存一个，防止中途失败丢失结果
+            await SqlHelper.save_extra_info(
+                ref_id=record.ids,
+                lot_type="reserve",
+                is_grand_prize=is_grand,
+            )
+            return "grand" if is_grand == 1 else "not_grand"
+        except Exception as e:
+            print(f"  ids={record.ids} 失败: {e}")
+            return "error"
+
     total_batches = (len(target_records) + batch_size - 1) // batch_size
     start_time = time.time()
 
@@ -249,23 +363,10 @@ async def judge_reserve_lottery(
         batch_num = batch_idx // batch_size + 1
         batch_start = time.time()
 
-        for record in batch:
-            try:
-                result = await extract_prize_info(dyn_content=record.text)
-                is_grand = int(result.result.is_grand_prize)
-                await SqlHelper.save_extra_info(
-                    ref_id=record.ids,
-                    lot_type="reserve",
-                    is_grand_prize=is_grand,
-                )
-                stats["processed"] += 1
-                if is_grand == 1:
-                    stats["grand_prize"] += 1
-                else:
-                    stats["not_grand_prize"] += 1
-            except Exception as e:
-                print(f"  [批次 {batch_num}] ids={record.ids} 失败: {e}")
-                stats["errors"] += 1
+        workers = [_judge_one(record) for record in batch]
+        counts = await _run_workers_concurrent(workers, concurrency)
+        for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
+            stats[k] += counts[k]
 
         batch_elapsed = time.time() - batch_start
         total_elapsed = time.time() - start_time
@@ -289,6 +390,9 @@ async def judge_official_lottery(
     dry_run: bool = False,
     force_update: bool = False,
     limit: int = 0,
+    headers: dict | None = None,
+    llm_args: ChatOpenAI | None = None,
+    concurrency: int = 1,
 ) -> dict:
     """
     对所有官方/充电抽奖 (lotdata 表) 执行 LLM 大奖判断，
@@ -300,6 +404,8 @@ async def judge_official_lottery(
     from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
         grpc_sql_helper,
     )
+
+    chat_openai_client = _resolve_chat_openai_client(headers, llm_args)
 
     stats = {
         "total_records": 0,
@@ -317,6 +423,7 @@ async def judge_official_lottery(
     print(f"  Dry-Run: {dry_run}")
     print(f"  强制更新: {force_update}")
     print(f"  最大数量: {'无限制' if limit == 0 else limit}")
+    print(f"  并发数:   {concurrency}")
     print("=" * 60)
 
     all_records = await grpc_sql_helper.query_all_lottery_data()
@@ -372,6 +479,21 @@ async def judge_official_lottery(
         print(f"[Dry-Run] 将处理 {len(target_ids)} 条记录，不实际写入数据库。")
         return stats
 
+    async def _judge_one(bid: int) -> str:
+        try:
+            lottery_text = record_map[bid][0]
+            result = await extract_prize_info_for_dyndetail(
+                dyn_content=lottery_text,
+                chat_openai_client=chat_openai_client)
+            is_grand = int(result.result.is_grand_prize)
+            # 处理完一个立即保存一个，防止批量写入中途失败丢失结果
+            await grpc_sql_helper.save_extra_info(
+                lottery_id=bid, is_grand_prize=is_grand)
+            return "grand" if is_grand == 1 else "not_grand"
+        except Exception as e:
+            print(f"  lottery_id={bid} 失败: {e}")
+            return "error"
+
     total_batches = (len(target_ids) + batch_size - 1) // batch_size
     start_time = time.time()
 
@@ -380,32 +502,10 @@ async def judge_official_lottery(
         batch_num = batch_idx // batch_size + 1
         batch_start = time.time()
 
-        flags: dict[int, int] = {}
-        for bid in batch_ids:
-            try:
-                lottery_text = record_map[bid][0]
-                result = await extract_prize_info_for_dyndetail(dyn_content=lottery_text)
-                is_grand = int(result.result.is_grand_prize)
-                flags[bid] = is_grand
-                if is_grand == 1:
-                    stats["grand_prize"] += 1
-                else:
-                    stats["not_grand_prize"] += 1
-                stats["processed"] += 1
-            except Exception as e:
-                print(f"  [批次 {batch_num}] lottery_id={bid} 失败: {e}")
-                stats["errors"] += 1
-
-        if flags:
-            try:
-                await grpc_sql_helper.batch_save_extra_info(flags)
-            except Exception as e:
-                print(f"  [批次 {batch_num}] 批量写入失败: {e}")
-                stats["errors"] += len(flags)
-                stats["processed"] -= len(flags)
-                grand_count = sum(1 for v in flags.values() if v == 1)
-                stats["grand_prize"] -= grand_count
-                stats["not_grand_prize"] -= len(flags) - grand_count
+        workers = [_judge_one(bid) for bid in batch_ids]
+        counts = await _run_workers_concurrent(workers, concurrency)
+        for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
+            stats[k] += counts[k]
 
         batch_elapsed = time.time() - batch_start
         total_elapsed = time.time() - start_time
@@ -457,13 +557,76 @@ async def main():
         default=0,
         help="限制最大处理数量，0=不限制 (默认: 0)"
     )
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=1,
+        help="并发处理数量，0/负数按 1 处理 (默认: 1)"
+    )
 
-    from scripts._cli_utils import add_llm_args, add_db_args, apply_cli_overrides
+    from scripts._cli_utils import (
+        add_llm_args,
+        add_db_args,
+        apply_cli_overrides,
+        build_mysql_uri,
+    )
     add_llm_args(parser)
     add_db_args(parser)
 
     args = parser.parse_args()
     apply_cli_overrides(args)
+
+    # 脚本禁止回退策略，必须确保已配置可用的云端 LLM，否则直接失败退出。
+    from CONFIG import settings
+    usable = [
+        c for c in settings.llm_apis
+        if c.base_url and c.model_name
+    ]
+    if not usable:
+        print("[错误] 未配置任何可用的云端 LLM（需要 base_url 与 model_name 均非空），"
+              "脚本禁止回退策略，无法继续。")
+        print("请通过 --llm-base-url/--llm-token/--llm-model 完整指定，"
+              "或在 .env 中配置 llm_apis。")
+        sys.exit(1)
+
+    # ---- 根据 CLI 的 --db-* 覆盖，显式构造指向同一 MySQL 实例的 SqlHelper ----
+    # 各 SqlHelper 单例在模块导入时已用当时的 CONFIG.database.MYSQL URI 固化了
+    # 连接池；apply_cli_overrides 虽更新了 settings/CONFIG，但已创建的单例不会自动
+    # 刷新。因此这里按最终连接参数 new 实例，并覆盖各源模块的全局单例
+    # （含其它模块内部直接引用处），确保所有调用点都连到正确的 MySQL 实例。
+    from Service.GetOthersLotDyn.Sql import sql_helper as _gol_sql_mod
+    from Service.GetOthersLotDyn.Sql.sql_helper import __SqlHelper as _GetOtherLotSqlHelper
+    from Service.opus新版官方抽奖.预约抽奖.db import sqlHelper as _res_sql_mod
+    from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import _SqlHelper as _ReserveSqlHelper
+    import Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer as _dyn_sql_mod
+    from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+        SQLHelper as _DynDetailSqlHelper,
+    )
+
+    sql_helper = _GetOtherLotSqlHelper(build_mysql_uri("biliopusdb", args))
+    reserve_sql_helper = _ReserveSqlHelper(build_mysql_uri("bili_reserve", args))
+    grpc_sql_helper = _DynDetailSqlHelper(build_mysql_uri("dyndetail", args))
+
+    # 覆盖源模块的全局单例：确保被其它模块内部直接引用（如预约模块调用
+    # SqlHelper.save_extra_info）时也能连到正确的 MySQL 实例。
+    _gol_sql_mod.SqlHelper = sql_helper
+    _res_sql_mod.bili_reserve_sqlhelper = reserve_sql_helper
+    _dyn_sql_mod.grpc_sql_helper = grpc_sql_helper
+
+    # ---- 自定义 HTTP headers → 创建 ChatOpenAI 实例 ----
+    # --llm-headers 传入 JSON 字符串，用于构造注入自定义请求头的 ChatOpenAI 实例，
+    # 后续以 llm_args（ChatOpenAI 实例）形式透传给各 judge 函数。
+    llm_headers: dict | None = None
+    llm_client: ChatOpenAI | None = None
+    if getattr(args, "llm_headers", None):
+        import json as _json
+        try:
+            llm_headers = _json.loads(args.llm_headers)
+        except Exception as e:
+            print(f"[错误] --llm-headers 不是合法 JSON: {e}")
+            sys.exit(1)
+        llm_client = _make_chat_openai_client(llm_headers)
+        print(f"[CLI] 使用 --llm-headers 创建 ChatOpenAI 实例: {llm_headers}")
 
     if args.type in ("all", "common"):
         await judge_common_lottery(
@@ -471,6 +634,8 @@ async def main():
             dry_run=args.dry_run,
             force_update=args.force_update,
             limit=args.limit,
+            llm_args=llm_client,
+            concurrency=args.concurrency,
         )
     if args.type in ("all", "reserve"):
         await judge_reserve_lottery(
@@ -478,6 +643,8 @@ async def main():
             dry_run=args.dry_run,
             force_update=args.force_update,
             limit=args.limit,
+            llm_args=llm_client,
+            concurrency=args.concurrency,
         )
     if args.type in ("all", "official"):
         await judge_official_lottery(
@@ -485,6 +652,8 @@ async def main():
             dry_run=args.dry_run,
             force_update=args.force_update,
             limit=args.limit,
+            llm_args=llm_client,
+            concurrency=args.concurrency,
         )
 
 
