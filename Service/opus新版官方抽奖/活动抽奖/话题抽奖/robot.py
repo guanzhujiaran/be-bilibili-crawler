@@ -94,20 +94,20 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             da = resp.get('data')
             da_common_keys = ['click_area_card', 'functional_card', 'top_details']
             if extra_info := set(da_common_keys) & set(da.keys()) ^ set(da.keys()):
-                topic_lot_logger.error(
+                self.log.error(
                     f'data字段不匹配，topic_id:{topic_id}\ndata:{da}\n不匹配字段：{extra_info}')
             top_details = da.get('top_details')
             if top_details:
                 allowed_keys = TTopDetails.__table__.columns.keys()
                 allowed_keys.extend(['topic_item', 'topic_creator', 'operation_content'])
                 if extra_info := set(allowed_keys) & set(top_details.keys()) ^ set(top_details.keys()):
-                    topic_lot_logger.error(
+                    self.log.error(
                         f'top_details字段不匹配，topic_id:{topic_id}\ntop_details:{top_details}\n不匹配字段：{extra_info}')
                 topic_creator = top_details.get('topic_creator')
                 if topic_creator:
                     allowed_keys = TTopicCreator.__table__.columns.keys()
                     if extra_info := set(allowed_keys) & set(topic_creator.keys()) ^ set(topic_creator.keys()):
-                        topic_lot_logger.error(
+                        self.log.error(
                             f'topic_creator字段不匹配，topic_id:{topic_id}\ntopic_creator:{topic_creator}\n不匹配字段：{extra_info}')
                     filtered_topic_creator = {key: value for key, value in topic_creator.items() if key in allowed_keys}
                     tTopicCreator = TTopicCreator(**filtered_topic_creator)
@@ -115,14 +115,14 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 if topic_item:
                     allowed_keys = TTopicItem.__table__.columns.keys()
                     if extra_info := set(allowed_keys) & set(topic_item.keys()) ^ set(topic_item.keys()):
-                        topic_lot_logger.error(
+                        self.log.error(
                             f'topic_item字段不匹配，topic_id:{topic_id}\ntopic_item:{topic_item}\n不匹配字段：{extra_info}')
                     filtered_topic_item = {key: value for key, value in topic_item.items() if key in allowed_keys}
                     tTopicItem = TTopicItem(**filtered_topic_item)
                     if type(topic_item.get('ctime')) is int:
                         if int(time.time()) - topic_item.get('ctime') <= self.min_sep_ts:
                             self._cur_stop_times += 1
-                            topic_lot_logger.info('到达最近时间，stop_times+=1！')
+                            self.log.info('到达最近时间，stop_times+=1！')
                 tTopDetails = TTopDetails(
                     close_pub_layer_entry=top_details.get('close_pub_layer_entry'),
                     has_create_jurisdiction=top_details.get('has_create_jurisdiction'),
@@ -134,7 +134,7 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 allowed_keys = TFunctionalCard.__table__.columns.keys()
                 allowed_keys.extend(['traffic_card', 'capsules'])
                 if extra_info := set(allowed_keys) & set(functional_card.keys()) ^ set(functional_card.keys()):
-                    topic_lot_logger.error(
+                    self.log.error(
                         f'functional_card字段不匹配，topic_id:{topic_id}\nfunctional_card:{functional_card}\n不匹配字段：{extra_info}')
                 tFunctionalCard = TFunctionalCard(
                     json_data=functional_card
@@ -143,7 +143,7 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 if traffic_card:
                     allowed_keys = TTrafficCard.__table__.columns.keys()
                     if extra_info := set(allowed_keys) & set(traffic_card.keys()) ^ set(traffic_card.keys()):
-                        topic_lot_logger.error(
+                        self.log.error(
                             f'traffic_card字段不匹配，topic_id:{topic_id}\ntraffic_card:{traffic_card}\n不匹配字段：{extra_info}')
                     filtered_traffic_card = {key: value for key, value in traffic_card.items() if key in allowed_keys}
                     tTrafficCard = TTrafficCard(**filtered_traffic_card)
@@ -154,7 +154,7 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                     tCapsules = []
                     for capsule in capsules:
                         if extra_info := set(allowed_keys) & set(capsule.keys()) ^ set(capsule.keys()):
-                            topic_lot_logger.error(
+                            self.log.error(
                                 f'capsules字段不匹配，topic_id:{topic_id}\ncapsule:{capsule}\n不匹配字段：{extra_info}')
                         tCapsules.append(TCapsule(**capsule))
             click_area_card = da.get('click_area_card')
@@ -177,11 +177,11 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
     async def pipeline(self, topic_id) -> WorkerStatus:
         try:
             resp_dict = await get_web_topic(topic_id)
-            topic_lot_logger.debug(f'topic_id 【{topic_id}】 {resp_dict}')
+            self.log.debug(f'topic_id 【{topic_id}】 {resp_dict}')
             async with self._traffic_card_lock:
                 return await self.save_resp(topic_id, resp_dict)
         except Exception as e:
-            topic_lot_logger.exception(f'获取话题失败，topic_id:{topic_id}\n{e}')
+            self.log.exception(f'获取话题失败，topic_id:{topic_id}\n{e}')
             raise e
 
     async def main(self, start_topic_id=0):
@@ -198,7 +198,7 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 self.start_topic_id = await self.sql.get_max_topic_id()
             await self.run(TopicParams(topic_id=self.start_topic_id))
         except Exception as e:
-            topic_lot_logger.error(f'发生异常！{e}')
+            self.log.error(f'发生异常！{e}')
             await a_push_error(
                 subject="运行异常",
                 content=f'爬取话题异常\n{str(e)}',
