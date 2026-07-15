@@ -334,7 +334,7 @@ class BulkAddDynamicLotteryReq(CustomBaseModel):
     dynamic_id_or_urls: list[str]
 
 
-class BiliUserInfoSimple(CustomBaseModel):
+class BiliUserInfoSimple(BaseModel):
     uid: str
     name: str
     face: str
@@ -365,13 +365,13 @@ class AddTopicLotteryResp(BaseAddLotteryResp):
 
 
 # region Description：抽奖信息统计模型
-class WinnerInfo(CustomBaseModel):
+class WinnerInfo(BaseModel):
     user: BiliUserInfoSimple
     count: int
     rank: int
 
 
-class BiliLotStatisticInfoResp(CustomBaseModel):
+class BiliLotStatisticInfoResp(BaseModel):
     sync_ts: int
     winners: list[WinnerInfo]
     total: int
@@ -703,7 +703,7 @@ def _get_field_default(field_info) -> Any:
     return default
 
 
-def pydantic_model_to_filter_params(model_cls: type[CustomBaseModel]) -> list[FilterParamMeta]:
+def pydantic_model_to_filter_params(model_cls: type[CustomBaseModel | BaseModel]) -> list[FilterParamMeta]:
     """将 Pydantic 模型字段自省为 FilterParamMeta 列表
 
     模型字段上的 json_schema_extra 中包含 filter_* 键的会被提取用于前端元数据。

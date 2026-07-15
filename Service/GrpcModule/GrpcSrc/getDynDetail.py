@@ -1,6 +1,7 @@
 """
 通过grpc获取所有的图片动态
 """
+from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 
 
 import asyncio
@@ -34,7 +35,7 @@ class StopCounter(BaseStopCounter):
 
 
 class SuccCounter(BaseSuccCounter):
-    first_dyn_id:int = 0
+    first_dyn_id: int = 0
     latest_rid: int = 0  # 最后的rid
     latest_succ_dyn_id: int = 0  # 最后获取成功的动态id
 
@@ -54,6 +55,8 @@ class DynDetailParams(CustomBaseModelHashable):
 
 class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
     Config = DynDetailScrapyConfig
+    status_plugin: StatsPlugin | None = None
+
     def __init__(self):
         self.offset = 10  # 每次获取rid的数量，数值最好不要超过10，太大的话传输会出问题
         self.BiliGrpc = bili_grpc
@@ -190,7 +193,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                 if lot_data:
                                     lot_id = lot_data.get("lottery_id")
                             elif cardType == "reserve":  # 所有的预约
-                                lot_rid = up.get("rid")  # 初始化 lot_rid，无论是否有 lotteryType
+                                # 初始化 lot_rid，无论是否有 lotteryType
+                                lot_rid = up.get("rid")
                                 if up.get("lotteryType") is not None:  # 10 是预约抽奖
                                     pass  # lot_rid 已经在上面赋值
                                 else:
@@ -268,7 +272,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                 descNode.get("type") == "desc_type_lottery"
                             ):  # 获取官方抽奖，这里的比较全
                                 lot_id = descNode.get("rid")
-                                lot_rid = dynData.get("extend").get("businessId")
+                                lot_rid = dynData.get(
+                                    "extend").get("businessId")
                                 lot_notice_res = await get_lot_notice(
                                     business_type=2,
                                     business_id=lot_rid,
@@ -320,7 +325,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         if len(rid_dyn_ids) == 0:
             return []
         ret_dict_list = []
-        dyn_ids = [x["dynamic_id"] for x in rid_dyn_ids if x["dynamic_id"] != -1]
+        dyn_ids = [x["dynamic_id"]
+                   for x in rid_dyn_ids if x["dynamic_id"] != -1]
         rid_dyn_ids = [
             {"rid": str(x["rid"]), "dynamic_id": x["dynamic_id"]} for x in rid_dyn_ids
         ]
@@ -474,7 +480,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                         dynamic_id=detail.get("dynamic_id"),
                         dynData=detail.get("dynData"),
                         lot_id=detail.get("lot_id"),
-                        dynamic_created_time=detail.get("dynamic_created_time"),
+                        dynamic_created_time=detail.get(
+                            "dynamic_created_time"),
                     )
                 return rid_list
             except Exception as e:
@@ -490,14 +497,14 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         task_args_list = []  # [[1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15],...]
         for rid_index in range(len(all_rids) // self.offset + 1):
             rids_list = all_rids[
-                self.offset * rid_index : self.offset * (rid_index + 1)
+                self.offset * rid_index: self.offset * (rid_index + 1)
             ]
             task_args_list.append(rids_list)
         thread_num = 50
         task_list = []
         for task_index in range(len(task_args_list) // thread_num + 1):
             args_list = task_args_list[
-                thread_num * task_index : thread_num * (task_index + 1)
+                thread_num * task_index: thread_num * (task_index + 1)
             ]  # 将task切片成[[0...49],[50....99]]
             for args in args_list:
                 self.log.info(args)
@@ -550,7 +557,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             self.succ_counter.is_running = True
             self.log.info("开始执行获取动态详情")
             self.log.debug(f"爬虫，启动！最后的rid为：{latest_rid}\t往前回滚500个rid！")
-            task3 = asyncio.create_task(self.run(DynDetailParams(rid=latest_rid)))
+            task3 = asyncio.create_task(
+                self.run(DynDetailParams(rid=latest_rid)))
             task_list.append(task3)
             await asyncio_gather(*task_list, log=self.log)
             self.log.error("爬取动态任务全部完成！")
@@ -577,14 +585,14 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         task_args_list = []  # [[1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15],...]
         for rid_index in range(len(all_rids) // self.offset + 1):
             rids_list = all_rids[
-                self.offset * rid_index : self.offset * (rid_index + 1)
+                self.offset * rid_index: self.offset * (rid_index + 1)
             ]
             task_args_list.append(rids_list)
         thread_num = 50
         task_list = []
         for task_index in range(len(task_args_list) // thread_num + 1):
             args_list = task_args_list[
-                thread_num * task_index : thread_num * (task_index + 1)
+                thread_num * task_index: thread_num * (task_index + 1)
             ]  # 将task切片成[[0...49],[50....99]]
             for args in args_list:
                 self.log.info(args)

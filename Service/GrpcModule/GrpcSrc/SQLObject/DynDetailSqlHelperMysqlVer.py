@@ -972,7 +972,7 @@ ORDER BY
         uid: int | str,
         start_ts: int = 0,
         end_ts: int = 0,
-        business_type: Literal[1, 10, 12, 0] = None,
+        business_type: Literal[1, 10, 12, 0] | None = None,
         rank_type: Optional[BiliLotStatisticRankTypeEnum] = None,
         offset: Optional[int] = None,
         limit: Optional[int] = None,
@@ -1256,7 +1256,7 @@ ORDER BY
         return bili_atari_info
 
     @log_sql_retry_wrapper()
-    async def sync_all_lottery_result_2_bili_user_info(self, *, lottery_id: int = None):
+    async def sync_all_lottery_result_2_bili_user_info(self, *, lottery_id: int | None = None):
         """
         同步所有抽奖结果到用户信息表
         :param lottery_id: 抽奖id  如果为None则同步所有抽奖结果

@@ -1,5 +1,5 @@
 from typing import Literal, Any
-from Models.v1.background_service.background_service_model import ProgressStatusResp
+from Models.v1.background_service.background_service_model import ProgressStatusResp, TypeScrapyStatus
 from Service.opus新版官方抽奖.bili_lottery_api.refresh_bili_lot_database import (
     refresh_bili_lot_database_crawler,
 )
@@ -21,23 +21,14 @@ def get_scrapy_status(
         "refresh_bili_official",
         "refresh_bili_reserve",
     ],
-) -> Any | dict | ProgressStatusResp | None:
+) -> TypeScrapyStatus:
     match scrapy_type:
         case "dyn":
-            if dyn_detail_scrapy is not None:
-                return dyn_detail_scrapy.status_plugin.get_all_status()
-            else:
-                return dict()
+            return dyn_detail_scrapy.status_plugin or None
         case "topic":
-            if topic_robot is not None:
-                return topic_robot.stats_plugin.get_all_status()
-            else:
-                return dict()
+            return topic_robot.stats_plugin or None
         case "reserve":
-            if reserve_robot is not None:
-                return reserve_robot.stats_plugin.get_all_status()
-            else:
-                return dict()
+            return reserve_robot.stats_plugin or None
         case "other_space":
             if other_lot_class and other_lot_class.robot:
                 return ProgressStatusResp(
@@ -63,15 +54,13 @@ def get_scrapy_status(
                     running_params=other_lot_class.robot.dyn_succ_counter.running_params,
                 )
             else:
-                return ProgressStatusResp()
+                return None
         case "refresh_bili_official":
             if (
                 refresh_bili_lot_database_crawler.extract_official_lottery
                 and refresh_bili_lot_database_crawler.extract_official_lottery.refresh_official_lot_progress
             ):
-                _progress = (
-                    refresh_bili_lot_database_crawler.extract_official_lottery.refresh_official_lot_progress
-                )
+                _progress = refresh_bili_lot_database_crawler.extract_official_lottery.refresh_official_lot_progress
                 return ProgressStatusResp(
                     succ_count=_progress.succ_count,
                     start_ts=_progress.start_ts,
@@ -81,7 +70,7 @@ def get_scrapy_status(
                     update_ts=_progress.update_ts,
                 )
             else:
-                return ProgressStatusResp()
+                return None
         case "refresh_bili_reserve":
             if (
                 refresh_bili_lot_database_crawler.reserve_robot
@@ -99,4 +88,4 @@ def get_scrapy_status(
                     update_ts=_progress.update_ts,
                 )
             else:
-                return ProgressStatusResp()
+                return None

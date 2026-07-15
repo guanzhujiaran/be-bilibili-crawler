@@ -1,3 +1,4 @@
+from Service.BaseCrawler.plugin.statusPlugin import SequentialNullStopPlugin, StatsPlugin
 import asyncio
 import time
 from typing import Union, List, AsyncGenerator
@@ -34,6 +35,9 @@ class SuccCounter(BaseSuccCounter):
 
 class TopicRobot(UnlimitedCrawler[TopicParams]):
     Config = TopicRobotConfig
+    stats_plugin: StatsPlugin | None = None
+    null_stop_plugin: SequentialNullStopPlugin |None = None
+
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
 
@@ -53,7 +57,7 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
 
     def __init__(self):
         self.sem_limit = 1
-        self.start_topic_id:int = 1  # 开始的话题id
+        self.start_topic_id: int = 1  # 开始的话题id
         self.min_sep_ts = 2 * 3600  # 最小的间隔时间
         self.__max_stop_times = 5  # 遇到超过时间的话题次数
         self._cur_stop_times: int = 0
@@ -92,14 +96,16 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             if topic_id > self._latest_topic_id:
                 self._latest_topic_id = topic_id
             da = resp.get('data')
-            da_common_keys = ['click_area_card', 'functional_card', 'top_details']
+            da_common_keys = ['click_area_card',
+                              'functional_card', 'top_details']
             if extra_info := set(da_common_keys) & set(da.keys()) ^ set(da.keys()):
                 self.log.error(
                     f'data字段不匹配，topic_id:{topic_id}\ndata:{da}\n不匹配字段：{extra_info}')
             top_details = da.get('top_details')
             if top_details:
                 allowed_keys = TTopDetails.__table__.columns.keys()
-                allowed_keys.extend(['topic_item', 'topic_creator', 'operation_content'])
+                allowed_keys.extend(
+                    ['topic_item', 'topic_creator', 'operation_content'])
                 if extra_info := set(allowed_keys) & set(top_details.keys()) ^ set(top_details.keys()):
                     self.log.error(
                         f'top_details字段不匹配，topic_id:{topic_id}\ntop_details:{top_details}\n不匹配字段：{extra_info}')
@@ -109,7 +115,8 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                     if extra_info := set(allowed_keys) & set(topic_creator.keys()) ^ set(topic_creator.keys()):
                         self.log.error(
                             f'topic_creator字段不匹配，topic_id:{topic_id}\ntopic_creator:{topic_creator}\n不匹配字段：{extra_info}')
-                    filtered_topic_creator = {key: value for key, value in topic_creator.items() if key in allowed_keys}
+                    filtered_topic_creator = {
+                        key: value for key, value in topic_creator.items() if key in allowed_keys}
                     tTopicCreator = TTopicCreator(**filtered_topic_creator)
                 topic_item = top_details.get('topic_item')
                 if topic_item:
@@ -117,15 +124,18 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                     if extra_info := set(allowed_keys) & set(topic_item.keys()) ^ set(topic_item.keys()):
                         self.log.error(
                             f'topic_item字段不匹配，topic_id:{topic_id}\ntopic_item:{topic_item}\n不匹配字段：{extra_info}')
-                    filtered_topic_item = {key: value for key, value in topic_item.items() if key in allowed_keys}
+                    filtered_topic_item = {
+                        key: value for key, value in topic_item.items() if key in allowed_keys}
                     tTopicItem = TTopicItem(**filtered_topic_item)
                     if type(topic_item.get('ctime')) is int:
                         if int(time.time()) - topic_item.get('ctime') <= self.min_sep_ts:
                             self._cur_stop_times += 1
                             self.log.info('到达最近时间，stop_times+=1！')
                 tTopDetails = TTopDetails(
-                    close_pub_layer_entry=top_details.get('close_pub_layer_entry'),
-                    has_create_jurisdiction=top_details.get('has_create_jurisdiction'),
+                    close_pub_layer_entry=top_details.get(
+                        'close_pub_layer_entry'),
+                    has_create_jurisdiction=top_details.get(
+                        'has_create_jurisdiction'),
                     operation_content=top_details.get('operation_content'),
                     word_color=top_details.get('word_color'),
                 )
@@ -145,7 +155,8 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                     if extra_info := set(allowed_keys) & set(traffic_card.keys()) ^ set(traffic_card.keys()):
                         self.log.error(
                             f'traffic_card字段不匹配，topic_id:{topic_id}\ntraffic_card:{traffic_card}\n不匹配字段：{extra_info}')
-                    filtered_traffic_card = {key: value for key, value in traffic_card.items() if key in allowed_keys}
+                    filtered_traffic_card = {
+                        key: value for key, value in traffic_card.items() if key in allowed_keys}
                     tTrafficCard = TTrafficCard(**filtered_traffic_card)
 
                 capsules = functional_card.get('capsules')

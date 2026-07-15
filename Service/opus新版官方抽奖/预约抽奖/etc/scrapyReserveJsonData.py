@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from Service.BaseCrawler.plugin.statusPlugin import SequentialNullStopPlugin, StatsPlugin
 import asyncio
 import os
 import time
@@ -60,72 +61,8 @@ class ReserveParams(CustomBaseModelHashable):
 
 class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
     Config = ReserveScrapyRobotConfig
-    async def on_run_end(self, end_param: WorkerModel):
-        """
-        退出时必定执行
-        """
-        self.log.critical(f"开始将日志写入文件")
-        await self.write_in_file()
-        self.log.critical(f"日志写入文件完成")
-        self.log.critical(f"开始获取本轮统计信息")
-        latest_reserve_lots = await self.generate_update_reserve_lotterys_by_round_id(
-            self.now_round_id
-        )
-        new_round_info = TReserveRoundInfo(
-            round_id=self.now_round_id,
-            is_finished=True,
-            round_start_ts=self.round_start_ts,
-            round_add_num=self.totoal_count
-            - 1
-            - self.none_num,
-            round_lot_num=len(latest_reserve_lots),
-        )
-        await self.sqlHelper.add_reserve_round_info(new_round_info)
-        reserve_lot_logger.critical(f"本轮统计信息获取结束")
-        reserve_lot_logger.critical(f"开始刷新未开奖的预约抽奖")
-        await self.refresh_not_drawn_lottery()
-        reserve_lot_logger.critical(f"刷新未开奖的预约抽奖结束")
-        if os.path.exists(self.unknown):
-            await self.file_remove_repeat_contents(self.unknown)
-        if os.path.exists(self.getfail):
-            await self.file_remove_repeat_contents(self.getfail)
-        reserve_lot_logger.info(
-            f"共{self.stats_plugin.processed_items_count}次获取动态"
-            f"其中{self.stats_plugin.succ_count} 个有效动态"
-        )
-        await super().on_run_end(end_param)
-
-    async def is_stop(self) -> bool:
-        async with self.dynamic_ts_lock:
-            if (
-                int(time.time()) - self.dynamic_timestamp.dynamic_timestamp
-                <= self.EndTimeSeconds
-            ):  # 如果超过了最大data
-                self.encounter_end_time_seconds_times += 1
-                if (
-                    self.encounter_end_time_seconds_times > 10
-                    and self.null_stop_plugin.sequential_null_count > 30
-                ):
-                    return True
-                else:
-                    return False
-            else:
-                reserve_lot_logger.debug(
-                    f"最近的预约时间间隔过长{self.dynamic_timestamp.get_time_str_until_now()}"
-                )
-        return False
-
-    async def key_params_gen(
-        self, params: ReserveParams
-    ) -> AsyncGenerator[ReserveParams, None]:
-        reserve_id = params.reserve_id
-        while 1:
-            reserve_id += 1
-            yield ReserveParams(reserve_id=reserve_id)
-
-    async def handle_fetch(self, params: ReserveParams) -> WorkerStatus:
-        return await self.resolve_reserve(params.reserve_id)
-
+    stats_plugin: StatsPlugin | None = None
+    null_stop_plugin: SequentialNullStopPlugin | None = None
     def __init__(self):
         # region 统计类数据
         self.totoal_count = 0
@@ -195,6 +132,73 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         self.list_unknown = list()
         # 内容
         self.refresh_progress_counter: ProgressCounter | None = None
+
+    async def on_run_end(self, end_param: WorkerModel):
+        """
+        退出时必定执行
+        """
+        self.log.critical(f"开始将日志写入文件")
+        await self.write_in_file()
+        self.log.critical(f"日志写入文件完成")
+        self.log.critical(f"开始获取本轮统计信息")
+        latest_reserve_lots = await self.generate_update_reserve_lotterys_by_round_id(
+            self.now_round_id
+        )
+        new_round_info = TReserveRoundInfo(
+            round_id=self.now_round_id,
+            is_finished=True,
+            round_start_ts=self.round_start_ts,
+            round_add_num=self.totoal_count
+            - 1
+            - self.none_num,
+            round_lot_num=len(latest_reserve_lots),
+        )
+        await self.sqlHelper.add_reserve_round_info(new_round_info)
+        reserve_lot_logger.critical(f"本轮统计信息获取结束")
+        reserve_lot_logger.critical(f"开始刷新未开奖的预约抽奖")
+        await self.refresh_not_drawn_lottery()
+        reserve_lot_logger.critical(f"刷新未开奖的预约抽奖结束")
+        if os.path.exists(self.unknown):
+            await self.file_remove_repeat_contents(self.unknown)
+        if os.path.exists(self.getfail):
+            await self.file_remove_repeat_contents(self.getfail)
+        reserve_lot_logger.info(
+            f"共{self.stats_plugin.processed_items_count}次获取动态"
+            f"其中{self.stats_plugin.succ_count} 个有效动态"
+        )
+        await super().on_run_end(end_param)
+
+    async def is_stop(self) -> bool:
+        async with self.dynamic_ts_lock:
+            if (
+                int(time.time()) - self.dynamic_timestamp.dynamic_timestamp
+                <= self.EndTimeSeconds
+            ):  # 如果超过了最大data
+                self.encounter_end_time_seconds_times += 1
+                if (
+                    self.encounter_end_time_seconds_times > 10
+                    and self.null_stop_plugin.sequential_null_count > 30
+                ):
+                    return True
+                else:
+                    return False
+            else:
+                reserve_lot_logger.debug(
+                    f"最近的预约时间间隔过长{self.dynamic_timestamp.get_time_str_until_now()}"
+                )
+        return False
+
+    async def key_params_gen(
+        self, params: ReserveParams
+    ) -> AsyncGenerator[ReserveParams, None]:
+        reserve_id = params.reserve_id
+        while 1:
+            reserve_id += 1
+            yield ReserveParams(reserve_id=reserve_id)
+
+    async def handle_fetch(self, params: ReserveParams) -> WorkerStatus:
+        return await self.resolve_reserve(params.reserve_id)
+
 
     async def write_in_file(self):
         async def my_write(path_name, content_list: list, write_mode="a+"):
@@ -490,14 +494,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         self.refresh_progress_counter.total_num = all_num
         running_num = 0
         reserve_lot_logger.debug(f"开始刷新未开奖的预约内容，共计{all_num}条")
-        task_list = []
         for reserve_lottery in all_not_drawn_reserve_lottery:
-            task = asyncio.create_task(
-                self.resolve_reserve(reserve_lottery.sid, is_refresh=True)
-            )
-            task_list.append(task)
+            await self.resolve_reserve(reserve_lottery.sid, is_refresh=True) # 这里改成一个个执行,不然llm会限速
             running_num += 1
-        await asyncio_gather(*task_list, log=self.log)
         self.refresh_progress_counter.is_running = False
 
     async def _params_init(self):

@@ -1,22 +1,23 @@
 from abc import ABC
-from typing import Optional, Generic, Any
+from typing import Optional, Generic, Any, TYPE_CHECKING
 from Service.BaseCrawler.base.core import BaseCrawler
 from Service.BaseCrawler.model.base import WorkerModel, ParamsType
-from loguru._logger import Logger
-from log.base_log import myfastapi_logger
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
+
+if TYPE_CHECKING:
+    from loguru import Logger
 
 
-class CrawlerPlugin(ABC, Generic[ParamsType]):
+class CrawlerPlugin(ABC, Generic[ParamsType], BaseModel):
     """
     爬虫插件的基类。
     插件可以在爬虫的各个生命周期事件中注入自定义逻辑。
     """
 
-    # 提供默认 logger，避免 on_plugin_register 调用前访问未初始化属性
-    log: Logger = myfastapi_logger
-
-    def __init__(self, crawler: BaseCrawler[ParamsType]):
-        self.crawler = crawler  # 插件可以访问到宿主爬虫实例
+    crawler: SkipJsonSchema[BaseCrawler[ParamsType]] = Field(exclude=True)
+    log: SkipJsonSchema[Any | None] = Field(default=None, exclude=True)
+    model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
     async def on_run_start(self, init_worker_model: WorkerModel):
         """
@@ -62,5 +63,5 @@ class CrawlerPlugin(ABC, Generic[ParamsType]):
             raise RuntimeError(
                 f"Plugin {self.__class__.__name__} must be bound to a crawler before registration."
             )
-        self.log = self.crawler.log
-        # self.log.debug(f"Plugin {self.__class__.__name__} registered.")
+        self.log: Logger = self.crawler.log
+        self.log.debug(f"Plugin {self.__class__.__name__} registered.")

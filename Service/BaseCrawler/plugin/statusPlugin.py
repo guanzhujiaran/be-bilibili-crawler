@@ -1,3 +1,5 @@
+from pydantic import computed_field
+from langchain_community.vectorstores.pgembedding import BaseModel
 import datetime
 import inspect
 import time
@@ -23,8 +25,8 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
     一个用于收集和提供爬虫运行统计信息的插件。
     """
 
-    def __init__(self, crawler: BaseCrawler[ParamsType]):
-        super().__init__(crawler)
+    def __init__(self, **data):
+        super().__init__(**data)
         self._init_params: WorkerModel | None = None
         self._end_params: WorkerModel | None = None
         self._end_success_params: WorkerModel | None = None
@@ -41,16 +43,16 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             set()
         )  # 把参数转换成字符串,避免unhashable的参数
 
-    async def on_run_start(self, init_params: WorkerModel):
+    async def on_run_start(self, init_worker_model: WorkerModel):
         """
         在爬虫的 run 方法开始执行时触发，记录初始参数并重置统计数据。
         """
         self.log.info(
             self.crawler.format_log(
-                f"StatsPlugin: Crawler run started. Init params: {init_params}"
+                f"StatsPlugin: Crawler run started. Init params: {init_worker_model}"
             )
         )
-        self._init_params = init_params
+        self._init_params = init_worker_model
         self._is_running = True
         self._start_time = time.time()
         self._last_update_time = time.time()  # Initial update time
@@ -58,7 +60,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         self._null_count = 0
         self._succ_count = 0
         self._running_params_set = set()
-        await super().on_run_start(init_params)
+        await super().on_run_start(init_worker_model)
 
     async def on_worker_end(self, worker_model: WorkerModel):
         """
@@ -120,49 +122,50 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         await super().on_run_end(end_param)
 
     # --- Public properties to access statistics ---
-
+    @computed_field
     @property
     def init_params(self) -> WorkerModel | None:
         """最开始的参数"""
         return self._init_params
-
+    @computed_field
     @property
     def end_params(self) -> WorkerModel | None:
         """最后的参数"""
         return self._end_params
-
+    @computed_field
     @property
-    def end_success_params(self):
+    def end_success_params(self) -> WorkerModel | None:
+        """最后成功处理的参数"""
         return self._end_success_params
-
+    @computed_field
     @property
     def is_running(self) -> bool:
         """爬虫是否正在运行"""
         return self._is_running
-
+    @computed_field
     @property
     def last_update_time(self) -> float:
         """最后一次任务完成的时间戳 (Unix timestamp)"""
         return self._last_update_time
-
+    @computed_field
     @property
     def last_update_time_str(self) -> datetime.datetime:
         return ts_2_DateTime(self.last_update_time)
-
+    @computed_field
     @property
     def processed_items_count(self) -> int:
         """已处理的任务数量"""
         return self._processed_items_count
-
+    @computed_field
     @property
     def start_time(self) -> float:
         """爬虫的启动时间 (Unix timestamp)"""
         return self._start_time
-
+    @computed_field
     @property
     def start_time_str(self) -> datetime.datetime:
         return ts_2_DateTime(self.start_time)
-
+    @computed_field
     @property
     def total_run_duration(self) -> float:
         """
@@ -172,7 +175,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         if self.start_time == 0.0 or self.last_update_time == 0.0:
             return 0.0
         return self.last_update_time - self.start_time
-
+    @computed_field
     @property
     def crawling_speed(self) -> float:
         """
@@ -183,21 +186,21 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         if current_duration > 0:
             return self._processed_items_count / current_duration
         return 0.0
-
+    @computed_field
     @property
     def null_count(self) -> int:
         """返回 null 数据的数量"""
         return self._null_count
-
+    @computed_field
     @property
     def succ_count(self) -> int:
         """成功处理的任务数量"""
         return self._succ_count
-
+    @computed_field
     @property
     def running_params_set(self) -> set[WorkerModel]:
         return self._running_params_set
-
+    @computed_field
     @property
     def health_status(self) -> CrawlerHealthStatus:
         """
@@ -239,27 +242,6 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
 
         return CrawlerHealthStatus.NORMAL
 
-    def get_all_status(self) -> dict:
-        """
-        使用反射自动收集所有 @property 属性的当前值。
-        """
-        result = {}
-
-        # 获取当前实例的类类型
-        cls = type(self)
-
-        # 遍历类的所有成员，找出是 property 的属性
-        for name, prop in inspect.getmembers(
-            cls, predicate=lambda x: isinstance(x, property)
-        ):
-            try:
-                # 通过 getattr 动态获取属性值
-                value = getattr(self, name)
-                result[name] = value
-            except Exception as e:
-                result[name] = f"<Error: {str(e)}>"
-
-        return result
 
 
 class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
@@ -269,20 +251,20 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
 
     def __init__(
         self,
-        crawler: "BaseCrawler[ParamsType]",
         max_consecutive_nulls: int | None = None,
+        **data
     ):
-        super().__init__(crawler)
+        super().__init__(**data)
         if max_consecutive_nulls is None:
             # 允许宿主爬虫在 super().__init__() 之前设置 self.null_stop_max_consecutive
-            max_consecutive_nulls = getattr(crawler, "null_stop_max_consecutive", 5)
+            max_consecutive_nulls = getattr(self.crawler, "null_stop_max_consecutive", 5)
         self._max_consecutive_nulls: int = max_consecutive_nulls
         # --- 核心状态变量 ---
         # 向量化存储所有任务的状态。使用 WorkerStatus Enum。
         self._status_vector = np.array([])
         self._sequential_null_count: int = 0
 
-    async def on_run_start(self, init_params: WorkerModel):
+    async def on_run_start(self, init_worker_model: WorkerModel):
         """
         在爬虫运行开始时重置所有状态变量。
         """
@@ -293,7 +275,7 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
         )
         self._status_vector = np.array([])
         self._sequential_null_count = 0
-        await super().on_run_start(init_params)
+        await super().on_run_start(init_worker_model)
 
     async def on_worker_end(self, worker_model: WorkerModel) -> Any:
         task_id = worker_model.seqId

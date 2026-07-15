@@ -165,8 +165,8 @@ class LotteryDataStatisticRedis(RedisManagerBase):
     async def get_bili_user_info_bulk(self, uid_arr: list[int | str]) -> List[BiliUserInfoSimple]:
         if res := await self._hmget_bulk(self.RedisMap.bili_user_uid_face_name, uid_arr):
             return [
-                BiliUserInfoSimple(uid=uid_arr[idx], **ast.literal_eval(res[idx])) if res[idx] else BiliUserInfoSimple(
-                    uid=uid_arr[idx], face='', name='')
+                BiliUserInfoSimple(uid=str(uid_arr[idx]), **ast.literal_eval(res[idx])) if res[idx] else BiliUserInfoSimple(
+                    uid=str(uid_arr[idx]), face='', name='')
                 for idx in range(len(uid_arr))
             ]
         return [BiliUserInfoSimple(uid=str(uid), face='', name='') for uid in uid_arr]

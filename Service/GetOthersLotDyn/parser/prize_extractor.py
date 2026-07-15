@@ -163,8 +163,9 @@ async def _do_extract(
         except Exception as e:
             logger.exception(
                 f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
-                f"（{type(e).__name__}: {e}），尝试下一个")
+                f"（{type(e).__name__}: {e}），等待10s后尝试下一个")
             last_err = e
+            await asyncio.sleep(10)
             continue
 
     # 全部免费 LLM 均失败：不再回退，直接抛错，由调用方跳过保存

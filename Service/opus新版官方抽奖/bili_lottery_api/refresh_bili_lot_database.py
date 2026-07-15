@@ -46,7 +46,8 @@ class RefreshBiliLotDatabaseCrawler(UnlimitedCrawler[RBDParamsType]):
         self.reserve_robot = reserve_robot
         self.extract_official_lottery = ExtractOfficialLottery()
 
-    async def is_stop(self) -> bool: ...
+    async def is_stop(self) -> bool: 
+        return False
 
     async def key_params_gen(self, params=None) -> AsyncGenerator[RBDParamsType, None]:
         for _lot_type in BiliLotStatisticLotTypeEnum:

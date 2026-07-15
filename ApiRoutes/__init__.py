@@ -99,6 +99,7 @@ class RouterPaths(StrEnum):
     GET_LIVE_LOTTERY = "/GetLiveLottery"  # 获取直播抽奖
     GET_TOPIC_LOTTERY = "/GetTopicLottery"  # 获取话题抽奖
     GET_ALL_LOTTERY = "/GetAllLottery"  # 获取所有抽奖
+    GET_SINGLE_SCRAPY_STATUS = "/GetSingleScrapyStatus"  # 查询单个爬虫状态（按参数）
     GET_ALL_LOT_SCRAPY_STATUS = "/GetAllLotScrapyStatus"  # 获取所有爬虫状态
     GET_OTHERS_LOT_DYN_LIST = "/GetOthersLotDynList"  # 获取第三方抽奖动态列表（分页+排序）
     GET_LOTTERY_FILTER_PARAMS = "/GetLotteryFilterParams"  # 获取抽奖查询筛选参数元数据
@@ -125,8 +126,6 @@ class RouterPaths(StrEnum):
     
     # ==================== 后台服务路由 ====================
     # --- 爬虫状态获取 ---
-    GET_SINGLE_SCRAPY_STATUS = "/GetSingleScrapyStatus"  # 查询单个爬虫状态（按参数）
-    GET_ALL_SCRAPY_STATUS = "/GetAllLotScrapyStatus"  # 所有爬虫状态
     GET_PROXY_STATUS = "/GetProxyStatus"  # 代理状态
     
     # --- 定时任务 ---

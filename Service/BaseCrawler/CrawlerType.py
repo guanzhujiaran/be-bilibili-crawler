@@ -98,7 +98,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         self._plugins = []
         for plugin_cfg in self.config.plugins:
-            plugin = plugin_cfg.plugin_cls(self)
+            plugin = plugin_cfg.plugin_cls(crawler=self)
             # 通过反射自动把插件绑定到 self.<plugin_name>，子类无需再手动写 self.xxx = SomePlugin(self)
             setattr(self, plugin_cfg.plugin_name, plugin)
             self.__register_plugin(plugin)

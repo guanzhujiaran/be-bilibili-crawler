@@ -44,8 +44,9 @@ from Models.lottery_database.bili.comm import (
 from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
 )
-from Models.v1.background_service.background_service_model import AllLotScrapyStatusResp
+from Models.v1.background_service.background_service_model import AllLotScrapyStatusResp, ScrapyTypeEnum
 from Service.BackgroundServiceStatus.GetScrapyStaus import get_scrapy_status
+from Models.v1.background_service.background_service_model import TypeScrapyStatus
 from Service.LangChainCompo.text_embed import (
     get_lottery_entity_num,
     search_lottery_text,
@@ -126,7 +127,8 @@ async def api_GetMustReserveLottery(
         background_task=background_task,
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[ReserveInfoResp](items=result_items, total=total)
+        data=ResponsePaginationItems[ReserveInfoResp](
+            items=result_items, total=total)
     )
 
 
@@ -204,7 +206,8 @@ async def api_GetChargeLottery(
         )
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[ChargeLotteryResp](items=result_items, total=total)
+        data=ResponsePaginationItems[ChargeLotteryResp](
+            items=result_items, total=total)
     )
 
 
@@ -223,7 +226,8 @@ async def api_GetLiveLottery(
         pagination.page_num, pagination.page_size
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[LiveLotteryResp](items=result_items, total=total)
+        data=ResponsePaginationItems[LiveLotteryResp](
+            items=result_items, total=total)
     )
 
 
@@ -242,7 +246,8 @@ async def api_GetTopicLottery(
         pagination.page_num, pagination.page_size, keyword=pagination.keyword,
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[TopicLotteryResp](items=result_items, total=total)
+        data=ResponsePaginationItems[TopicLotteryResp](
+            items=result_items, total=total)
     )
 
 
@@ -396,7 +401,8 @@ async def api_AddOthersLotDyn(
         data.dynamic_id_or_url
     )
     if dynamic_id is not None and lot_round_id is not None:
-        background_tasks.add_task(process_others_lot_dyn, dynamic_id, lot_round_id)
+        background_tasks.add_task(
+            process_others_lot_dyn, dynamic_id, lot_round_id)
     return CommonResponseModel(data=resp)
 
 
@@ -427,7 +433,8 @@ async def api_BulkAddOthersLotDyn(
     )
     for resp, dynamic_id, lot_round_id in results:
         if dynamic_id is not None and lot_round_id is not None:
-            background_tasks.add_task(process_others_lot_dyn, dynamic_id, lot_round_id)
+            background_tasks.add_task(
+                process_others_lot_dyn, dynamic_id, lot_round_id)
     return CommonResponseModel(data=[r[0] for r in results])
 
 
@@ -481,26 +488,15 @@ async def api_SubmitFeedback(
 
     try:
         resp = await a_pushme(title=title, content=data.message, push_type="text")
-        if resp.status_code == 200:
-            return CommonResponseModel(
-                code=0,
-                msg="success",
-                data={
-                    "status": "success",
-                    "message": "反馈已提交",
-                    "uid": uid,
-                },
-            )
-        else:
-            return CommonResponseModel(
-                code=resp.status_code,
-                msg="推送失败",
-                data={
-                    "status": "failed",
-                    "message": f"反馈提交失败：HTTP {resp.status_code}",
-                    "uid": uid,
-                },
-            )
+        return CommonResponseModel(
+            code=0,
+            msg="success",
+            data={
+                "status": "success",
+                "message": "反馈已提交",
+                "uid": uid,
+            },
+        )
     except Exception as e:
         return CommonResponseModel(
             code=-1,
@@ -513,11 +509,30 @@ async def api_SubmitFeedback(
         )
 
 
+@router.post(
+    RouterPaths.GET_SINGLE_SCRAPY_STATUS,
+    name=RouterNames.GET_SINGLE_SCRAPY_STATUS,
+    description="根据爬虫类型查询单个爬虫的状态",
+    response_model=CommonResponseModel[TypeScrapyStatus],
+    response_model_exclude_none=True,
+)
+def get_single_scrapy_status(scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型")):
+    """
+    根据传入的爬虫类型查询对应的单个爬虫实时状态
+
+    :param scrapy_name: 爬虫类型，必须是 ScrapyTypeEnum 中的合法值
+        （dyn / topic / reserve / other_space / other_dyn /
+         refresh_bili_official / refresh_bili_reserve）
+    :return: 对应爬虫的状态信息
+    """
+    return CommonResponseModel(data=get_scrapy_status(scrapy_name.value))
+
+
 @router.get(
     RouterPaths.GET_ALL_LOT_SCRAPY_STATUS,
     name=RouterNames.GET_ALL_LOT_SCRAPY_STATUS,
     description="获取所有爬虫状态",
-    response_model=CommonResponseModel[AllLotScrapyStatusResp | None],
+    response_model=CommonResponseModel[AllLotScrapyStatusResp],
     response_model_exclude_none=True,
 )
 def get_all_scrapy_status():
@@ -654,8 +669,8 @@ async def api_GetLotteryFilterParams():
         EndpointFilterMeta(
             endpoint_path="GetOthersLotDynList",
             display_name="第三方抽奖动态列表",
-            params=pydantic_model_to_filter_params(OthersLotDynListFilterMetadata),
+            params=pydantic_model_to_filter_params(
+                OthersLotDynListFilterMetadata),
         ),
     ]
     return CommonResponseModel(data=LotteryFilterParamsResp(endpoints=endpoints))
-

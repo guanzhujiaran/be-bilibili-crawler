@@ -1,22 +1,21 @@
 from typing import TypeVar, Generic, Optional
-from pydantic import Field
-from Models.base.custom_pydantic import CustomBaseModel
+from pydantic import Field,BaseModel
 
 T = TypeVar("T")  # 泛型类型 T
 
 
-class CommonResponseModel(CustomBaseModel, Generic[T]):
+class CommonResponseModel(BaseModel, Generic[T]):
     code: int = 0
     msg: str = "success"
     data: T | None = None
 
 
-class ResponsePaginationItems(CustomBaseModel, Generic[T]):
+class ResponsePaginationItems(BaseModel, Generic[T]):
     items: list[T]
     total: int
 
 
-class RequestPaginationParams(CustomBaseModel):
+class RequestPaginationParams(BaseModel):
     """基于页码的分页请求参数"""
 
     page_num: int = Field(
@@ -39,7 +38,7 @@ class RequestPaginationParams(CustomBaseModel):
     )  # 每页数量，默认 10 条，最小值为 1
 
 
-class RequestCursorParams(CustomBaseModel):
+class RequestCursorParams(BaseModel):
     """基于游标的分页请求参数"""
 
     cursor: Optional[str] = Field(
@@ -50,7 +49,7 @@ class RequestCursorParams(CustomBaseModel):
     )  # 每页数量，默认 20 条，最小值为 1
 
 
-class RequestOffsetLimitParams(CustomBaseModel):
+class RequestOffsetLimitParams(BaseModel):
     """基于偏移量的分页请求参数"""
 
     offset: int = Field(

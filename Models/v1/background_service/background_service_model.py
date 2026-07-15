@@ -1,3 +1,4 @@
+from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 import time
 from enum import Enum
 from typing import Any
@@ -5,7 +6,6 @@ from typing import Any
 from pydantic import computed_field, Field
 
 from Models.base.custom_pydantic import CustomBaseModel
-
 
 class BackgroundServiceName(str, Enum):
     """后台服务名称枚举"""
@@ -33,7 +33,6 @@ class ScrapyTypeEnum(str, Enum):
     OTHER_DYN = "other_dyn"
     REFRESH_BILI_OFFICIAL = "refresh_bili_official"
     REFRESH_BILI_RESERVE = "refresh_bili_reserve"
-    
 
 
 class ProgressStatusResp(CustomBaseModel):
@@ -48,9 +47,11 @@ class ProgressStatusResp(CustomBaseModel):
     @computed_field
     def update_time(self) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.update_ts))
+
     @computed_field
     def start_time(self) -> str:
         return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.start_ts))
+
 
 class BaseScrapyStatusResp(CustomBaseModel):
     succ_count: int = 0
@@ -59,6 +60,7 @@ class BaseScrapyStatusResp(CustomBaseModel):
     freq: int | float = Field(default=0, description='爬取成功的频率，单位为（条/秒）')
     is_running: bool = False
     update_ts: int = 0  # 最后更新时间
+
 
 class ProxyStatusResp(CustomBaseModel):
     proxy_total_count: int = 0
@@ -72,10 +74,12 @@ class ProxyStatusResp(CustomBaseModel):
     def is_need_sync(self) -> bool:
         return not (bool(self.sync_ts) and self.sync_ts > int(time.time()) - 600)
 
+TypeScrapyStatus = StatsPlugin | ProgressStatusResp | None
+
 
 class AllLotScrapyStatusResp(CustomBaseModel):
-    official_scrapy_status: Any
-    reserve_scrapy_status: Any
-    other_space_scrapy_status: Any
-    dyn_scrapy_status: Any
-    topic_scrapy_status: Any
+    official_scrapy_status: TypeScrapyStatus
+    reserve_scrapy_status: TypeScrapyStatus
+    other_space_scrapy_status: TypeScrapyStatus
+    dyn_scrapy_status: TypeScrapyStatus
+    topic_scrapy_status: TypeScrapyStatus

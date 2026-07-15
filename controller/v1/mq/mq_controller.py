@@ -29,7 +29,7 @@ async def handle_official_reserve_charge_lot(
     body: LotDataReq,
     msg: RabbitMessage,
 ) -> None:
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{body}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")
     await official_reserve_charge_lot.consume(
         body,
         msg,
@@ -41,7 +41,7 @@ async def handle_upsert_official_reserve_charge_lot(
     newly_lot_data: dict,
     msg: RabbitMessage,
 ) -> None:
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{newly_lot_data}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{newly_lot_data}")
     await upsert_official_reserve_charge_lot.consume(
         newly_lot_data,
         msg,
@@ -54,7 +54,7 @@ async def handle_upsert_lot_data_by_dynamic_id(
     msg: RabbitMessage,
 ) -> None:
     MQ_logger.debug(
-        f"【{msg.raw_message.routing_key}】队列 消费消息：{lot_data_dynamic_req}"
+        f"【{msg.raw_message.routing_key}】队列 消费消息内容：{lot_data_dynamic_req}"
     )
     await upsert_lot_data_by_dynamic_id.consume(
         lot_data_dynamic_req,
@@ -67,7 +67,7 @@ async def handle_upsert_topic_lot(
     body: TopicLotData,
     msg: RabbitMessage,
 ) -> None:
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{TopicLotData}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{TopicLotData}")
     await upsert_topic_lot.consume(
         body,
         msg,
@@ -79,7 +79,7 @@ async def handle_upsert_milvus_bili_lot_data(
     body: dict | Dict,
     msg: RabbitMessage,
 ) -> None:
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{body}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")
     await upsert_milvus_bili_lot_data.consume(
         body,
         msg,
@@ -91,7 +91,7 @@ async def handle_upsert_bili_atari(
     body: int,
     msg: RabbitMessage,
 ):
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{body}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")
     await upsert_bili_atari.consume(
         body,
         msg,
@@ -103,7 +103,7 @@ async def handle_bili_voucher(
     body: VoucherInfo,
     msg: RabbitMessage,
 ) -> None:
-    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息：{body}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")
     await bili_voucher.consume(
         body,
         msg,
@@ -112,7 +112,7 @@ async def handle_bili_voucher(
 
 @router.subscriber(**rabbit_mq_test.sub_params)
 async def _test_msg_consumer(data: RabbitMQTestMsgModel, msg: RabbitMessage):
-    MQ_logger.critical(f"【{msg.raw_message.routing_key}】队列 消费消息：{data}")
+    MQ_logger.critical(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{data}")
     return await rabbit_mq_test.consume(data, msg)
 
 

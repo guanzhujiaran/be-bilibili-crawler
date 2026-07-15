@@ -25,8 +25,8 @@ router = new_router()
 async def get_official_lottery_statistic(
         lot_type: BiliLotStatisticLotTypeEnum,
         rank_type: BiliLotStatisticRankTypeEnum = Query(...),
-        offset: Optional[int] = Query(0, ge=0),
-        limit: Optional[int] = Query(10, ge=10, le=10),
+        offset:int = Query(0, ge=0),
+        limit: int = Query(10, ge=10, le=10),
         date: BiliLotStatisticRankDateTypeEnum = BiliLotStatisticRankDateTypeEnum.total
 ):
     """获取官方抽奖统计信息"""

@@ -52,6 +52,7 @@ import sys
 import time
 from pathlib import Path
 from langchain_openai import ChatOpenAI
+from tqdm.auto import tqdm
 # 确保项目根目录在 sys.path 中
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
@@ -113,18 +114,25 @@ def _format_stats(stats: dict, title: str, total_elapsed: float) -> None:
     print(f"  错误:     {stats['errors']}")
 
 
-async def _run_workers_concurrent(workers: list, concurrency: int) -> dict:
+async def _run_workers_concurrent(
+    workers: list, concurrency: int, pbar: tqdm | None = None
+) -> dict:
     """并发执行一组 worker 协程并汇总统计。
 
     workers: 一组 awaitable，每个 worker 应返回 'grand' / 'not_grand' / 'error' 之一。
     concurrency: 最大并发数（<=1 时退化为串行）。
+    pbar: 可选的 tqdm 进度条，每个 worker 完成后实时 +1。
     每个 worker 内部应“处理完一个立即保存一个”，避免批量保存在中途失败时丢失结果。
     """
     sem = asyncio.Semaphore(max(1, concurrency))
 
     async def _wrap(w):
         async with sem:
-            return await w
+            try:
+                return await w
+            finally:
+                if pbar is not None:
+                    pbar.update(1)
 
     counts = {
         "processed": 0,
@@ -220,43 +228,40 @@ async def judge_common_lottery(
             )
             return "grand" if is_grand == 1 else "not_grand"
         except Exception as e:
-            print(f"  dynId={dyn_id} 失败: {e}")
+            tqdm.write(f"  dynId={dyn_id} 失败: {e}")
             return "error"
 
     total_batches = (len(dyn_ids) + batch_size - 1) // batch_size
     start_time = time.time()
 
+    pbar = tqdm(total=len(dyn_ids), desc="普通抽奖动态", unit="条")
     for batch_idx in range(0, len(dyn_ids), batch_size):
         batch = dyn_ids[batch_idx : batch_idx + batch_size]
         batch_num = batch_idx // batch_size + 1
-        batch_start = time.time()
 
         content_map = await SqlHelper.get_dyn_info_batch(batch)
 
         if not content_map:
-            print(f"  [批次 {batch_num}/{total_batches}] 无有效内容，跳过")
+            tqdm.write(f"  [批次 {batch_num}/{total_batches}] 无有效内容，跳过")
+            pbar.update(len(batch))
             continue
 
         batch_items = [(dyn_id, content_map[dyn_id]) for dyn_id in batch if dyn_id in content_map]
         if not batch_items:
-            print(f"  [批次 {batch_num}/{total_batches}] 内容均为空，跳过")
+            tqdm.write(f"  [批次 {batch_num}/{total_batches}] 内容均为空，跳过")
+            pbar.update(len(batch))
             continue
 
+        # 本批中无有效内容的记录也计入进度
+        skipped_in_batch = len(batch) - len(batch_items)
+        if skipped_in_batch > 0:
+            pbar.update(skipped_in_batch)
+
         workers = [_judge_one(dyn_id, content) for dyn_id, content in batch_items]
-        counts = await _run_workers_concurrent(workers, concurrency)
+        counts = await _run_workers_concurrent(workers, concurrency, pbar=pbar)
         for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
             stats[k] += counts[k]
-
-        batch_elapsed = time.time() - batch_start
-        total_elapsed = time.time() - start_time
-        progress = min(batch_idx + batch_size, len(dyn_ids))
-        pct = progress / len(dyn_ids) * 100
-
-        print(
-            f"  [批次 {batch_num}/{total_batches}] "
-            f"处理 {len(batch_items)} 条 | 进度 {pct:.1f}% | "
-            f"本批 {batch_elapsed:.1f}s | 累计 {total_elapsed:.1f}s"
-        )
+    pbar.close()
 
     total_elapsed = time.time() - start_time
     _format_stats(stats, "普通抽奖动态", total_elapsed)
@@ -352,32 +357,20 @@ async def judge_reserve_lottery(
             )
             return "grand" if is_grand == 1 else "not_grand"
         except Exception as e:
-            print(f"  ids={record.ids} 失败: {e}")
+            tqdm.write(f"  ids={record.ids} 失败: {e}")
             return "error"
 
-    total_batches = (len(target_records) + batch_size - 1) // batch_size
     start_time = time.time()
 
+    pbar = tqdm(total=len(target_records), desc="预约抽奖", unit="条")
     for batch_idx in range(0, len(target_records), batch_size):
         batch = target_records[batch_idx : batch_idx + batch_size]
-        batch_num = batch_idx // batch_size + 1
-        batch_start = time.time()
 
         workers = [_judge_one(record) for record in batch]
-        counts = await _run_workers_concurrent(workers, concurrency)
+        counts = await _run_workers_concurrent(workers, concurrency, pbar=pbar)
         for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
             stats[k] += counts[k]
-
-        batch_elapsed = time.time() - batch_start
-        total_elapsed = time.time() - start_time
-        progress = min(batch_idx + batch_size, len(target_records))
-        pct = progress / len(target_records) * 100
-
-        print(
-            f"  [批次 {batch_num}/{total_batches}] "
-            f"处理 {len(batch)} 条 | 进度 {pct:.1f}% | "
-            f"本批 {batch_elapsed:.1f}s | 累计 {total_elapsed:.1f}s"
-        )
+    pbar.close()
 
     total_elapsed = time.time() - start_time
     _format_stats(stats, "预约抽奖", total_elapsed)
@@ -491,32 +484,20 @@ async def judge_official_lottery(
                 lottery_id=bid, is_grand_prize=is_grand)
             return "grand" if is_grand == 1 else "not_grand"
         except Exception as e:
-            print(f"  lottery_id={bid} 失败: {e}")
+            tqdm.write(f"  lottery_id={bid} 失败: {e}")
             return "error"
 
-    total_batches = (len(target_ids) + batch_size - 1) // batch_size
     start_time = time.time()
 
+    pbar = tqdm(total=len(target_ids), desc="官方/充电抽奖", unit="条")
     for batch_idx in range(0, len(target_ids), batch_size):
         batch_ids = target_ids[batch_idx : batch_idx + batch_size]
-        batch_num = batch_idx // batch_size + 1
-        batch_start = time.time()
 
         workers = [_judge_one(bid) for bid in batch_ids]
-        counts = await _run_workers_concurrent(workers, concurrency)
+        counts = await _run_workers_concurrent(workers, concurrency, pbar=pbar)
         for k in ("processed", "grand_prize", "not_grand_prize", "errors"):
             stats[k] += counts[k]
-
-        batch_elapsed = time.time() - batch_start
-        total_elapsed = time.time() - start_time
-        progress = min(batch_idx + batch_size, len(target_ids))
-        pct = progress / len(target_ids) * 100
-
-        print(
-            f"  [批次 {batch_num}/{total_batches}] "
-            f"处理 {len(batch_ids)} 条 | 进度 {pct:.1f}% | "
-            f"本批 {batch_elapsed:.1f}s | 累计 {total_elapsed:.1f}s"
-        )
+    pbar.close()
 
     total_elapsed = time.time() - start_time
     _format_stats(stats, "官方/充电抽奖", total_elapsed)

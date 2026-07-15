@@ -1,13 +1,12 @@
+from fastapi import Query
 import asyncio
 import inspect
 from datetime import datetime
 from typing import Union, Any
 from Models.common import CommonResponseModel
 from Models.v1.background_service.background_service_model import (
-    AllLotScrapyStatusResp,
     BackgroundServiceName,
     ProxyStatusResp,
-    ScrapyTypeEnum,
 )
 from Models.v1.background_service.scheduler_status_model import (
     GlobalSchedulerStatusModel,
@@ -40,44 +39,6 @@ def start_monitor_tasks(show_log: bool):
         asyncio.create_task(bili_space_monitor.main(show_log=show_log))
     ]
     return back_ground_tasks
-
-
-@router.get(
-    RouterPaths.GET_SINGLE_SCRAPY_STATUS,
-    name=RouterNames.GET_SINGLE_SCRAPY_STATUS,
-    description="根据爬虫类型查询单个爬虫的状态",
-    response_model=CommonResponseModel[Union[Any, None]],
-    response_model_exclude_none=True,
-)
-def get_single_scrapy_status(scrapy_name: ScrapyTypeEnum):
-    """
-    根据传入的爬虫类型查询对应的单个爬虫实时状态
-
-    :param scrapy_name: 爬虫类型，必须是 ScrapyTypeEnum 中的合法值
-        （dyn / topic / reserve / other_space / other_dyn /
-         refresh_bili_official / refresh_bili_reserve）
-    :return: 对应爬虫的状态信息
-    """
-    return CommonResponseModel(data=get_scrapy_status(scrapy_name.value))
-
-
-@router.get(
-    RouterPaths.GET_ALL_SCRAPY_STATUS,
-    name=RouterNames.GET_ALL_SCRAPY_STATUS,
-    description="获取所有爬虫状态",
-    response_model=CommonResponseModel[Union[AllLotScrapyStatusResp, None]],
-    response_model_exclude_none=True,
-)
-def get_all_scrapy_status():
-    return CommonResponseModel(
-        data=AllLotScrapyStatusResp(
-            official_scrapy_status=get_scrapy_status("refresh_bili_official"),
-            reserve_scrapy_status=get_scrapy_status("reserve"),
-            other_space_scrapy_status=get_scrapy_status("other_space"),
-            dyn_scrapy_status=get_scrapy_status("dyn"),
-            topic_scrapy_status=get_scrapy_status("topic"),
-        )
-    )
 
 
 @router.get(
@@ -120,7 +81,7 @@ def background_service_status():
                     ret_list.append(
                         {
                             f"{name}": {
-                                StatsPlugin.__name__: plugin.get_all_status(),
+                                StatsPlugin.__name__: plugin,
                                 "exec_info": value.exec_info.info,
                             }
                         }
@@ -300,7 +261,8 @@ def global_scheduler_status():
                 break
 
         jobs_details.append(
-            SchedulerJobDetailModel(job_info=job_info, execution_info=execution_info)
+            SchedulerJobDetailModel(
+                job_info=job_info, execution_info=execution_info)
         )
 
     # 构造完整状态模型

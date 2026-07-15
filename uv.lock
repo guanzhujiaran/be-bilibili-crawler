@@ -910,6 +910,7 @@ dependencies = [
     { name = "sqlmodel" },
     { name = "strawberry-graphql", extra = ["fastapi"] },
     { name = "strawberry-sqlalchemy-mapper" },
+    { name = "tqdm" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -981,6 +982,7 @@ requires-dist = [
     { name = "sqlmodel", specifier = ">=0.0.27" },
     { name = "strawberry-graphql", extras = ["fastapi"], specifier = ">=0.284.1" },
     { name = "strawberry-sqlalchemy-mapper", specifier = ">=0.7.0" },
+    { name = "tqdm", specifier = ">=4.68.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.38.0" },
 ]
 provides-extras = ["test"]
