@@ -87,7 +87,13 @@ async def update_lot_data(business_id: int, business_type: LotteryBusinessType):
     lot_notice = await get_lot_notice(
         business_type=business_type.value, business_id=business_id
     )
-    await bos.upsert_lot_detail(lot_notice.get("data"))
+    lot_data_dict = lot_notice.get("data")
+    await bos.upsert_lot_detail(lot_data_dict)
+    # 主表落库后，异步触发大模型大奖判断链路（与落库解耦）
+    await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+        lot_data_dict=lot_data_dict,
+        extra_routing_key="update_lot_data"
+    )
     bos.log.info(f"update lot_data:{lot_notice}")
 
 

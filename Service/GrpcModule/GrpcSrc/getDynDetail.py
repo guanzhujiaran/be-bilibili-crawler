@@ -307,6 +307,11 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                     lot_data,
                     extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
                 )
+                # 获取抽奖数据后，异步触发大模型大奖判断链路（与落库解耦）
+                await self.BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                    lot_data_dict=lot_data,
+                    extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
+                )
             return temp_rid, lot_id, dynamic_id, dynamic_created_time
         except Exception as e:
             self.log.exception(f"{dynData}\n解析动态详情出错：{e}")

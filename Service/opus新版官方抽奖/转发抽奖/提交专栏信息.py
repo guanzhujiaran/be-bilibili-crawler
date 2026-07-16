@@ -100,6 +100,11 @@ class ExtractOfficialLottery:
                         new_lot_data_resp,
                         extra_routing_key="ExtractOfficialLottery.update_lot_notice.solve_lot_data"
                     )
+                    # 获取抽奖数据后，异步触发入库队列（由消费者判断后调用大模型写库）
+                    await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                        lot_data_dict=new_lot_data_resp,
+                        extra_routing_key="ExtractOfficialLottery.update_lot_notice.solve_lot_data"
+                    )
                     new_lot_data: Lotdata = grpc_sql_helper.process_resp_data_dict_2_lotdata(new_lot_data_resp)
                     new_updated_lot_data.append(new_lot_data)
                 else:
@@ -214,6 +219,11 @@ class ExtractOfficialLottery:
                 if da := lot_data_resp.get('data'):
                     await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
                         da,
+                        extra_routing_key="ExtractOfficialLottery.get_all_lots.__"
+                    )
+                    # 获取抽奖数据后，异步触发入库队列（由消费者判断后调用大模型写库）
+                    await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                        lot_data_dict=da,
                         extra_routing_key="ExtractOfficialLottery.get_all_lots.__"
                     )
                 else:

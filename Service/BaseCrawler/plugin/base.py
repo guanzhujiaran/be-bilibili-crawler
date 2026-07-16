@@ -9,7 +9,7 @@ if TYPE_CHECKING:
     from loguru import Logger
 
 
-class CrawlerPlugin(ABC, Generic[ParamsType], BaseModel):
+class CrawlerPlugin(BaseModel, ABC, Generic[ParamsType]):
     """
     爬虫插件的基类。
     插件可以在爬虫的各个生命周期事件中注入自定义逻辑。

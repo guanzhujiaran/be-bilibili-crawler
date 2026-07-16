@@ -23,9 +23,14 @@ class BaseFastStreamMQ:
 
     @property
     def pub_params(self) -> dict:
+        # 与 publisher_producer 保持一致：显式指定 queue，消息直接投递到该队列；
+        # 同时带上 exchange + routing_key，使消息携带路由键（真实 MQ 下以 queue
+        # 为准投递，routing_key 仅作绑定/分类信息）。test 队列已绑定到 bili_data
+        # 交换机、绑定模式为「testRouter.#」。
         return {
             "queue": self.mq_props.rabbit_queue,
             "exchange": self.mq_props.exchange,
+            "routing_key": self.mq_props.routing_key_name,
         }
 
 
@@ -72,6 +77,17 @@ upsert_bili_atari_prop = MQPropBase(
 bili_voucher_prop = MQPropBase(
     queue_name=QueueName.BiliVoucherMQ,
     routing_key_name=RoutingKey.BiliVoucherMQ,
+    exchange=exch
+)
+
+prize_extract_biliopus_mq_prop = MQPropBase(
+    queue_name=QueueName.PrizeExtractBiliOpusMQ,
+    routing_key_name=RoutingKey.PrizeExtractBiliOpusMQ,
+    exchange=exch
+)
+prize_extract_dyndetail_mq_prop = MQPropBase(
+    queue_name=QueueName.PrizeExtractDynDetailMQ,
+    routing_key_name=RoutingKey.PrizeExtractDynDetailMQ,
     exchange=exch
 )
 

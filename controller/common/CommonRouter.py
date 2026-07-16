@@ -1,17 +1,22 @@
 import asyncio
 import gc
+import traceback
+from datetime import datetime
+
 from fastapi import Body
-from ApiRoutes import RouterPaths, RouterNames
+from ApiRoutes import RouterPaths, RouterNames, RouterTags
 from controller.common.base import new_router
 from log.base_log import myfastapi_logger
 from Models.lottery_database.bili.LotteryDataModels import reserveInfo
 from Service.GetOthersLotDyn import get_others_lot_dyn
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.GrpcModule.GrpcSrc.获取取关对象.GetRmFollowingListV2 import gmflv2
+from Service.MQ.message.message_pub import publish_message
 from Service.toutiao.src.FastApiReturns.SpaceFeedLotService.ToutiaoSpaceFeedLot import \
     toutiaoSpaceFeedLotService
 from Service.zhihu.获取知乎抽奖想法.根据用户空间获取想法.GetMomentsByUser import zhihu_lotScrapy
-from Utils.推送.PushMe import a_pushme
+from CONFIG import settings
+from Utils.推送.PushMe import a_pushme, server_label
 
 router = new_router()
 
@@ -35,6 +40,46 @@ async def app_avaliable_api():
 async def app_avaliable_api():
     await asyncio.to_thread(gc.collect)
     return 'gc完成！'
+
+
+@router.get(
+    RouterPaths.TEST_PUSH_ERROR,
+    name=RouterNames.TEST_PUSH_ERROR,
+    tags=[RouterTags.MESSAGE_SERVICE],
+    description='测试接口：故意抛错，并向消息推送微服务(message-service)发送一条测试告警，'
+                '用于验证「异常 -> RabbitMQ(message 队列) -> message-service -> PushMe/PushPlus」推送链路是否正常',
+)
+async def test_push_error():
+    """故意抛错，把测试告警直接发布到 message-service，验证消息推送微服务是否正常工作。
+
+    说明：
+    - 直接调用 publish_message 发布到 message 队列（message-service 消费者监听该队列并分发），
+      绕过 PushMe 的 60s 限流/去重，保证每次调用都能可靠地触发 message-service；
+      这样即便服务近期已有其它推送，也不会因限流而让本次测试告警被丢弃。
+    - 发布完成后重新抛出 RuntimeError，模拟未捕获异常，接口返回 500（与线上异常一致）。
+    - 全局异常处理器(@app.exception_handler)会再次尝试 a_push_error，但受 60s 限流保护，不会重复推送。
+    """
+    err_time = datetime.now()
+    try:
+        raise RuntimeError(
+            f"Ciallo～(∠・ω< )⌒★ 这是一条用于测试消息推送微服务(message-service)的故意抛错喵~ "
+            f"时间【{err_time}】"
+        )
+    except RuntimeError as e:
+        tb = traceback.format_exc()
+        # 直接发布到 message 队列，绕过 PushMe 限流，每次调用必触发 message-service
+        await publish_message(
+            title=f"{server_label()} 测试抛错(消息推送微服务)",
+            content=(
+                "这是一条测试告警，用于验证 message-service 推送链路是否正常。\n"
+                f"触发时间: {err_time}\n"
+                f"错误信息: {e}\n"
+                f"堆栈:\n{tb}"
+            ),
+            push_type="text",
+            config=settings.message_config,
+        )
+        raise  # 重新抛出，模拟线上未捕获异常（接口返回 500）
 
 
 # endregion

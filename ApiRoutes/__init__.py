@@ -69,6 +69,7 @@ class RouterTags(StrEnum):
     # ==================== 其他路由标签 ====================
     COMMON = "CommonRouter"  # 公共路由
     MQ_TEST = "MQ测试"  # 消息队列测试
+    MESSAGE_SERVICE = "消息推送微服务"  # 消息推送微服务(message-service)测试
     DAMO = "modelscope达摩机器学习"  # 达摩机器学习服务
     RPC = "RPC服务"  # RPC 服务信息
 
@@ -149,6 +150,7 @@ class RouterPaths(StrEnum):
     
     # ==================== MQ测试路由 ====================
     RABBITMQ_TEST_PUBLISH = "/rabbitmq_test_publish"  # RabbitMQ测试消息发布
+    TEST_PUSH_ERROR = "/test_push_error"  # 测试消息推送微服务(故意抛错)
 
     # ==================== RPC 服务路由 ====================
     GET_RPC_METHODS = "/methods"  # 获取所有 RPC 方法信息
@@ -245,6 +247,7 @@ class RouterNames(StrEnum):
     
     # ==================== MQ测试路由 ====================
     RABBITMQ_TEST_PUBLISH = "rabbitmq_test_publish"  # RabbitMQ测试消息发布
+    TEST_PUSH_ERROR = "test_push_error"  # 测试消息推送微服务(故意抛错)
     
     # ==================== 公共路由 ====================
     GET_LIVE_LOTS = "v1_get_live_lots"  # 获取直播抽奖

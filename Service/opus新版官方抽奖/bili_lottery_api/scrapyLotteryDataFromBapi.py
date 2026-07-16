@@ -136,6 +136,10 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                 await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
                     da=data, extra_routing_key=self.__class__.__name__
                 )
+                # 获取抽奖数据后，异步触发大模型大奖判断链路（与落库解耦）
+                await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                    lot_data_dict=data, extra_routing_key=self.__class__.__name__
+                )
                 match business_type:
                     case 2:
                         return await self.solve_dyn_data(data, rid=business_id)

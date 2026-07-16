@@ -21,9 +21,11 @@ from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
 from Utils.推送.PushMe import a_push_error
+from Service.GetOthersLotDyn.parser.prize_extractor import (
+    extract_prize_info_for_dyndetail,
+)
 
-
-# 全局锁，确保所有 lottery_id 的处理串行化，避免死锁
+# 全局锁，确保所有 lottery_id 的处理串行化，避免milvus数据库高并发下崩溃
 # 简单粗暴但有效，适用于并发量不大的场景
 _global_lottery_lock = asyncio.Lock()
 
@@ -106,6 +108,11 @@ class OfficialReserveChargeLot(BaseFastStreamMQ):
                 await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
                     newly_lot_data,
                     extra_routing_key="OfficialReserveChargeLotMQ")
+                # 获取数据处异步触发大模型大奖判断链路（与落库解耦）
+                await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                    lot_data_dict=newly_lot_data,
+                    extra_routing_key="OfficialReserveChargeLotMQ"
+                )
                 # result = await asyncio.to_thread(grpc_sql_helper.upsert_lot_detail, newly_lot_data)
                 return await msg.ack()
             MQ_logger.debug(f"未获取到抽奖提示数据！参数：{_body}\t响应：{lot_data}")
@@ -307,6 +314,12 @@ upsert_bili_atari = UpsertBiliAtari()
 bili_voucher = BiliVoucher()
 rabbit_mq_test = RabbitMQTest()
 
+# 入库消息队列消费者（按目标数据库分队列，处理逻辑共享）
+from Service.MQ.base.MQClient.PrizeExtract import (  # noqa: E402
+    prize_extract_biliopus,
+    prize_extract_dyndetail,
+)
+
 __all__ = [
     "router",
     "official_reserve_charge_lot",
@@ -317,4 +330,6 @@ __all__ = [
     "upsert_bili_atari",
     "bili_voucher",
     "rabbit_mq_test",
+    "prize_extract_biliopus",
+    "prize_extract_dyndetail",
 ]

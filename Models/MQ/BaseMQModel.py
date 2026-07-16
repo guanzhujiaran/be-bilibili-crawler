@@ -13,6 +13,8 @@ class QueueName(StrEnum):
     UpsertMilvusBiliLotDataMQ = "UpsertMilvusBiliLotDataMQ"
     UpsertBiliAtariMQ = "UpsertBiliAtariMQ"
     BiliVoucherMQ = "bili_352_voucher"
+    PrizeExtractBiliOpusMQ = "PrizeExtractBiliOpusQueue"
+    PrizeExtractDynDetailMQ = "PrizeExtractDynDetailQueue"
 
 
 class ExchangeName(StrEnum):
@@ -29,6 +31,8 @@ class RoutingKey(StrEnum):
     UpsertMilvusBiliLotDataMQ = "Milvus.BiliLotDataMQ"
     UpsertBiliAtariMQ = "BiliData.UpsertBiliAtariMQ"
     BiliVoucherMQ = "BiliData.bili_352_voucher"
+    PrizeExtractBiliOpusMQ = "BiliData.PrizeExtractBiliOpusMQ"
+    PrizeExtractDynDetailMQ = "BiliData.PrizeExtractDynDetailMQ"
 
 
 @dataclass
@@ -36,14 +40,14 @@ class MQPropBase:
     queue_name: QueueName
     routing_key_name: RoutingKey
     exchange: RabbitExchange
-    _rabbit_queue: RabbitQueue | None= None
-    _exchange_name: ExchangeName | str | None = None
+    _rabbit_queue: RabbitQueue | None = None
+    _exchange_name: ExchangeName | None = None
 
     def __post_init__(self):
         self._rabbit_queue = RabbitQueue(
-            name=self.queue_name,
-            routing_key=f'{self.routing_key_name}.#')
-        self._exchange_name = self.exchange.name
+            name=self.queue_name, routing_key=f"{self.routing_key_name}.#"
+        )
+        self._exchange_name = self.exchange.name  # type: ignore
 
     @property
     def rabbit_queue(self) -> RabbitQueue:
@@ -56,3 +60,14 @@ class MQPropBase:
         if not self._exchange_name:
             raise ValueError("exchange_name is not initialized")
         return self._exchange_name
+
+    # 新增：为发布者提供动态拼接路由键的方法
+    def get_publish_routing_key(self, suffix: str | None = None) -> str:
+        """
+        获取用于发布的完整 Routing Key。
+        如果传入了 suffix，则拼接为 'base_key.suffix'；
+        如果不传，则返回基础 key（适用于不需要后缀的简单消息）。
+        """
+        if suffix:
+            return f"{self.routing_key_name}.{suffix}"
+        return self.routing_key_name

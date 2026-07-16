@@ -16,7 +16,7 @@ from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_fo
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-from Service.GrpcModule.Grpc.Bapi.BiliApi import get_polymer_web_dynamic_detail
+from Service.GrpcModule.Grpc.Bapi.BiliApi import get_polymer_web_dynamic_detail, get_lot_notice
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 
@@ -224,12 +224,40 @@ class BiliDynamicItem:
                 business_id = dyn_id
             if business_type == 0 or business_id == 0:
                 raise ValueError(f'未知的官方抽奖类型：{lot_type}，无法确定business_type和business_id')
-            await BiliLotDataPublisher.pub_official_reserve_charge_lot(
-                business_type=business_type,
-                business_id=business_id,
-                origin_dynamic_id=dyn_id,
-                extra_routing_key='GetOthersLotDyn.solve_official_lot_data'
-            )
+            # 在获取数据处直接拉取 lottery_notice（与 scrapyLotteryDataFromBapi 保持一致，只取一次数据），
+            # 同时触发主表落库与（解耦的）大模型大奖判断两条 MQ 链路
+            try:
+                lot_notice = await get_lot_notice(
+                    business_type=business_type,
+                    business_id=business_id,
+                    origin_dynamic_id=dyn_id,
+                )
+                newly_lot_data = lot_notice.get('data')
+            except Exception as e:
+                newly_lot_data = None
+                get_others_lot_log.warning(
+                    f'拉取官方抽奖 lottery_notice 失败，回退到消费者拉取落库：{e}')
+            if newly_lot_data:
+                await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
+                    da=newly_lot_data,
+                    extra_routing_key='GetOthersLotDyn.solve_official_lot_data'
+                )
+                # 获取抽奖数据后，异步触发大模型大奖判断链路（与落库解耦）
+                await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+                    lot_data_dict=newly_lot_data,
+                    extra_routing_key='GetOthersLotDyn.solve_official_lot_data'
+                )
+            else:
+                # 拉取失败时回退到原有 MQ 链路，由消费者重新拉取并落库（大奖判断由其兜底触发）
+                if not newly_lot_data:
+                    get_others_lot_log.warning(
+                        f'官方抽奖数据获取为空，回退到消费者拉取，dyn_id={dyn_id}，lot_type={lot_type}')
+                await BiliLotDataPublisher.pub_official_reserve_charge_lot(
+                    business_type=business_type,
+                    business_id=business_id,
+                    origin_dynamic_id=dyn_id,
+                    extra_routing_key='GetOthersLotDyn.solve_official_lot_data'
+                )
         except Exception as e:
             get_others_lot_log.exception(f'官方抽奖数据提取并发布到MQ失败，dyn_id={dyn_id}，lot_type={lot_type}，official_lot_id={official_lot_id}\nerror={e}')
 

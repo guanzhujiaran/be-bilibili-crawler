@@ -24,24 +24,12 @@ from datetime import datetime
 import opencc
 from loguru import logger
 from pydantic import BaseModel, Field
+from Models.MQ.PrizeExtractResult import PrizeExtractResult
 from Service.llm_service import get_all_free_llms, SamplingPreset
 from Utils.推送.PushMe import a_push_error
 
 # 繁体转简体转换器（线程安全，可全局复用）
 _t2s_converter = opencc.OpenCC('t2s.json')
-
-
-class PrizeExtractResult(BaseModel):
-    """抽奖信息提取结果"""
-    prize_names: list[str] = Field(default_factory=list, description="奖品名称列表")
-    lottery_time: str | None = Field(
-        default=None, description="开奖时间，格式YYYY-MM-DD，没有则为None")
-    is_lot: bool = Field(default=False, description="是否是抽奖动态")
-    need_repost: bool = Field(default=False, description="是否需要转发")
-    required_topic_text: str = Field(
-        default="", description="转发/评论所需要携带的话题文本，如 #抽奖#，无则为空字符串")
-    is_grand_prize: bool = Field(
-        default=False, description="是否大奖，奖品价值高/知名品牌/电子产品")
 
 
 class PrizeExtractResp(BaseModel):
@@ -161,7 +149,7 @@ async def _do_extract(
                 consume_time=time.time() - start_ts,
                 result=result)
         except Exception as e:
-            logger.exception(
+            logger.warning(
                 f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
                 f"（{type(e).__name__}: {e}），等待10s后尝试下一个")
             last_err = e

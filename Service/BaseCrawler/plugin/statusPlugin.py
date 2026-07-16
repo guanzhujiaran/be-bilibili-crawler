@@ -1,5 +1,4 @@
 from pydantic import computed_field
-from langchain_community.vectorstores.pgembedding import BaseModel
 import datetime
 import inspect
 import time

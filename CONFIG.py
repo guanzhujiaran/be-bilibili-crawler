@@ -252,7 +252,7 @@ class PushMeChannel(BaseModel):
 
 class PushPlusChannel(BaseModel):
     """PushPlus 推送渠道配置（pydantic）"""
-    url: str = "https://www.pushplus.plus/send"
+    url: str = "http://www.pushplus.plus/send"
     token: str = ""
 
 
@@ -270,7 +270,7 @@ class PushNotifyConfig(BaseModel):
                 token=cfg.pushme_key,
             ),
             pushplus=PushPlusChannel(
-                url=cfg.push_plus_url or "https://www.pushplus.plus/send",
+                url=cfg.push_plus_url or "http://www.pushplus.plus/send",
                 token=cfg.push_plus_token,
             ),
         )

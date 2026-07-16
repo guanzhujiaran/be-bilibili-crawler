@@ -666,34 +666,18 @@ class SQLHelper(SqlHelperBase):
     @log_sql_retry_wrapper()
     async def upsert_lot_detail(self, lot_data_dict: dict):
         """
+        仅负责主表 lotdata 的落库，不再耦合大模型大奖判断。
+        大模型提取（含大奖判断 is_grand_prize）由获取数据的一方
+        （GetOthersLotDyn / scrapyLotteryDataFromBapi）在获取抽奖数据后，
+        通过 PrizeExtractDynDetail 入库队列异步触发，
+        由消费者调用 LLM 提取后直接写库（t_lot_extra_info 的 is_grand_prize 已包含在提取结果中）。
 
         :param lot_data_dict: lottery_notice的响应的data
         :return:更新 返回{'mode':'update'}
                 插入 返回{'mode':'insert'}
         """
-        # 入库时进行 LLM 大奖判断（dyndetail 专用）
-        from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_dyndetail
-
-        prize_cmts = [
-            lot_data_dict.get("first_prize_cmt"),
-            lot_data_dict.get("second_prize_cmt"),
-            lot_data_dict.get("third_prize_cmt"),
-        ]
-        lottery_text = " ".join(filter(lambda a: a, prize_cmts)).strip()
-        grand_prize_ok = False
-        is_grand_prize = 0
-        if lottery_text:
-            try:
-                result = await extract_prize_info_for_dyndetail(dyn_content=lottery_text)
-                is_grand_prize = int(result.result.is_grand_prize)
-                grand_prize_ok = True
-            except Exception as e:
-                # LLM 大奖判断失败：不再回退，跳过写入，留空待手动脚本 judge_grand_prize 回填
-                self.log.error(f"LLM 大奖判断失败，跳过写入 t_lot_extra_info，留待手动脚本填充: {e}")
-                grand_prize_ok = False
-
+        lottery_id = lot_data_dict.get("lottery_id")
         async with self.async_session() as session:
-            lottery_id = lot_data_dict.get("lottery_id")
             existing_record = await session.execute(
                 select(Lotdata).where(Lotdata.lottery_id == lottery_id)
             )
@@ -702,22 +686,52 @@ class SQLHelper(SqlHelperBase):
             # 使用 process_resp_data_dict_2_lotdata 过滤掉不属于 Lotdata 的字段（如 is_grand_prize）
             lot_data_obj = self.process_resp_data_dict_2_lotdata(lot_data_dict)
             await session.merge(lot_data_obj)
-            await session.flush()  # 确保 lotdata 父行先写入，否则 t_lot_extra_info 外键约束会失败
-
-            # 将大模型大奖判断结果写入独立子表 t_lot_extra_info（仅当判断成功时；
-            # 失败则跳过，留空等待手动脚本 judge_grand_prize 回填）
-            lottery_id = lot_data_dict.get("lottery_id")
-            if lottery_id is not None and grand_prize_ok:
-                await self._upsert_extra_info(
-                    session=session,
-                    lottery_id=int(lottery_id),
-                    is_grand_prize=is_grand_prize,
-                )
 
             # 判断是插入还是更新
             mode = "insert" if _exists == 1 else "update"
             await session.commit()
-            return {"mode": mode}
+
+        return {"mode": mode}
+
+    @log_sql_retry_wrapper()
+    async def is_extra_info_recently_judged(
+        self, lottery_id: int, within_seconds: int = 24 * 3600
+    ) -> bool:
+        """检查指定 lottery_id 的大奖判断结果是否在最近 within_seconds 内已写入/更新过。
+
+        用于大模型消费者去重：最近已判断过则跳过重复的 LLM 调用。
+        """
+
+    @log_sql_retry_wrapper()
+    async def is_extra_info_exists(self, lottery_id: int) -> bool:
+        """检查 dyndetail.t_lot_extra_info 是否已存在该 lottery_id 的提取记录。
+
+        仅判断「是否存在」，不判断时间（与入库队列的去重语义一致）。
+        """
+        async with self.async_session() as session:
+            stmt = (
+                select(LotExtraInfo.lottery_id)
+                .where(LotExtraInfo.lottery_id == lottery_id)
+                .limit(1)
+            )
+            res = await session.execute(stmt)
+            return res.scalars().first() is not None
+        async with self.async_session() as session:
+            threshold = datetime.datetime.now() - datetime.timedelta(
+                seconds=within_seconds
+            )
+            stmt = (
+                select(LotExtraInfo.lottery_id)
+                .where(
+                    and_(
+                        LotExtraInfo.lottery_id == lottery_id,
+                        LotExtraInfo.updated_at >= threshold,
+                    )
+                )
+                .limit(1)
+            )
+            res = await session.execute(stmt)
+            return res.scalars().first() is not None
 
     @staticmethod
     async def _upsert_extra_info(session, lottery_id: int, is_grand_prize: int) -> None:
@@ -861,7 +875,7 @@ class SQLHelper(SqlHelperBase):
         end_ts: int | None = None,
         business_type: Literal[1, 10, 12, 0] | None = None,
         rank_type: (
-            BiliLotStatisticRankTypeEnum | None
+            BiliLotStatisticRankTypeEnum
         ) = BiliLotStatisticRankTypeEnum.total,
     ) -> list[tuple[int, int]]:
         async with self.async_session() as session:

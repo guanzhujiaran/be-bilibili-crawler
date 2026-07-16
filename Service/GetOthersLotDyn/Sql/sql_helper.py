@@ -8,7 +8,7 @@ from typing import Union, List, Sequence, Optional
 
 from pydantic import BaseModel
 
-from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
+from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from sqlalchemy import select, and_, func, text
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.orm import selectinload
@@ -441,17 +441,15 @@ class __SqlHelper(SqlHelperBase):
                 await session.commit()
 
         if DynInfo.dynContent and DynInfo.dynId:
-            extract_result = await extract_prize_info_for_biliopusdb(dyn_content=DynInfo.dynContent)
-            if extract_result.result.prize_names or extract_result.result.lottery_time:
-                await self.save_prize(DynInfo.dynId, extract_result.result.prize_names, extract_result.result.lottery_time)
-            if extract_result.result.is_grand_prize:
-                await self.save_extra_info(
-                    ref_id=DynInfo.dynId,
-                    lot_type="common",
-                    is_grand_prize=int(extract_result.result.is_grand_prize),
-                    need_comment=int(DynInfo.isManualReply) if DynInfo.isManualReply is not None else 0,
-                    need_repost=0,
-                )
+            # 不再在此同步调用大模型提取，改为投递到入库队列（biliopusdb 队列），
+            # 由消费者判断数据库是否已存在提取信息 + redis 锁去重后，再调用大模型写库。
+            await BiliLotDataPublisher.pub_prize_extract_from_dyn(
+                dyn_id=DynInfo.dynId,
+                dyn_content=DynInfo.dynContent,
+                dyn_publish_time=DynInfo.pubTime,
+                lot_type="common",
+                need_comment=int(DynInfo.isManualReply) if DynInfo.isManualReply is not None else 0,
+            )
     
 
     @log_sql_retry_wrapper()
@@ -945,6 +943,29 @@ class __SqlHelper(SqlHelperBase):
         self, ref_ids: list[int], lot_type: str
     ) -> dict[int, int]:
         """批量查询大奖SVM判断结果，返回 {ref_id: is_grand_prize}"""
+
+    @log_sql_retry_wrapper()
+    async def is_extra_info_exists(self, ref_id: int, lot_type: str) -> bool:
+        """检查 biliopusdb 是否已存在该 (ref_id, lot_type) 的提取信息。
+
+        仅判断「是否存在」，不判断时间（与入库队列去重语义一致）。
+        任一子表（t_others_lot_info / t_lot_extra_info）有记录即视为已提取。
+        """
+        async with self.async_session() as session:
+            stmt = select(TOthersLotInfo.dynId).filter(
+                TOthersLotInfo.dynId == ref_id
+            ).limit(1)
+            res = await session.execute(stmt)
+            if res.scalars().first() is not None:
+                return True
+            stmt2 = select(TLotExtraInfo.ref_id).filter(
+                and_(
+                    TLotExtraInfo.ref_id == ref_id,
+                    TLotExtraInfo.lot_type == lot_type,
+                )
+            ).limit(1)
+            res2 = await session.execute(stmt2)
+            return res2.scalars().first() is not None
         if not ref_ids:
             return {}
         async with self.async_session() as session:
