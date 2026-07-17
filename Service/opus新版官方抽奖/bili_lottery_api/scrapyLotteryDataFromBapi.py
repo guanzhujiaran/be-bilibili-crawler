@@ -47,6 +47,7 @@ class RedisHelper(RedisManagerBase):
 
 class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
     Config = LotteryApiRobotConfig
+
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
 
@@ -68,9 +69,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
             update={"max_sem": self.sem_limit, "logger": self._injected_log}
         )
 
-    def __init__(
-        self, log, business_type: BusinessType, sem_num=1
-    ):
+    def __init__(self, log, business_type: BusinessType, sem_num=1):
         self.__business_type: BusinessType = business_type
         self._injected_log = log
         self.default_dyn_rid = 346492727
@@ -87,7 +86,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         # 其中 logger 与 max_sem 由调用方通过 _load_config 动态注入
         super().__init__()
 
-    async def solve_dyn_data(self, data: dict, rid: int) -> WorkerStatus:
+    async def solve_dyn_data(self, *, data: dict, rid: int) -> WorkerStatus:
         business_id = data.get("business_id")
         if business_id is not None and len(str(business_id)) >= 18:
             dynamic_ts = dynamic_id_2_ts(business_id)
@@ -97,13 +96,17 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
             await self.redis_helper.set_id(self.redis_helper.RedisMap.dyn_rid, rid)
             return WorkerStatus.complete
         else:
-            self.log.critical(f"lottery_notice api：{data} 获取动态时间失败！")
+            self.log.critical(f"origin dyn data: {data} \n获取动态时间失败！")
             return WorkerStatus.nullData
 
-    async def solve_reserve_data(self, data: dict) -> WorkerStatus:
-        reserve_sid = data.get("business_id")
+    async def solve_reserve_data(
+        self, *, data: dict, ipt_business_id, ipt_business_type
+    ) -> WorkerStatus:
+        reserve_sid: str | int | None = data.get("business_id")
         reserve_resp = await reserve_relation_info(ids=reserve_sid)
-        if da := reserve_resp.get("data"):
+        da = reserve_resp.get("data")
+        if reserve_sid is not None and da:
+            reserve_sid_int = int(reserve_sid)
             stime = da.get("list", {}).get(str(reserve_sid), {}).get("stime")
             if isinstance(stime, int):
                 if int(time.time()) - stime < self.min_reserve_sep_ts:
@@ -114,11 +117,14 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                     f"business_id：{data} 获取预约时间失败：{reserve_resp}"
                 )
             await self.redis_helper.set_id(
-                self.redis_helper.RedisMap.reserve_sid, reserve_sid
+                self.redis_helper.RedisMap.reserve_sid, reserve_sid_int
             )
             return WorkerStatus.complete
         else:
-            self.log.critical(f"business_id：{data} 获取响应失败！")
+
+            self.log.critical(
+                f"origin lottery_notice data：{data}\nlottery notice api data: {reserve_resp}\nhttps://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_id={ipt_business_id}&business_type={ipt_business_type}\n获取响应失败！"
+            )
             return WorkerStatus.nullData
 
     async def pipeline(
@@ -142,9 +148,13 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                 )
                 match business_type:
                     case 2:
-                        return await self.solve_dyn_data(data, rid=business_id)
+                        return await self.solve_dyn_data(data=data, rid=business_id)
                     case 10:
-                        return await self.solve_reserve_data(data)
+                        return await self.solve_reserve_data(
+                            data=data,
+                            ipt_business_id=business_id,
+                            ipt_business_type=business_type,
+                        )
             return WorkerStatus.nullData
         except Exception as e:
             self.log.exception(e)

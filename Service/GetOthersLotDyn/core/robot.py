@@ -19,13 +19,13 @@ from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import GetOthersLotDynRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
-
+from pydantic import Field
 
 class RobotTaskParams(CustomBaseModelHashable):
     """任务参数包装：直接持有领域对象引用，交由 UnlimitedCrawler 的 worker 池处理"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    obj: BiliSpaceUserItem | BiliDynamicItem
+    obj: BiliSpaceUserItem | BiliDynamicItem = Field()
 
     def __hash__(self) -> int:
         return hash(id(self.obj))
