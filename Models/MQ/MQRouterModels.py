@@ -4,6 +4,7 @@ from Models.MQ.UpsertLotDataModel import (
     LotDataDynamicReq,
     TopicLotData,
 )
+from Models.MQ.PrizeExtractMQModel import PrizeExtractReq
 from Service.GrpcModule.Models.RabbitmqModel import VoucherInfo
 
 
@@ -18,6 +19,7 @@ MQ_PARAMS_JOINED_TYPE = (
     LotDataReq
     | LotDataDynamicReq
     | TopicLotData
+    | PrizeExtractReq
     | VoucherInfo
     | RabbitMQTestMsgModel
     | dict

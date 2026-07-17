@@ -27,9 +27,7 @@ from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.通用.CommMethods import methods
-
-if TYPE_CHECKING:
-    from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
+from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
 
 BAPI = methods()
 

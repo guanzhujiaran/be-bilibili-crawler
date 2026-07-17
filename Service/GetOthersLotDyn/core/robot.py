@@ -287,3 +287,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 # 全局单例：与其它爬虫保持一致，模块加载时构造一次，由调度器 / GetOthersLotDyn 复用。
 # main() 内部会重新初始化轮次与用户列表等关键状态，故可安全跨轮次复用。
 get_others_lot_dyn_robot = GetOthersLotDynRobot()
+
+# obj 字段引用了 BiliSpaceUserItem / BiliDynamicItem 两个标准库 dataclass，
+# 其前向引用需在 BiliDynamicItem 完成定义后重建模型，避免 "not fully defined" 错误。
+RobotTaskParams.model_rebuild()
