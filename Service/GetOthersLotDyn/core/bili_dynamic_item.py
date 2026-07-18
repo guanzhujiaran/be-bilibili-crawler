@@ -301,7 +301,7 @@ class BiliDynamicItem:
                 author_uid = dynamic_detail.author_uid
                 rid = dynamic_detail.rid
                 _type = dynamic_detail.type
-                module_dynamic: dict = dynamic_detail.module_dynamic
+                module_dynamic: dict = dynamic_detail.module_dynamic or {}
                 rawJSON = dynamic_detail.rawJSON
                 is_official_lot = False
                 is_charge_lot = False
@@ -371,8 +371,9 @@ class BiliDynamicItem:
                     is_lot = False
                 elif not self.is_lot_orig:
                     if not _llm_is_lot:
-                        if comment_count > 2000 or forward_count > 1000:  # 评论或转发超多的就算不是抽奖动态也要加进去凑个数
-                            is_lot = True
+                        if comment_count is not None and forward_count is not None:
+                            if comment_count > 2000 or forward_count > 1000:  # 评论或转发超多的就算不是抽奖动态也要加进去凑个数
+                                is_lot = True
                 else:
                     is_lot = True
                 official_lot_type = OfficialLotType.official_lot if is_official_lot else OfficialLotType.charge_lot if is_charge_lot else OfficialLotType.reserve_lot if is_reserve_lot else None
@@ -429,7 +430,7 @@ class BiliDynamicItem:
                         authorName=orig_name,
                         up_uid=author_uid,
                         pubTime=datetime.datetime.fromtimestamp(
-                            int(orig_pub_ts)),
+                            int(orig_pub_ts or 0)),
                         dynContent=orig_dynamic_content,
                         commentCount=orig_comment_count,
                         repostCount=orig_forward_count,

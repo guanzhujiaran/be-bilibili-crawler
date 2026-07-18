@@ -2,12 +2,14 @@ import asyncio
 import concurrent.futures
 import re
 from functools import wraps
-from typing import Callable, TypeVar, Awaitable, Any, Optional
+from typing import Callable, TypeVar, Awaitable, Any, Optional, TYPE_CHECKING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from sqlalchemy.exc import InternalError, TimeoutError, OperationalError
-from pymysql.constants import CR
 from log.base_log import myfastapi_logger, sql_log
 import random
+
+if TYPE_CHECKING:
+    from loguru import Logger
 
 GLOBAL_SCHEDULER: AsyncIOScheduler = AsyncIOScheduler()
 _comm_lock = asyncio.Lock()
@@ -18,7 +20,7 @@ TResult = TypeVar("TResult")
 FuncT = TypeVar("FuncT", bound=Callable[..., Awaitable[Any]])
 
 
-def sem_gen(sem_limit=100)->asyncio.Semaphore:
+def sem_gen(sem_limit=100) -> asyncio.Semaphore:
     return asyncio.Semaphore(sem_limit)
 
 
@@ -168,18 +170,38 @@ def _log_db_connection_info(log, err: OperationalError) -> None:
     log.error("\n".join(lines))
 
 
-async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
+async def handle_sql_operational_error(func, log, err: OperationalError) -> bool:
     """
-        返回是否需要继续重试
+    返回是否需要继续重试
     """
-    if '(pymysql.err.OperationalError) (1054,' in err.args[0]: # 数据操作错了
+    # err.args[0] 形如 "(pymysql.err.OperationalError) (2013, '...')" 的字符串，
+    # 无法直接用 match 匹配整数错误码，先统一取出字符串备用。
+    err_str = str(err.args[0]) if err.args else str(err)
+
+    if "(pymysql.err.OperationalError) (1054," in err_str:  # 数据操作错了
         return False
     # 1040: 连接数过多，并发太高，等待 MySQL 释放连接后重试
-    if '(pymysql.err.OperationalError) (1040,' in err.args[0]:
-        log.error(f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}")
-        await asyncio.sleep(random.uniform(5,120))
+    if "(pymysql.err.OperationalError) (1040," in err_str:
+        log.error(
+            f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}"
+        )
+        await asyncio.sleep(random.uniform(5, 120))
         return True
-    match err.args[0]:
+
+    # 从原始异常中解析出整数错误码：优先用 err.orig（pymysql 原始异常），
+    # 失败则从字符串中正则提取，避免 match 因类型不匹配而全部落入未知分支。
+    code = None
+    orig = getattr(err, "orig", None)
+    if orig is not None and getattr(orig, "args", None):
+        cand = orig.args[0]
+        if isinstance(cand, int):
+            code = cand
+    if code is None:
+        m = re.search(r"\((\d+),", err_str)
+        if m:
+            code = int(m.group(1))
+
+    match code:
         case 1129:
             log.error(f"{func} \t{err}")
             await asyncio.sleep(120)
@@ -187,9 +209,10 @@ async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
             sleep_time = random.uniform(1, 5)  # 随机等待1-5秒
             log.error(f"{func} \t死锁错误: {err}, 将在{sleep_time:.2f}秒后重试")
             await asyncio.sleep(sleep_time)
-        case CR.CR_SERVER_LOST:  # mysql并发太高了，等待一段时间再重试
-            await asyncio.sleep(120)
-        case CR.CR_CONN_HOST_ERROR:  # mysql配置不正确或者mysql暂时挂了，在重启
+        case 2013:  # mysql连接丢失(2013)，等待一段时间再重试
+            log.error(f"{func} \tMySQL 连接丢失(2013)，等待后重试: {err}")
+            await asyncio.sleep(random.uniform(5, 120))
+        case 2003:  # mysql配置不正确或者mysql暂时挂了，在重启
             log.error(f"{func} \t{err}")
             _log_db_connection_info(log, err)
             await asyncio.sleep(120)
@@ -200,6 +223,7 @@ async def handle_sql_operational_error(func, log, err: OperationalError)->bool:
             return False
 
     return True
+
 
 def sql_retry_wrapper(_func: FuncT) -> FuncT:
     @wraps(_func)
@@ -213,9 +237,9 @@ def sql_retry_wrapper(_func: FuncT) -> FuncT:
                 await asyncio.sleep(60)
                 continue
             except OperationalError as operational_error:
-                    if await handle_sql_operational_error(_func, log, operational_error):
-                        continue
-                    break
+                if await handle_sql_operational_error(_func, log, operational_error):
+                    continue
+                break
             except TimeoutError as timeout_error:  # 这个是超时了，可能mysql负载太高卡了
                 await asyncio.sleep(60)
                 continue
@@ -242,7 +266,9 @@ def log_sql_retry_wrapper(log: "Logger" = myfastapi_logger):
                     await asyncio.sleep(60)
                     continue
                 except OperationalError as operational_error:
-                    if await handle_sql_operational_error(_func, log, operational_error):
+                    if await handle_sql_operational_error(
+                        _func, log, operational_error
+                    ):
                         continue
                     log.exception(operational_error)
                     raise  # 无法恢复时抛出异常，避免返回 None 导致调用方出现误导性 TypeError
@@ -265,9 +291,7 @@ def log_sql_retry_wrapper(log: "Logger" = myfastapi_logger):
     return _wrapper
 
 
-async def asyncio_gather(
-    *coros_or_futures, log: Optional["Logger"] = myfastapi_logger
-):
+async def asyncio_gather(*coros_or_futures, log: Optional["Logger"] = myfastapi_logger):
     async def _handle_coroutine(coro):
         try:
             return await coro

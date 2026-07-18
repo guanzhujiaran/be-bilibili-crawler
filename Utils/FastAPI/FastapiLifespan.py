@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import re
 import socket
 
 from fastapi import FastAPI
@@ -133,6 +134,52 @@ async def test_http_endpoint(url: str, service_name: str, timeout: float = 5.0) 
         return False
 
 
+_IPV6_RE = re.compile(r"^[0-9a-fA-F:]+$")
+
+
+def _looks_like_ipv6(addr: str) -> bool:
+    """粗粒度校验字符串是否像一个 IPv6 地址（含冒号且整体为十六进制/冒号字符）。"""
+    addr = addr.strip()
+    if ":" not in addr:
+        return False
+    return bool(_IPV6_RE.match(addr)) and addr.count("::") <= 1
+
+
+async def test_proxy_connectivity(
+    proxy_url: str,
+    service_name: str = "IPv6代理(3128)",
+    test_url: str = "https://ipv6.icanhazip.com",
+    timeout: float = 10.0,
+) -> bool:
+    """通过 HTTP 代理实际发起请求，验证 3128 IPv6 代理是否真的可用。
+
+    与普通的 TCP/HTTP 端口探测不同，这里会把请求真正经代理转发到外网，
+    并校验返回内容是否为 IPv6 地址，从而确认代理出口正常。
+    仅做功能性展示，不阻断启动（代理偶发不可用不应阻止服务启动）。
+    """
+    try:
+        async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client:
+            response = await client.get(test_url)
+        body = response.text.strip()
+        if response.status_code == 200 and _looks_like_ipv6(body):
+            myfastapi_logger.info(
+                f"✅ 代理 '{service_name}' ({proxy_url}) 正常，出口 IPv6: {body}")
+            return True
+        myfastapi_logger.error(
+            f"❌ 代理 '{service_name}' ({proxy_url}) 返回异常: "
+            f"status={response.status_code}, body={body[:80]!r}")
+        return False
+    except httpx.ProxyError as e:
+        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 连接失败：{e}")
+        return False
+    except httpx.TimeoutException:
+        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 请求超时")
+        return False
+    except Exception as e:
+        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 检测异常：{e}")
+        return False
+
+
 async def test_service_ports_and_hosts():
     """测试 CONFIG 中设置的所有服务的端口和 host 连通性。
 
@@ -173,6 +220,15 @@ async def test_service_ports_and_hosts():
             failed_services.append(f"{name} ({address})")
             if critical:
                 failed_critical_services.append(f"{name} ({address})")
+
+    # 额外：实际通过 3128 IPv6 代理发起请求，验证代理是否真的可用（非关键，仅展示）
+    proxy_url = settings.PROXY_SERVER
+    if proxy_url:
+        proxy_ok = await test_proxy_connectivity(proxy_url, service_name="IPv6代理(3128)")
+        if not proxy_ok:
+            failed_services.append(f"IPv6代理(3128) ({proxy_url})")
+    else:
+        myfastapi_logger.warning("未配置 PROXY_SERVER，跳过 3128 IPv6 代理检测")
 
     if failed_services:
         myfastapi_logger.critical("=" * 60)

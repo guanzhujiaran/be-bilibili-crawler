@@ -344,6 +344,10 @@ class SqlAlchemyConfig:
         pool_size=100,
         max_overflow=40,
         pool_use_lifo=True,
+        # 取出连接前先 ping 一下，避免拿到 MySQL 已关闭的陈旧连接（错误码 2013）
+        pool_pre_ping=True,
+        # 连接回收周期，应小于 MySQL 的 wait_timeout，防止空闲连接被服务端断开
+        pool_recycle=3600,
     )
     session_config = dict(
         expire_on_commit=False,
@@ -362,6 +366,10 @@ class CrawlerSqlAlchemyConfig:
         pool_size=100,  # 与业务池大小相同，独立使用
         max_overflow=40,
         pool_use_lifo=True,
+        # 取出连接前先 ping 一下，避免拿到 MySQL 已关闭的陈旧连接（错误码 2013）
+        pool_pre_ping=True,
+        # 连接回收周期，应小于 MySQL 的 wait_timeout，防止空闲连接被服务端断开
+        pool_recycle=3600,
     )
     session_config = dict(
         expire_on_commit=False,
