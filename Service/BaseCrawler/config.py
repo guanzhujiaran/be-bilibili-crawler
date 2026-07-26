@@ -109,7 +109,7 @@ class DynDetailScrapyConfig(CrawlerConfig):
 class GetRmFollowingListV2Config(CrawlerConfig):
     """取关对象爬虫配置（env: RM_FOLLOWING__*）"""
 
-    max_sem: int = 100
+    max_sem: int = 20
     logger: Any = get_rm_following_list_logger
     plugins: List[PluginConfig] = [PluginConfig("status", StatsPlugin)]
 

@@ -105,3 +105,6 @@ uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --force
 - `isLot`：官方抽奖=1，预约/充电=0，其余用 `extract_is_lot`
 - `isManualReply`：转为 0/1 (bool)
 - `t_lot_extra_info` 表：`need_comment` / `need_repost`
+
+FAQ:
+1.milvus数据库报错无法读写的时候,执行 `sudo chown -R 999:999 ./docker_vol/milvus/data ` 修复权限问题
