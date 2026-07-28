@@ -138,6 +138,9 @@ class ReserveInfoResp(reserveInfo):
     raw: TUpReserveRelationInfoResp | None
     dynamic_id: int | None
     total: int | None
+    extra_info: "OfficialLotExtraInfoResp | None" = Field(
+        default=None, description="抽奖附加信息（对应 t_lot_extra_info 表）"
+    )
 
     @computed_field
     @property
@@ -163,25 +166,48 @@ class LotExtraInfoLotType(StrEnum):
     charge = "charge"
 
 
-class OfficialLotExtraInfoResp(BaseModel):
-    """官方/预约/充电抽奖附加信息 — 严格对应 GrpcModule 数据库 t_lot_extra_info 表的列。
+# lotdata.business_type 取值（与 LotteryBusinessType 一致，此处避免循环导入直接写常量）
+_BUSINESS_TYPE_OFFICIAL = 1  # 官方/转发抽奖
+_BUSINESS_TYPE_RESERVE = 10  # 预约抽奖
+_BUSINESS_TYPE_CHARGE = 12  # 充电抽奖
 
-    该表仅存储 LLM 大奖/抽奖/互动判断结果，不含奖品名、开奖时间、话题文本等字段。
-    奖品信息由主表 Lotdata 的 first_prize_cmt 等字段提供。
+
+class OfficialLotExtraInfoResp(BaseModel):
+    """官方/预约/充电抽奖附加信息响应。
+
+    官方抽奖的抽奖方式（是否需转发/评论、是否话题抽奖等）已由 lottery_type
+    （即 lotdata.business_type）固定，无需落库，因此 is_lot / need_comment /
+    need_repost 不再作为存储字段，而是在响应中根据 lottery_type 由 property 计算得出。
+    仅 is_grand_prize 由大模型判断并落库。
     """
 
-    is_lot: bool | None = Field(
-        default=None, description="LLM 判断是否为抽奖: true-是, false-否, null-未抽取"
+    # lottery_type 即 lotdata.business_type：1-官方/转发抽奖, 10-预约抽奖, 12-充电抽奖
+    lottery_type: int | None = Field(
+        default=None,
+        description="抽奖类型（lotdata.business_type）：1-官方/转发抽奖, 10-预约抽奖, 12-充电抽奖",
     )
     is_grand_prize: bool | None = Field(
         default=None, description="大奖标志: true-大奖, false-非大奖, null-未判断"
     )
-    need_comment: bool | None = Field(
-        default=None, description="是否需要评论, null-未知"
-    )
-    need_repost: bool | None = Field(
-        default=None, description="是否需要转发, null-未知"
-    )
+
+    @computed_field
+    @property
+    def is_lot(self) -> bool | None:
+        return True
+
+    @computed_field
+    @property
+    def need_comment(self) -> bool | None:
+        """官方抽奖均无需评论参与。"""
+        return False
+
+    @computed_field
+    @property
+    def need_repost(self) -> bool | None:
+        """仅官方/转发抽奖(business_type=1)需转发参与。"""
+        if self.lottery_type is None:
+            return None
+        return self.lottery_type == _BUSINESS_TYPE_OFFICIAL
 
 
 class CommonLotExtraInfoResp(BaseModel):

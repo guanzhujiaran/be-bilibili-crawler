@@ -94,7 +94,7 @@ def _parse_status(status: str | None) -> BiliLotDataStatusEnum | None:
 
 
 @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)
-async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
+async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel[ResponsePaginationItems[ReserveInfoResp]]:
     """获取必抽的预约抽奖数据"""
     result_items, total = await get_reserve_lottery(
         q=BiliLotDataQueryModel(

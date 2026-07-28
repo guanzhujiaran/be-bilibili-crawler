@@ -503,10 +503,9 @@ class SQLHelper(SqlHelperBase):
             base_conditions.append(Lotdata.lottery_id.not_in(grand_subq))
 
         # 时间快捷筛选（优先级高于单独的 start_ts/end_ts）
-        import datetime as dt
         if q.created_at_preset is not None:
             days = int(q.created_at_preset.value.replace("d", ""))
-            threshold = dt.datetime.fromtimestamp(now_ts - days * 86400)
+            threshold = datetime.datetime.fromtimestamp(now_ts - days * 86400)
             base_conditions.append(Lotdata.created_at >= threshold)
         if q.pub_time_preset is not None:
             days = int(q.pub_time_preset.value.replace("d", ""))

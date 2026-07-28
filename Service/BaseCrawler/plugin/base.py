@@ -7,6 +7,11 @@ from pydantic.json_schema import SkipJsonSchema
 
 if TYPE_CHECKING:
     from loguru import Logger
+else:
+    # 运行时提供真实 Logger 类型，保证 pydantic 解析 "Logger" 前向引用时可用
+    # （子类新增字段会触发模型重建，届时需要在本模块命名空间中找到 Logger）
+    from loguru._logger import Logger
+from loguru import logger
 
 
 class CrawlerPlugin(BaseModel, ABC, Generic[ParamsType]):
@@ -16,7 +21,7 @@ class CrawlerPlugin(BaseModel, ABC, Generic[ParamsType]):
     """
 
     crawler: SkipJsonSchema[BaseCrawler[ParamsType]] = Field(exclude=True)
-    log: SkipJsonSchema[Any | None] = Field(default=None, exclude=True)
+    log: SkipJsonSchema["Logger"] = Field(default=logger, exclude=True)
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
     async def on_run_start(self, init_worker_model: WorkerModel):

@@ -80,7 +80,13 @@ class Lotdata(Base):
 
 
 class LotExtraInfo(Base):
-    """抽奖附加信息表 — 存储大奖判断结果等额外信息，独立于Lotdata"""
+    """抽奖附加信息表 — 存储大奖判断结果，独立于Lotdata。
+
+    官方抽奖的抽奖方式（是否需转发/评论、是否话题抽奖等）已由 lotdata.business_type 固定，
+    无需落库，因此 is_lot / need_comment / need_repost 不再作为存储列。
+    仅 is_grand_prize 由大模型判断并落库；is_lot / need_comment / need_repost 由 OfficialLotExtraInfoResp
+    在响应中根据 lottery_type 以 computed_field property 实时计算。
+    """
     __tablename__ = 't_lot_extra_info'
     __table_args__ = (
         ForeignKeyConstraint(['lottery_id'], ['lotdata.lottery_id'], name='FK_lot_extra_info_lotdata'),
@@ -89,10 +95,7 @@ class LotExtraInfo(Base):
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     lottery_id = mapped_column(BigInteger, nullable=False, comment='关联lotdata.lottery_id')
-    is_lot = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='LLM判断是否为抽奖: 1-是, 0-否')
     is_grand_prize = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否大奖: 1-是, 0-否')
-    need_comment = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否需要评论: 1-是, 0-否')
-    need_repost = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否需要转发: 1-是, 0-否')
     created_at = mapped_column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP'))
     updated_at = mapped_column(TIMESTAMP, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
 

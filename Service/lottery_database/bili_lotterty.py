@@ -106,11 +106,6 @@ async def update_lot_data(business_id: int, business_type: LotteryBusinessType):
     )
     lot_data_dict = lot_notice.get("data")
     await bos.upsert_lot_detail(lot_data_dict)
-    # 主表落库后，异步触发大模型大奖判断链路（与落库解耦）
-    await BiliLotDataPublisher.pub_prize_extract_from_lot_data(
-        lot_data_dict=lot_data_dict,
-        extra_routing_key="update_lot_data"
-    )
     bos.log.info(f"update lot_data:{lot_notice}")
 
 
@@ -118,6 +113,8 @@ async def get_reserve_lottery(
     q: BiliLotDataQueryModel, background_task: BackgroundTasks | None = None
 ) -> tuple[list[ReserveInfoResp], int]:
     all_lots, total_num = await bos.query_lottery(q)
+    # 与主表解耦，批量查询 extra_info（t_lot_extra_info）
+    extra_map = await bos.get_extra_info_map([x.lottery_id for x in all_lots])
     reserve_info_list: list[tuple[TUpReserveRelationInfo, dict]] = (
         await reserve_robot.bulk_handle_fetch_reserve_info(
             [x.business_id for x in all_lots], False,background_task
@@ -158,7 +155,15 @@ async def get_reserve_lottery(
             jump_url=i.lottery_detail_url,
             reserve_sid=i.business_id,
             available=True,
-            raw=None
+            raw=None,
+            extra_info=(
+                OfficialLotExtraInfoResp(
+                    lottery_type=i.business_type,
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                )
+                if (_ei := extra_map.get(i.lottery_id))
+                else None
+            ),
         )
         ret_reserve_infos.append(reserve_info)
     return ret_reserve_infos, total_num
@@ -192,10 +197,8 @@ async def get_official_lottery(
             app_sche=f"bilibili://opus/detail/{str(x.business_id)}",
             extra_info=(
                 OfficialLotExtraInfoResp(
-                    is_lot=bool(_ei.is_lot),
+                    lottery_type=x.business_type,
                     is_grand_prize=bool(_ei.is_grand_prize),
-                    need_comment=bool(_ei.need_comment),
-                    need_repost=bool(_ei.need_repost),
                 )
                 if (_ei := extra_map.get(x.lottery_id))
                 else None
@@ -242,10 +245,8 @@ async def get_charge_lottery(
                 upower_level_str=upower_level_str,
                 extra_info=(
                     OfficialLotExtraInfoResp(
-                        is_lot=bool(_ei.is_lot),
+                        lottery_type=x.business_type,
                         is_grand_prize=bool(_ei.is_grand_prize),
-                        need_comment=bool(_ei.need_comment),
-                        need_repost=bool(_ei.need_repost),
                     )
                     if (_ei := extra_map.get(x.lottery_id))
                     else None

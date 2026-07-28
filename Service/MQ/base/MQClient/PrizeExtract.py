@@ -34,7 +34,10 @@ from Models.MQ.PrizeExtractMQModel import (
     PrizeExtractParams,
     PrizeExtractTargetEnum,
 )
-from Models.MQ.PrizeExtractResult import PrizeExtractResult
+from Models.MQ.PrizeExtractResult import (
+    PrizeExtractResult,
+    OfficialPrizeExtractResult,
+)
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     extract_prize_info_for_biliopusdb,
     extract_prize_info_for_lotdata,
@@ -165,7 +168,9 @@ async def _already_stored(params: PrizeExtractParams) -> bool:
     return await SqlHelper.is_extra_info_exists(ref_id=ref_id, lot_type=params.lot_type)
 
 
-async def _do_extract_and_store(params: PrizeExtractParams) -> PrizeExtractResult:
+async def _do_extract_and_store(
+    params: PrizeExtractParams,
+) -> PrizeExtractResult | OfficialPrizeExtractResult:
     """调用大模型提取并把结果写库，返回 result（值），不回填到 req。
 
     具体提取函数与落库目标由 params.target_db 决定。
@@ -217,7 +222,7 @@ async def _do_extract_and_store(params: PrizeExtractParams) -> PrizeExtractResul
 
 async def process_prize_extract(
     mq_props, params: PrizeExtractParams, msg: RabbitMessage
-) -> PrizeExtractResult | None:
+) -> PrizeExtractResult | OfficialPrizeExtractResult | None:
     """两队列共享的处理流程：去重锁 → 查库 → 信号量 → 大模型提取写库。
 
     mq_props 用于「并发已满」时把消息重新入队回原队列。
@@ -228,7 +233,7 @@ async def process_prize_extract(
     params = PrizeExtractParams.model_validate(params.model_dump())
     lock_key = _lock_key(params)
     sem_acquired = False
-    result: PrizeExtractResult | None = None
+    result: PrizeExtractResult | OfficialPrizeExtractResult | None = None
     try:
         # 1) redis 锁：正在查询/处理则跳过
         if not await prize_extract_redis.acquire_lock(lock_key, LOCK_TTL):

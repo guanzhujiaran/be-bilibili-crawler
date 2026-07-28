@@ -98,7 +98,12 @@ class TLotuserspaceresp(Base):
 
 
 class TLotExtraInfo(Base):
-    """抽奖附加信息表 — 存储 LLM 提取的全部额外信息，独立于原有表
+    """抽奖附加信息表（biliopusdb） — 存储 LLM 提取的全部额外信息，独立于原有表。
+
+    与 dyndetail 的 t_lot_extra_info（对应 GrpcModule/models.LotExtraInfo）不同：
+    本表服务于普通/第三方抽奖，抽奖方式（is_lot / need_comment / need_repost）需由 LLM
+    动态提取并落库；而 dyndetail 的官方抽奖抽奖方式已由 lotdata.business_type 固定，
+    无需落库，因此 dyndetail 已移除这三列，仅依赖响应中的 computed_field property 实时计算。
 
     原先分散在 t_others_lot_info（奖品名/开奖时间）的信息，已统一合并到本表，
     通过 (ref_id, lot_type) 唯一约束关联原始记录（普通抽奖 ref_id=dynId, lot_type='common'）。

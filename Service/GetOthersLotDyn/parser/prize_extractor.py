@@ -24,7 +24,7 @@ from datetime import datetime
 import opencc
 from loguru import logger
 from pydantic import BaseModel, Field
-from Models.MQ.PrizeExtractResult import PrizeExtractResult
+from Models.MQ.PrizeExtractResult import PrizeExtractResult, OfficialPrizeExtractResult
 from Service.llm_service import get_all_free_llms, SamplingPreset
 from Utils.推送.PushMe import a_push_error
 
@@ -33,10 +33,10 @@ _t2s_converter = opencc.OpenCC('t2s.json')
 
 
 class PrizeExtractResp(BaseModel):
-    """抽奖信息提取返回内容"""
+    """抽奖信息提取返回内容（result 的类型随目标数据库不同而不同）"""
     dyn_content: str = Field(description="原始文本内容")
     consume_time: float = Field(description="处理耗时，单位秒")
-    result: PrizeExtractResult = Field(description="抽奖信息提取结果")
+    result: BaseModel = Field(description="抽奖信息提取结果")
 
     def __post_init__(self):
         self.dyn_content = json.dumps(self.dyn_content)
@@ -52,6 +52,11 @@ _AGENT_SYSTEM_PROMPT = """从文本中提取抽奖信息。
 4. need_repost: 是否需要转发，true/false
 5. required_topic_text: 需要携带的话题文本，如 #抽奖#，无则为空字符串
 6. is_grand_prize: 是否大奖，奖品价值高/数量多/知名品牌即为大奖，true/false"""
+
+
+# 官方/充电抽奖专用：抽奖方式已由 lottery_type 固定，无需判断 is_lot / need_comment /
+# need_repost，也无需落库，故只让大模型判断大奖标记。
+_OFFICIAL_SYSTEM_PROMPT = """官方/充电抽奖，抽奖方式由 lottery_type 固定。只判断 is_grand_prize：奖品价值高/数量多/知名品牌即为大奖，返回 true/false。"""
 
 
 def _build_system_prompt(pub_time: datetime | None) -> str:
@@ -93,19 +98,25 @@ async def _do_extract(
     dyn_content: str,
     dyn_publish_time: datetime | None = None,
     chat_openai_client: ChatOpenAI | None = None,
+    result_model: type[BaseModel] = PrizeExtractResult,
+    system_prompt: str | None = None,
 ) -> PrizeExtractResp:
-    """一次性提取所有抽奖相关信息（内部共享实现）
+    """一次性提取抽奖相关信息（内部共享实现）
 
     仅使用云端 LLM 进行抽奖判断，不再使用本地大模型，也不做任何回退
     （正则/SVM 等）。当所有云端 LLM 调用均失败时直接抛出 RuntimeError，
     由调用方决定是否跳过保存（留空），等待手动脚本 judge_grand_prize 回填。
+
+    result_model / system_prompt 由调用方决定：
+      - 普通/预约抽奖 → PrizeExtractResult + 完整提示词
+      - 官方/充电抽奖 → OfficialPrizeExtractResult + 仅大奖提示词
     """
     start_ts = time.time()
     if not dyn_content or not dyn_content.strip():
         return PrizeExtractResp(
             dyn_content=dyn_content,
             consume_time=time.time() - start_ts,
-            result=PrizeExtractResult(),
+            result=result_model(),
         )
 
     text = _preprocess_text(dyn_content)
@@ -113,7 +124,7 @@ async def _do_extract(
         return PrizeExtractResp(
             dyn_content=text,
             consume_time=time.time() - start_ts,
-            result=PrizeExtractResult(),
+            result=result_model(),
         )
     if chat_openai_client:
         all_llms = [chat_openai_client]
@@ -130,13 +141,13 @@ async def _do_extract(
     last_err: Exception | None = None
     for idx, llm in enumerate(all_llms):
         try:
-            msg_content = _build_system_prompt(dyn_publish_time)
-            structured_llm = llm.with_structured_output(PrizeExtractResult)
+            msg_content = system_prompt or _build_system_prompt(dyn_publish_time)
+            structured_llm = llm.with_structured_output(result_model)
             messages = [
                 {"role": "system", "content": msg_content},
                 {"role": "user", "content": text},
             ]
-            result: PrizeExtractResult = await structured_llm.ainvoke(
+            result = await structured_llm.ainvoke(
                 messages,
                 extra_body={"chat_template_kwargs": {
                     "enable_thinking": False}
@@ -201,8 +212,9 @@ async def extract_prize_info_for_lotdata(
     """
     面向 dyndetail (官方/充电抽奖) 的抽奖信息提取。
 
-    侧重于 is_grand_prize 判断，用于 t_lot_extra_info (lottery_id 关联 lotdata)。
-    不关注 prize_names / lottery_time（官方抽奖已有固定字段）。
+    官方抽奖的抽奖方式已由 lottery_type 固定，无需用大模型提取 is_lot /
+    need_comment / need_repost，也无需落库，因此 result 仅含 is_grand_prize，
+    用于 t_lot_extra_info (lottery_id 关联 lotdata)。
 
     调用方通常通过 grpc_sql_helper._upsert_extra_info() / batch_save_extra_info() 入库。
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
@@ -212,6 +224,8 @@ async def extract_prize_info_for_lotdata(
         dyn_content=dyn_content,
         dyn_publish_time=None,  # 官方抽奖不传发布时间
         chat_openai_client=chat_openai_client,
+        result_model=OfficialPrizeExtractResult,
+        system_prompt=_OFFICIAL_SYSTEM_PROMPT,
     )
 
 

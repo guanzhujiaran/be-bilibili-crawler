@@ -1,4 +1,4 @@
-from pydantic import computed_field
+from pydantic import Field, computed_field
 import datetime
 import inspect
 import time
@@ -22,7 +22,14 @@ class CrawlerHealthStatus(StrEnum):
 class StatsPlugin(CrawlerPlugin[ParamsType]):
     """
     一个用于收集和提供爬虫运行统计信息的插件。
+
+    设置项（pydantic 字段，通过 PluginConfig.plugin_kwargs 传入）：
+        push_result: 爬虫运行结束时是否推送统计结果摘要。
     """
+
+    push_result: bool = Field(
+        default=False, description="爬虫运行结束(on_run_end)时是否推送统计结果摘要"
+    )
 
     def __init__(self, **data):
         super().__init__(**data)
@@ -105,19 +112,32 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         # No need to calculate _total_run_duration or _current_speed here,
         # the properties will return the final values when accessed.
 
-        self.log.info(
-            self.crawler.format_log(
-                f"""StatsPlugin Summary:"
-  Initial Params: {self._init_params}")
-  Final Params: {self._end_params}")
-  Is Running: {self._is_running}")
-  Processed Items: {self._processed_items_count}")
-  Total Duration: {self.total_run_duration:.2f} seconds")
-  Average Speed: {self.crawling_speed:.2f} items/second")
-  Last Update Time: {time.ctime(self.last_update_time)}
-  Success Count: {self.succ_count}"""
-            )
+        summary = (
+            f"StatsPlugin Summary:\n"
+            f"  Initial Params: {self._init_params}\n"
+            f"  Final Params: {self._end_params}\n"
+            f"  Is Running: {self._is_running}\n"
+            f"  Processed Items: {self._processed_items_count}\n"
+            f"  Total Duration: {self.total_run_duration:.2f} seconds\n"
+            f"  Average Speed: {self.crawling_speed:.2f} items/second\n"
+            f"  Last Update Time: {time.ctime(self.last_update_time)}\n"
+            f"  Success Count: {self.succ_count}"
         )
+        self.log.info(self.crawler.format_log(summary))
+        if self.push_result:
+            try:
+                # 延迟导入：PushMe -> CONFIG -> BaseCrawler.config 会反向依赖本模块，
+                # 顶层导入会造成循环导入，故在使用时再导入。
+                from Utils.推送.PushMe import a_pushme, server_label
+
+                await a_pushme(
+                    f"{server_label()} {self.crawler.__class__.__name__} 爬虫运行结束",
+                    summary,
+                )
+            except Exception as e:
+                self.log.warning(
+                    self.crawler.format_log(f"StatsPlugin: 推送统计结果失败: {e!r}")
+                )
         await super().on_run_end(end_param)
 
     # --- Public properties to access statistics ---
@@ -126,44 +146,53 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
     def init_params(self) -> WorkerModel | None:
         """最开始的参数"""
         return self._init_params
+
     @computed_field
     @property
     def end_params(self) -> WorkerModel | None:
         """最后的参数"""
         return self._end_params
+
     @computed_field
     @property
     def end_success_params(self) -> WorkerModel | None:
         """最后成功处理的参数"""
         return self._end_success_params
+
     @computed_field
     @property
     def is_running(self) -> bool:
         """爬虫是否正在运行"""
         return self._is_running
+
     @computed_field
     @property
     def last_update_time(self) -> float:
         """最后一次任务完成的时间戳 (Unix timestamp)"""
         return self._last_update_time
+
     @computed_field
     @property
     def last_update_time_str(self) -> datetime.datetime:
         return ts_2_DateTime(self.last_update_time)
+
     @computed_field
     @property
     def processed_items_count(self) -> int:
         """已处理的任务数量"""
         return self._processed_items_count
+
     @computed_field
     @property
     def start_time(self) -> float:
         """爬虫的启动时间 (Unix timestamp)"""
         return self._start_time
+
     @computed_field
     @property
     def start_time_str(self) -> datetime.datetime:
         return ts_2_DateTime(self.start_time)
+
     @computed_field
     @property
     def total_run_duration(self) -> float:
@@ -174,6 +203,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         if self.start_time == 0.0 or self.last_update_time == 0.0:
             return 0.0
         return self.last_update_time - self.start_time
+
     @computed_field
     @property
     def crawling_speed(self) -> float:
@@ -185,20 +215,24 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         if current_duration > 0:
             return self._processed_items_count / current_duration
         return 0.0
+
     @computed_field
     @property
     def null_count(self) -> int:
         """返回 null 数据的数量"""
         return self._null_count
+
     @computed_field
     @property
     def succ_count(self) -> int:
         """成功处理的任务数量"""
         return self._succ_count
+
     @computed_field
     @property
     def running_params_set(self) -> set[WorkerModel]:
         return self._running_params_set
+
     @computed_field
     @property
     def health_status(self) -> CrawlerHealthStatus:
@@ -242,21 +276,18 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         return CrawlerHealthStatus.NORMAL
 
 
-
 class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
     """
     一个用于在连续多个任务（按原始生成顺序）返回 null 结果时触发停止的插件。
     """
 
-    def __init__(
-        self,
-        max_consecutive_nulls: int | None = None,
-        **data
-    ):
+    def __init__(self, max_consecutive_nulls: int | None = None, **data):
         super().__init__(**data)
         if max_consecutive_nulls is None:
             # 允许宿主爬虫在 super().__init__() 之前设置 self.null_stop_max_consecutive
-            max_consecutive_nulls = getattr(self.crawler, "null_stop_max_consecutive", 5)
+            max_consecutive_nulls = getattr(
+                self.crawler, "null_stop_max_consecutive", 5
+            )
         self._max_consecutive_nulls: int = max_consecutive_nulls
         # --- 核心状态变量 ---
         # 向量化存储所有任务的状态。使用 WorkerStatus Enum。

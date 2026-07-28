@@ -16,7 +16,10 @@ from log.base_log import (
     get_others_lot_logger,
 )
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin, SequentialNullStopPlugin
+from Service.BaseCrawler.plugin.statusPlugin import (
+    StatsPlugin,
+    SequentialNullStopPlugin,
+)
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -29,13 +32,17 @@ class PluginConfig:
       爬虫初始化时通过反射自动执行 ``setattr(self, plugin_name, plugin_cls(self))``，
       子类即可直接用 ``self.<plugin_name>`` 访问插件，无需手动写 ``self.xxx = StatsPlugin(self)``。
     - ``plugin_cls``：插件类（必须是 ``CrawlerPlugin`` 的子类），仅需可经 ``plugin_cls(self)`` 构造。
+    - ``plugin_kwargs``：插件设置项，实例化时透传给插件构造函数
+      （插件是 pydantic 模型，设置项需在插件类中声明为字段）。
 
     例如：
         plugins=[PluginConfig("stats_plugin", StatsPlugin)]
+        plugins=[PluginConfig("stats_plugin", StatsPlugin, {"push_result": True})]
     """
 
     plugin_name: str
     plugin_cls: type[CrawlerPlugin]
+    plugin_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 class CrawlerConfig(BaseModel):
@@ -103,7 +110,9 @@ class DynDetailScrapyConfig(CrawlerConfig):
     requeue_on_timeout: bool = True
     log_timeout_error: bool = False
     logger: Any = official_lot_logger
-    plugins: List[PluginConfig] = [PluginConfig("status_plugin", StatsPlugin)]
+    plugins: List[PluginConfig] = [
+        PluginConfig("status_plugin", StatsPlugin, {"push_result": True}),
+    ]
 
 
 class GetRmFollowingListV2Config(CrawlerConfig):
@@ -111,7 +120,9 @@ class GetRmFollowingListV2Config(CrawlerConfig):
 
     max_sem: int = 20
     logger: Any = get_rm_following_list_logger
-    plugins: List[PluginConfig] = [PluginConfig("status", StatsPlugin)]
+    plugins: List[PluginConfig] = [
+        PluginConfig("status", StatsPlugin),
+    ]
 
 
 class ReserveScrapyRobotConfig(CrawlerConfig):
@@ -123,7 +134,7 @@ class ReserveScrapyRobotConfig(CrawlerConfig):
     requeue_on_timeout: bool = True
     logger: Any = reserve_lot_logger
     plugins: List[PluginConfig] = [
-        PluginConfig("stats_plugin", StatsPlugin),
+        PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
         PluginConfig("null_stop_plugin", SequentialNullStopPlugin),
     ]
 
@@ -137,7 +148,7 @@ class TopicRobotConfig(CrawlerConfig):
     requeue_on_timeout: bool = True
     logger: Any = topic_lot_logger
     plugins: List[PluginConfig] = [
-        PluginConfig("stats_plugin", StatsPlugin),
+        PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
         PluginConfig("null_stop_plugin", SequentialNullStopPlugin),
     ]
 
@@ -150,7 +161,9 @@ class LotteryApiRobotConfig(CrawlerConfig):
     """
 
     logger: Any = myfastapi_logger
-    plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
+    plugins: List[PluginConfig] = [
+        PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
+    ]
 
 
 class RefreshBiliLotDatabaseConfig(CrawlerConfig):
@@ -200,7 +213,9 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
     # 避免异常时长时间休眠，异常已在各业务方法内部处理
     worker_error_delay: int = 0
     logger: Any = get_others_lot_logger
-    plugins: List[PluginConfig] = []
+    plugins: List[PluginConfig] = [
+        PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
+    ]
 
 
 # ===== 爬虫配置注册表（集中管理，不依赖全局 Settings） =====
