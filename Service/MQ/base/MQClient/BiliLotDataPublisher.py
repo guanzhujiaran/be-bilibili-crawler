@@ -5,6 +5,7 @@ from faststream.rabbit import RabbitExchange, ExchangeType
 from Models.MQ.MQRouterModels import RabbitMQTestMsgModel
 from Models.MQ.BaseMQModel import MQPropBase, QueueName, ExchangeName
 from Models.MQ.UpsertLotDataModel import LotDataReq, LotDataDynamicReq, TopicLotData
+from Models.lottery_database.bili.LotteryDataModels import LotExtraInfoLotType
 from Models.MQ.PrizeExtractMQModel import (
     PrizeExtractParams,
     PrizeExtractTargetEnum,
@@ -239,7 +240,7 @@ class BiliLotDataPublisher:
         dyn_id: int,
         dyn_content: str,
         dyn_publish_time: datetime | None = None,
-        lot_type: str = "common",
+        lot_type: LotExtraInfoLotType = LotExtraInfoLotType.common,
         need_comment: int | None = None,
         comment_count: int | None = None,
         forward_count: int | None = None,

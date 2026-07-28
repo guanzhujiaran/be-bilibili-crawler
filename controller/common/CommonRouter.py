@@ -9,6 +9,7 @@ from controller.common.base import new_router
 from log.base_log import myfastapi_logger
 from Models.lottery_database.bili.LotteryDataModels import reserveInfo
 from Service.GetOthersLotDyn import get_others_lot_dyn
+from Service.llm_service import get_llm_stats
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.GrpcModule.GrpcSrc.获取取关对象.GetRmFollowingListV2 import gmflv2
 from Service.MQ.message.message_pub import publish_message
@@ -40,6 +41,17 @@ async def app_avaliable_api():
 async def app_avaliable_api():
     await asyncio.to_thread(gc.collect)
     return 'gc完成！'
+
+
+@router.get(
+    RouterPaths.GET_LLM_STATS,
+    name=RouterNames.GET_LLM_STATS,
+    response_model=list[dict],
+    description='获取所有云端 LLM 实例的使用统计：调用次数、成功/失败次数、是否可用、'
+                '速率（最近60秒调用数/平均耗时）、最后使用时间戳、token 消耗量等',
+)
+async def api_get_llm_stats():
+    return get_llm_stats()
 
 
 @router.get(

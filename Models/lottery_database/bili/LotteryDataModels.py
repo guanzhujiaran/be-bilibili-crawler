@@ -154,6 +154,15 @@ class OfficialLotType(StrEnum):
     lot_dyn_origin_dyn = "抽奖动态的源动态"
 
 
+class LotExtraInfoLotType(StrEnum):
+    """t_lot_extra_info 表的 lot_type 枚举"""
+
+    common = "common"
+    official = "official"
+    reserve = "reserve"
+    charge = "charge"
+
+
 class OfficialLotExtraInfoResp(BaseModel):
     """官方/预约/充电抽奖附加信息 — 严格对应 GrpcModule 数据库 t_lot_extra_info 表的列。
 

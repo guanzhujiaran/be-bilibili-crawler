@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import StrEnum
 
+from Models.lottery_database.bili.LotteryDataModels import LotExtraInfoLotType
+
 
 class PrizeExtractTargetEnum(StrEnum):
     """入库目标数据库 & 提取逻辑标识"""
@@ -31,7 +33,7 @@ class PrizeExtractParams(BaseModel):
 
     # —— biliopusdb 用 ——
     ref_id: int | None = None  # 对应 dynId
-    lot_type: str = "common"
+    lot_type: LotExtraInfoLotType = LotExtraInfoLotType.common
     dyn_content: str = ""  # 用于大模型提取的原始动态文本
     dyn_publish_time: datetime | None = None
     # 是否需要评论（来自抽奖元信息，非大模型结果）；None 表示不更新该字段

@@ -166,6 +166,7 @@ class RouterPaths(StrEnum):
     GET_OTHERS_BIG_RESERVE = "/get_others_big_reserve"  # 获取重要预约抽奖
     ZHIHU_GET_OTHERS_LOT_PINS = "/zhihu/get_others_lot_pins"  # 获取知乎抽奖
     TOUTIAO_GET_OTHERS_LOT_IDS = "/toutiao/get_others_lot_ids"  # 获取头条抽奖
+    GET_LLM_STATS = "/llm/stats"  # 获取云端LLM实例使用统计
 
 
 class RouterNames(StrEnum):
@@ -259,6 +260,7 @@ class RouterNames(StrEnum):
     GET_OTHERS_BIG_RESERVE = "get_others_big_reserve"  # 获取重要预约抽奖
     ZHIHU_GET_OTHERS_LOT_PINS = "zhihu_get_others_lot_pins"  # 获取知乎抽奖
     TOUTIAO_GET_OTHERS_LOT_IDS = "toutiao_get_others_lot_ids"  # 获取头条抽奖
+    GET_LLM_STATS = "get_llm_stats"  # 获取云端LLM实例使用统计
 
 
 class RouterModule(StrEnum):
