@@ -18,8 +18,6 @@ from Service.opus新版官方抽奖.预约抽奖.db.models import (
     TUpReserveRelationInfo,
 )
 from Utils.推送.PushMe import a_push_error
-from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
-from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 lock = asyncio.Lock()
 
 
@@ -122,19 +120,15 @@ class _SqlHelper(SqlHelperBase):
         if new_field:
             reserve_info.new_field = str(new_field)
         result = await self._add_reserve_info_by_resp_dict(reserve_info)
-        # LLM 大奖判断（入库后判断，不影响主流程，结果写入独立子表 t_lot_extra_info）
+        # LLM 大奖判断 → 投递到入库队列（biliopusdb 队列），由消费者异步提取写库
         if result.text and result.ids:
-            try:
-                prize_result = await extract_prize_info_for_biliopusdb(dyn_content=result.text)
-                if prize_result.result.is_grand_prize:
-                    await SqlHelper.save_extra_info(
-                        ref_id=result.ids,
-                        lot_type="reserve",
-                        is_grand_prize=1,
-                    )
-            except Exception as e:
-                self.log.exception(f"判断预约抽奖{result.ids}是否为大奖失败")
-            return result
+            await BiliLotDataPublisher.pub_prize_extract_from_dyn(
+                dyn_id=result.ids,
+                dyn_content=result.text,
+                lot_type="reserve",
+                extra_routing_key="bili_reserve_sqlhelper",
+            )
+        return result
 
     @lock_wrapper
     async def get_latest_reserve_round(self, readonly=False) -> TReserveRoundInfo:

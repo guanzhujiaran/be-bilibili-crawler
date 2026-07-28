@@ -202,7 +202,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         yield ...
 
     @abstractmethod
-    async def handle_fetch(self, params: ParamsType | None) -> WorkerStatus | Any:
+    async def handle_fetch(self, params: ParamsType | None) -> WorkerStatus:
         """
         处理单个任务，获取数据
 

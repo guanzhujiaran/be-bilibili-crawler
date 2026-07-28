@@ -60,6 +60,12 @@ async def get_common_lottery(
     """
     result = await bds.getAllLotDynByLotRoundNum(round_num, offset, page_size)
 
+    # isLot/isManualReply/hashTag 已移入 t_lot_extra_info，批量查询合并
+    extra_map = {}
+    if result:
+        dyn_ids = [int(x.dynId) for x in result]
+        extra_map = await bds.get_extra_info_map_by_ref_ids(dyn_ids, lot_type="common")
+
     return [
         CommonLotteryResp(
             dynId=str(x.dynId),
@@ -74,12 +80,22 @@ async def get_common_lottery(
             officialLotType=x.officialLotType,
             officialLotId=x.officialLotId,
             isOfficialAccount=x.isOfficialAccount,
-            isManualReply=x.isManualReply,
-            isLot=x.isLot,
-            hashTag=x.hashTag,
+            created_at=x.created_at,
+            extra_info=(
+                LotExtraInfoResp(
+                    is_lot=bool(_ei.is_lot),
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                    need_comment=bool(_ei.need_comment),
+                    need_repost=bool(_ei.need_repost),
+                    required_topic_text=_ei.required_topic_text,
+                    lot_type=_ei.lot_type,
+                    predicted_at=_ei.predicted_at,
+                )
+                if (_ei := extra_map.get(int(x.dynId)))
+                else None
+            ),
         )
         for x in result
-        if x.isLot == 1 and x.officialLotType != "官方抽奖"
     ]
 
 
@@ -173,14 +189,18 @@ async def get_official_lottery(
             ).strip(),
             jump_url=f"https://www.bilibili.com/opus/{str(x.business_id)}",
             app_sche=f"bilibili://opus/detail/{str(x.business_id)}",
-            extra_info=LotExtraInfoResp(
-                is_grand_prize=bool(extra_map[x.lottery_id].is_grand_prize),
-                need_comment=False,
-                need_repost=True,
-            ) if x.lottery_id in extra_map else LotExtraInfoResp(
-                is_grand_prize=False,
-                need_comment=False,
-                need_repost=True,
+            extra_info=(
+                LotExtraInfoResp(
+                    is_lot=bool(_ei.is_lot),
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                    need_comment=bool(_ei.need_comment),
+                    need_repost=bool(_ei.need_repost),
+                    required_topic_text=_ei.required_topic_text,
+                    lot_type=_ei.lot_type,
+                    predicted_at=_ei.predicted_at,
+                )
+                if (_ei := extra_map.get(x.lottery_id))
+                else None
             ),
             raw=LotdataResp.model_validate(x),
         )
@@ -222,11 +242,19 @@ async def get_charge_lottery(
                     )
                 ).strip(),
                 upower_level_str=upower_level_str,
-                extra_info=LotExtraInfoResp(
-                    is_grand_prize=bool(extra_map[x.lottery_id].is_grand_prize),
-                    need_comment=bool(extra_map[x.lottery_id].need_comment),
-                    need_repost=bool(extra_map[x.lottery_id].need_repost),
-                ) if x.lottery_id in extra_map else None,
+                extra_info=(
+                    LotExtraInfoResp(
+                        is_lot=bool(_ei.is_lot),
+                        is_grand_prize=bool(_ei.is_grand_prize),
+                        need_comment=bool(_ei.need_comment),
+                        need_repost=bool(_ei.need_repost),
+                        required_topic_text=_ei.required_topic_text,
+                        lot_type=_ei.lot_type,
+                        predicted_at=_ei.predicted_at,
+                    )
+                    if (_ei := extra_map.get(x.lottery_id))
+                    else None
+                ),
                 jump_url=f"https://www.bilibili.com/opus/{str(x.business_id)}",
                 app_sche=f"bilibili://opus/detail/{str(x.business_id)}",
                 raw=LotdataResp.model_validate(x),
@@ -385,7 +413,12 @@ async def get_all_lottery(
         ),
     )
 
-    # 构造普通抽奖响应列表（先做业务过滤：isLot==1 且非官方抽奖）
+    # 构造普通抽奖响应列表（isLot/isManualReply/hashTag 已移入 t_lot_extra_info）
+    common_extra_map = {}
+    if common_lotterys:
+        common_dyn_ids = [int(x.dynId) for x in common_lotterys]
+        common_extra_map = await bds.get_extra_info_map_by_ref_ids(common_dyn_ids, lot_type="common")
+
     comon_lottery_resp = [
         CommonLotteryResp(
             dynId=str(x.dynId),
@@ -400,12 +433,22 @@ async def get_all_lottery(
             officialLotType=x.officialLotType,
             officialLotId=x.officialLotId,
             isOfficialAccount=x.isOfficialAccount,
-            isManualReply=x.isManualReply,
-            isLot=x.isLot,
-            hashTag=x.hashTag,
+            created_at=x.created_at,
+            extra_info=(
+                LotExtraInfoResp(
+                    is_lot=bool(_ei.is_lot),
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                    need_comment=bool(_ei.need_comment),
+                    need_repost=bool(_ei.need_repost),
+                    required_topic_text=_ei.required_topic_text,
+                    lot_type=_ei.lot_type,
+                    predicted_at=_ei.predicted_at,
+                )
+                if (_ei := common_extra_map.get(int(x.dynId)))
+                else None
+            ),
         )
         for x in common_lotterys
-        if x.isLot == 1 and x.officialLotType != "官方抽奖"
     ]
 
     # 分页：page_num 从 1 开始，offset = (page_num - 1) * page_size

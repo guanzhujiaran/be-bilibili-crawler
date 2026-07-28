@@ -144,28 +144,67 @@ class GetOthersLotDynConfig(BaseModel):
     例如：get_others_lot='{"space_dyn_concurrency":3}'
     或：  get_others_lot__space_dyn_concurrency=3
     """
-    space_dyn_concurrency: int = 1     # 空间动态并发数
-    judge_dyn_concurrency: int = 1     # 抽奖判定并发数
-    spare_time: int = 86400 * 7            # 多久以前的动态不再获取(秒)，默认7天
-    get_dyn_interval: int = 86400 * 2      # 两次完整采集的最小间隔(秒)，默认2天
-    dyn_time_limit: int = 1728000      # 返回数据的时间范围(秒)，默认20天
-    max_user_list_size: int = 20       # 用户列表最大长度
-    remove_check_days: int = 14        # 剔除用户时检查最近N天内的抽奖数
+
+    space_dyn_concurrency: int = 2  # 空间动态并发数
+    judge_dyn_concurrency: int = 2  # 抽奖判定并发数
+    spare_time: int = 86400 * 7  # 多久以前的动态不再获取(秒)，默认7天
+    get_dyn_interval: int = 86400 * 2  # 两次完整采集的最小间隔(秒)，默认2天
+    dyn_time_limit: int = 1728000  # 返回数据的时间范围(秒)，默认20天
+    max_user_list_size: int = 20  # 用户列表最大长度
+    remove_check_days: int = 14  # 剔除用户时检查最近N天内的抽奖数
     min_valid_lot_threshold: int = 10  # 低于此阈值的用户将被剔除
-    hot_lot_dyn_count: int = 5        # 从评论区挖掘用户时选取的高互动动态数量
-    hot_lot_dyn_days: int = 7         # 高互动动态的时间范围(天)
+    hot_lot_dyn_count: int = 5  # 从评论区挖掘用户时选取的高互动动态数量
+    hot_lot_dyn_days: int = 7  # 高互动动态的时间范围(天)
     # 用户列表为空且无法从评论区补充时使用的默认用户 uid 列表
     default_user_uids: list[int] = [
-        319857159, 14017844, 1234306704, 31497476, 2147319744,
-        410550169, 646686238, 71583520, 279262754, 275744172,
-        332793152, 1397970246, 3493092200024392, 386051299, 381282283,
-        20958956, 1869690859, 1183157743, 4586734, 1741486871,
-        266223923, 646327721, 1803790683, 8544035, 1123570168,
-        3494361237031878, 223712517, 480906586, 1040677577, 471565816,
-        343104186, 2204166, 290089137, 1855888816, 691536906,
-        6477408, 1586295950, 1369967146, 40809204, 1992326018,
-        649407876, 256316789, 143412922, 1278208248, 499023056,
-        565064296, 693445761, 7538278,
+        319857159,
+        14017844,
+        1234306704,
+        31497476,
+        2147319744,
+        410550169,
+        646686238,
+        71583520,
+        279262754,
+        275744172,
+        332793152,
+        1397970246,
+        3493092200024392,
+        386051299,
+        381282283,
+        20958956,
+        1869690859,
+        1183157743,
+        4586734,
+        1741486871,
+        266223923,
+        646327721,
+        1803790683,
+        8544035,
+        1123570168,
+        3494361237031878,
+        223712517,
+        480906586,
+        1040677577,
+        471565816,
+        343104186,
+        2204166,
+        290089137,
+        1855888816,
+        691536906,
+        6477408,
+        1586295950,
+        1369967146,
+        40809204,
+        1992326018,
+        649407876,
+        256316789,
+        143412922,
+        1278208248,
+        499023056,
+        565064296,
+        693445761,
+        7538278,
     ]
 
 
@@ -175,6 +214,7 @@ class LLMApiConfig(BaseModel):
     例如：llm_apis='[{"base_url":"https://...","model_name":"gpt-3.5","token":"sk-xxx"}]'
     或：  llm_apis__0__base_url=https://...  llm_apis__0__model_name=gpt-3.5
     """
+
     base_url: str = ""
     model_name: str = ""
     token: str = ""
@@ -225,6 +265,7 @@ class Settings(BaseSettings):
         )
     )
 
+
 settings = Settings()
 
 
@@ -246,12 +287,14 @@ class PlaywrightUserDir(StrEnum):
 # region 基本配置
 class PushMeChannel(BaseModel):
     """PushMe 推送渠道配置（pydantic）"""
+
     url: str = "https://push.i-i.me"
     token: str = ""
 
 
 class PushPlusChannel(BaseModel):
     """PushPlus 推送渠道配置（pydantic）"""
+
     url: str = "http://www.pushplus.plus/send"
     token: str = ""
 
@@ -296,25 +339,15 @@ class DataBaseConfig:
             self._base_url = f"{settings.MYSQL_HOST}:{settings.MYSQL_PORT}"
             self._pwd = settings.MYSQL_PASSWORD
             self._user = settings.MYSQL_USER
-            self.proxy_db_URI = (
-                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/proxy_db?charset=utf8mb4&autocommit=true"
-            )
+            self.proxy_db_URI = f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/proxy_db?charset=utf8mb4&autocommit=true"
             self.bili_db_URI = (
                 # 话题抽奖
                 f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/bilidb?charset=utf8mb4&autocommit=true"
             )
-            self.bili_reserve_URI = (
-                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/bili_reserve?charset=utf8mb4&autocommit=true"
-            )
-            self.get_other_lot_URI = (
-                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/biliopusdb?charset=utf8mb4&autocommit=true"
-            )
-            self.dyn_detail_URI = (
-                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/dyndetail?charset=utf8mb4&autocommit=true"
-            )
-            self.sams_club_URI = (
-                f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/samsclub?charset=utf8mb4&autocommit=true"
-            )
+            self.bili_reserve_URI = f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/bili_reserve?charset=utf8mb4&autocommit=true"
+            self.get_other_lot_URI = f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/biliopusdb?charset=utf8mb4&autocommit=true"
+            self.dyn_detail_URI = f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/dyndetail?charset=utf8mb4&autocommit=true"
+            self.sams_club_URI = f"mysql+aiomysql://{self._user}:{self._pwd}@{self._base_url}/samsclub?charset=utf8mb4&autocommit=true"
 
     @dataclass
     class _REDISINFO:
@@ -361,6 +394,7 @@ class CrawlerSqlAlchemyConfig:
     即使爬虫并发高占用大量连接，也不会影响业务请求
     池子大小与业务池相同，但使用独立的连接池实例
     """
+
     engine_config = dict(
         echo=False,
         pool_size=100,  # 与业务池大小相同，独立使用
@@ -390,7 +424,6 @@ class RabbitMQConfig:
     broker_url = f"{protocol}://{user}:{pwd}@{host}:{port}/?heartbeat=180"
 
 
-
 # endregion
 
 
@@ -398,7 +431,9 @@ class _CONFIG:
     root_dir = os.path.dirname(os.path.abspath(__file__))  # 代码的根目录
     V2ray_proxy = f"http://{settings.V2RAY_HOST}:{settings.V2RAY_PORT}"
     llama_url = f"http://{settings.LLAMA_HOST}:{settings.LLAMA_PORT}/v1"
-    pushnotify = PushNotifyConfig.from_message_config(settings.message_config)  # 推送设置
+    pushnotify = PushNotifyConfig.from_message_config(
+        settings.message_config
+    )  # 推送设置
     database = DataBaseConfig()
     my_ipv6_addr = settings.PROXY_SERVER
     unidbg_addr = f"http://{settings.UNIDBG_HOST}:{settings.UNIDBG_PORT}"

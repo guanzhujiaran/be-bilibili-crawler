@@ -289,29 +289,6 @@ class TestSearchLotteryByKeyword:
         assert response.status_code == 422
 
 
-# ============================================================================
-# POST /SubmitFeedback
-# ============================================================================
-
-
-class TestSubmitFeedback:
-
-    @pytest.mark.asyncio
-    async def test_submit(self, client):
-        with mock.patch("controller.v1.lotttery_database.bili.LotteryData.a_pushme",
-                        new_callable=mock.AsyncMock) as mock_push:
-            mock_resp = mock.MagicMock()
-            mock_resp.status_code = 200
-            mock_push.return_value = mock_resp
-            response = await client.post(f"{PREFIX}/SubmitFeedback", json={"message": "测试反馈"})
-        assert response.status_code == 200
-        assert response.json()["code"] == 0
-
-    @pytest.mark.asyncio
-    async def test_missing_message(self, client):
-        response = await client.post(f"{PREFIX}/SubmitFeedback", json={})
-        assert response.status_code == 422
-
 
 # ============================================================================
 # GET /GetAllLotScrapyStatus

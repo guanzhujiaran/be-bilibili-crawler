@@ -1,0 +1,71 @@
+[
+  {
+    "name": "普通抽奖动态 - 有奖品名和开奖时间",
+    "target_db": "biliopusdb",
+    "lot_type": "common",
+    "dyn_content": "【转发抽奖】关注+转发，抽3位送《原神》648元充值卡！5月1日开奖~ #原神抽奖#",
+    "mock_result": {
+      "prize_names": ["原神648元充值卡"],
+      "lottery_time": "2026-05-01",
+      "is_lot": true,
+      "need_repost": true,
+      "required_topic_text": "#原神抽奖#",
+      "is_grand_prize": true
+    }
+  },
+  {
+    "name": "普通动态 - 不是抽奖",
+    "target_db": "biliopusdb",
+    "lot_type": "common",
+    "dyn_content": "今天天气真好，出去散步了~",
+    "mock_result": {
+      "prize_names": [],
+      "lottery_time": null,
+      "is_lot": false,
+      "need_repost": false,
+      "required_topic_text": "",
+      "is_grand_prize": false
+    }
+  },
+  {
+    "name": "预约抽奖",
+    "target_db": "biliopusdb",
+    "lot_type": "reserve",
+    "dyn_content": "预约《黑神话：悟空》DLC，抽10位送游戏激活码！",
+    "mock_result": {
+      "prize_names": ["游戏激活码"],
+      "lottery_time": null,
+      "is_lot": true,
+      "need_repost": false,
+      "required_topic_text": "",
+      "is_grand_prize": true
+    }
+  },
+  {
+    "name": "官方抽奖 - dyndetail",
+    "target_db": "dyndetail",
+    "lottery_text": "一等奖 iPhone 15 Pro Max，二等奖 AirPods Pro，三等奖 大会员月卡",
+    "mock_result": {
+      "prize_names": ["iPhone 15 Pro Max", "AirPods Pro", "大会员月卡"],
+      "lottery_time": null,
+      "is_lot": true,
+      "need_repost": false,
+      "required_topic_text": "",
+      "is_grand_prize": true
+    }
+  },
+  {
+    "name": "普通抽奖 - 仅奖品名无开奖时间",
+    "target_db": "biliopusdb",
+    "lot_type": "common",
+    "dyn_content": "评论抽一位粉丝送手写祝福卡片~评论即可参与！",
+    "mock_result": {
+      "prize_names": ["手写祝福卡片"],
+      "lottery_time": null,
+      "is_lot": true,
+      "need_repost": false,
+      "required_topic_text": "",
+      "is_grand_prize": false
+    }
+  }
+]

@@ -1,3 +1,5 @@
+import asyncio
+import time
 from typing import Any, Set, AsyncGenerator
 from pydantic import ConfigDict
 
@@ -7,6 +9,7 @@ from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
 from Service.GetOthersLotDyn.fetcher.space_dynamic_fetcher import BiliSpaceUserItem
 from CONFIG import settings
+from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
 from Service.GetOthersLotDyn.Sql.models import TLotmaininfo
 from Service.GetOthersLotDyn.Sql.sql_helper import (
     SqlHelper,
@@ -76,9 +79,9 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
             yield RobotTaskParams(obj=obj)
 
     async def handle_fetch(self, params: RobotTaskParams) -> WorkerStatus:
-        obj = params.obj
         if self._phase in (1, 2):
             is_pub = self._phase == 2
+            obj: BiliSpaceUserItem = params.obj  # ty:ignore[invalid-assignment]
             uid = obj.uid
             self.space_succ_counter.running_params.add(uid)
             try:
@@ -91,6 +94,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 self.space_succ_counter.running_params.discard(uid)
             self.space_succ_counter.succ_count += 1
         elif self._phase == 3:
+            obj: BiliDynamicItem = params.obj  # ty:ignore[invalid-assignment]
             self.dyn_succ_counter.running_params.add(self.__hash__())
             try:
                 await obj.judge_lottery(lotRound_id=self.nowRound.lotRound_id)
@@ -265,19 +269,88 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         await SqlHelper.addLotMainInfo(self.nowRound)
         # 抽奖获取结束 尝试将这一轮获取到的非图片抽奖添加进数据库
 
+    _MQ_POLL_INTERVAL = 30        # 秒：轮询 extra_info 间隔
+    _MQ_POLL_MAX_IDLE = 360       # 秒：连续无新增记录时放弃等待
+    _MQ_POLL_TOTAL_TIMEOUT = 900  # 秒：总超时（15 分钟）
+
     async def _after_scrapy(self):
         all_dyn_this_round = await SqlHelper.getAllLotDynInfoByRoundNum(
             self.nowRound.lotRound_id
         )
-        all_t_lot_dyn_info = []
+        self.nowRound.allNum = len(all_dyn_this_round)
+
+        if not all_dyn_this_round:
+            self.nowRound.lotNum = 0
+            self.nowRound.uselessNum = 0
+            self.scrapy_info.all_lot_dyn_info_list = []
+            self.scrapy_info.all_useless_info_list = []
+            return
+
+        # 官方/预约/充电抽奖不需要等 MQ，直接确认
+        official_dyns = [
+            x for x in all_dyn_this_round
+            if x.officialLotType and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value
+        ]
+        # 普通动态，需要等 MQ 消费者写入 t_lot_extra_info
+        common_dyns = [
+            x for x in all_dyn_this_round
+            if not (x.officialLotType and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value)
+        ]
+
+        # 轮询等待 MQ 消费者处理完成
+        common_dyn_ids = [int(x.dynId) for x in common_dyns]
+        if common_dyn_ids:
+            total_start = time.monotonic()
+            last_pending = len(common_dyn_ids)
+            idle_start = time.monotonic()
+            while True:
+                extra_map = await SqlHelper.get_extra_info_map_by_ref_ids(
+                    common_dyn_ids, lot_type="common"
+                )
+                pending = [did for did in common_dyn_ids if did not in extra_map]
+                elapsed = time.monotonic() - total_start
+
+                if not pending:
+                    get_others_lot_log.info(
+                        f"MQ 消费者处理完成，全部 {len(common_dyn_ids)} 条已入库，耗时 {elapsed:.0f}s")
+                    break
+
+                # 有进展则重置空闲计时
+                if len(pending) < last_pending:
+                    idle_start = time.monotonic()
+                    last_pending = len(pending)
+
+                idle = time.monotonic() - idle_start
+
+                if elapsed > self._MQ_POLL_TOTAL_TIMEOUT:
+                    get_others_lot_log.warning(
+                        f"MQ 消费者处理超时（{elapsed:.0f}s > {self._MQ_POLL_TOTAL_TIMEOUT}s），"
+                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待")
+                    break
+
+                if idle > self._MQ_POLL_MAX_IDLE:
+                    get_others_lot_log.warning(
+                        f"MQ 消费者连续 {idle:.0f}s 无进展，"
+                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待")
+                    break
+
+                get_others_lot_log.info(
+                    f"等待 MQ 消费者处理... ({len(extra_map)}/{len(common_dyn_ids)} 已入库，"
+                    f"已等待 {elapsed:.0f}s，无进展 {idle:.0f}s)")
+                await asyncio.sleep(self._MQ_POLL_INTERVAL)
+        else:
+            extra_map = {}
+
+        # 分类统计
+        all_t_lot_dyn_info = list(official_dyns)
         all_useless_dyn_info = []
-        for x in all_dyn_this_round:
-            if x.isLot == 1:
+        for x in common_dyns:
+            ei = extra_map.get(int(x.dynId))
+            if ei and ei.is_lot:
                 all_t_lot_dyn_info.append(x)
             else:
                 all_useless_dyn_info.append(x)
 
-        self.nowRound.allNum = len(all_dyn_this_round)
         self.nowRound.lotNum = len(all_t_lot_dyn_info)
         self.nowRound.uselessNum = len(all_useless_dyn_info)
         self.scrapy_info.all_lot_dyn_info_list = all_t_lot_dyn_info

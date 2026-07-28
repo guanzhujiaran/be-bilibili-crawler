@@ -108,3 +108,4 @@ uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --force
 
 FAQ:
 1.milvus数据库报错无法读写的时候,执行 `sudo chown -R 999:999 ./docker_vol/milvus/data ` 修复权限问题
+2.wsl2 mirrored连不上网的时候重启winnat `net stop winnat` `net start winnat`

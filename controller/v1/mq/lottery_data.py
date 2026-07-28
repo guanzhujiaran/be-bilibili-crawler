@@ -28,13 +28,11 @@ from Models.lottery_database.bili.LotteryDataModels import (
     AddTopicLotteryResp,
     BulkAddDynamicLotteryReq,
     LotdataResp,
-    SubmitFeedbackReq,
     OthersLotDynItem,
     OthersLotDynSortEnum,
     OthersLotDynSortOrderEnum,
     TimePresetEnum,
     LotteryFilterParamsResp,
-    OthersLotPrizeInfo,
     LotExtraInfoResp,
     EndpointFilterMeta,
     pydantic_model_to_filter_params,
@@ -234,26 +232,27 @@ async def handle_get_others_lot_dyn_list(params: GetOthersLotDynListRpcParams) -
         created_at_end=params.created_at_end,
     )
 
-    # 批量获取已缓存的提取信息（信息缺失由脚本补全，接口直接返回已有缓存）
+    # 批量获取已缓存的 t_lot_extra_info（信息缺失由脚本补全，接口直接返回已有缓存）
     dyn_ids = [item.dynId for item in items]
-    cached_infos = await SqlHelper.get_prizes_by_dyn_ids(dyn_ids)
+    cached_infos = await SqlHelper.get_extra_info_map_by_ref_ids(dyn_ids, "common")
 
-    # 构建响应，附加 prize_info 和 extra_info（仅使用已有缓存）
+    # 构建响应，附加 extra_info（已合并 prize_names / lottery_time）
     result_items: list[OthersLotDynItem] = []
     for item in items:
         obj = OthersLotDynItem.model_validate(item)
         cached = cached_infos.get(item.dynId)
         if cached:
-            obj.prize_info = OthersLotPrizeInfo(
+            obj.extra_info = LotExtraInfoResp(
+                is_lot=bool(cached.is_lot),
+                is_grand_prize=bool(cached.is_grand_prize),
+                need_comment=bool(cached.need_comment),
+                need_repost=bool(cached.need_repost),
+                required_topic_text=cached.required_topic_text,
                 prize_names=cached.prize_names or [],
                 lottery_time=cached.lottery_time,
+                lot_type=cached.lot_type,
+                predicted_at=cached.predicted_at,
             )
-            if cached.extra_info:
-                obj.extra_info = LotExtraInfoResp(
-                    is_grand_prize=bool(cached.extra_info.is_grand_prize),
-                    need_comment=bool(cached.extra_info.need_comment),
-                    need_repost=bool(cached.extra_info.need_repost),
-                )
         result_items.append(obj)
 
     return CommonResponseModel(

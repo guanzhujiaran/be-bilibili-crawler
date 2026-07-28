@@ -21,10 +21,6 @@ from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
 from Utils.推送.PushMe import a_push_error
-from Service.GetOthersLotDyn.parser.prize_extractor import (
-    extract_prize_info_for_dyndetail,
-)
-
 # 全局锁，确保所有 lottery_id 的处理串行化，避免milvus数据库高并发下崩溃
 # 简单粗暴但有效，适用于并发量不大的场景
 _global_lottery_lock = asyncio.Lock()

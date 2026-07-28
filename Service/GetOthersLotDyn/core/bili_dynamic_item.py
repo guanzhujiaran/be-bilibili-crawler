@@ -12,7 +12,6 @@ from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
 from Service.GetOthersLotDyn.parser.dynamic_detail_parsed import DynamicDetailParsed
 from Service.GetOthersLotDyn.parser.dynamic_detail_parser import parse_dynamic_item
 from Service.GetOthersLotDyn.filter.manual_reply_judge import manual_reply_judge
-from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
@@ -293,7 +292,7 @@ class BiliDynamicItem:
                 dynamic_content = dynamic_detail.dynamic_content or ""
                 author_name = dynamic_detail.author_name
                 pub_time = dynamic_detail.pub_time
-                pub_ts = dynamic_detail.pub_ts
+                pub_ts = dynamic_detail.pub_ts or 0
                 comment_count = dynamic_detail.comment_count
                 forward_count = dynamic_detail.forward_count
                 like_count = dynamic_detail.like_count
@@ -344,38 +343,27 @@ class BiliDynamicItem:
                     get_others_lot_log.info(
                         f'动态内容为空，无法提取抽奖信息，动态链接=https://t.bilibili.com/{dynamic_detail_dynamic_id}?type={self.dynamic_type}')
                     deadline = None
-                try:
-                    prize_result = await extract_prize_info_for_biliopusdb(dyn_content=dynamic_content)
-                    premsg = prize_result.result.required_topic_text
-                    need_repost = prize_result.result.need_repost
-                    _llm_is_lot = prize_result.result.is_lot
-                except Exception as e:
-                    # LLM 提取失败：不再回退，使用安全默认空值，留待手动脚本填充
-                    get_others_lot_log.exception(f"LLM 抽奖信息提取失败，使用默认空值: {e}")
-                    premsg = ""
-                    need_repost = False
-                    _llm_is_lot = False
-                ret_url = f'https://t.bilibili.com/{dynamic_detail_dynamic_id}'
-                if need_repost:
-                    ret_url += '?tab=2'
+                # manual_judge 判断
                 manual_judge = False
                 if await asyncio.to_thread(manual_reply_judge.call, 'manual_reply_judge', dynamic_content):
                     manual_judge = True
+                # is_lot / need_repost / required_topic_text 为非立即需要的数据，
+                # LLM 提取完全由 addDynInfo 发布到 MQ 后，消费者异步处理并写入 t_lot_extra_info
+                ret_url = f'https://t.bilibili.com/{dynamic_detail_dynamic_id}'
                 if re.match(r'.*//@.*', str(dynamic_content), re.DOTALL) is not None:
                     dynamic_content = re.findall(
                         r'(.*?)//@', dynamic_content, re.DOTALL)[0]
-                # is_lot 逻辑：官方抽奖=1，预约/充电=0，其他用 extract_prize_info_for_biliopusdb
+                # is_lot 逻辑：
+                # 官方抽奖=1，预约/充电=0，orig 转发=1
+                # 普通抽奖的 is_lot 判断（LLM + 互动量阈值）由 MQ 消费者异步处理后更新 t_lotdyninfo.isLot
                 if is_official_lot:
                     is_lot = True
                 elif is_reserve_lot or is_charge_lot:
                     is_lot = False
-                elif not self.is_lot_orig:
-                    if not _llm_is_lot:
-                        if comment_count is not None and forward_count is not None:
-                            if comment_count > 2000 or forward_count > 1000:  # 评论或转发超多的就算不是抽奖动态也要加进去凑个数
-                                is_lot = True
-                else:
+                elif self.is_lot_orig:
                     is_lot = True
+                else:
+                    is_lot = False
                 official_lot_type = OfficialLotType.official_lot if is_official_lot else OfficialLotType.charge_lot if is_charge_lot else OfficialLotType.reserve_lot if is_reserve_lot else None
                 cur_dynamic = TLotdyninfo(dynId=dynamic_detail_dynamic_id,
                                           dynamicUrl=ret_url,
@@ -391,13 +379,10 @@ class BiliDynamicItem:
                                           officialLotId=str(lot_rid),
                                           isOfficialAccount=int(
                                               official_verify_type if official_verify_type else 0),
-                                          isManualReply=int(manual_judge),
-                                          isLot=int(is_lot),
-                                          hashTag=premsg,
                                           dynLotRound_id=lotRound_id,
                                           rawJsonStr=rawJSON)
                 await SqlHelper.addDynInfo(
-                    cur_dynamic
+                    cur_dynamic, need_comment=int(manual_judge)
                 )
 
                 try:
@@ -415,15 +400,7 @@ class BiliDynamicItem:
                     orig_official_verify = dynamic_detail.orig_official_verify
                     dynamic_orig = dynamic_detail.dynamic_orig
                     orig_ret_url = f'https://t.bilibili.com/{orig_dynamic_id}'
-                    if 'tab=2' in ret_url:
-                        orig_ret_url += '?tab=2'
-                    elif orig_dynamic_content:
-                        try:
-                            _orig_pr = await extract_prize_info_for_biliopusdb(dyn_content=orig_dynamic_content)
-                            if _orig_pr.result.need_repost:
-                                orig_ret_url += '?tab=2'
-                        except Exception:
-                            pass
+                    # need_repost 为非立即需要的数据，LLM 提取由 MQ 消费者异步处理
                     orig_dynamic = TLotdyninfo(
                         dynId=orig_dynamic_id,
                         dynamicUrl=orig_ret_url,
@@ -439,14 +416,11 @@ class BiliDynamicItem:
                         officialLotId=None,
                         isOfficialAccount=orig_official_verify if type(
                             orig_official_verify) is int else 0,
-                        isManualReply=int(manual_judge),
-                        isLot=int(is_lot),
-                        hashTag=premsg,
                         dynLotRound_id=lotRound_id,
                         rawJsonStr=dynamic_orig
                     )
                     await SqlHelper.addDynInfo(
-                        orig_dynamic
+                        orig_dynamic, need_comment=int(manual_judge)
                     )
                 if is_lot:
                     if dynamic_detail.module_dynamic:
@@ -484,9 +458,6 @@ class BiliDynamicItem:
                     officialLotType=None,
                     officialLotId=None,
                     isOfficialAccount=-1,
-                    isManualReply=0,
-                    isLot=-1,
-                    hashTag='',
                     dynLotRound_id=lotRound_id,
                     rawJsonStr=dynamic_detail.rawJSON
                 )

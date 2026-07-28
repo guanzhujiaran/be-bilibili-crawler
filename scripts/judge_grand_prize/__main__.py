@@ -393,7 +393,7 @@ async def judge_official_lottery(
 
     返回统计信息。
     """
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_dyndetail
+    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_lotdata
     from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
         grpc_sql_helper,
     )
@@ -475,7 +475,7 @@ async def judge_official_lottery(
     async def _judge_one(bid: int) -> str:
         try:
             lottery_text = record_map[bid][0]
-            result = await extract_prize_info_for_dyndetail(
+            result = await extract_prize_info_for_lotdata(
                 dyn_content=lottery_text,
                 chat_openai_client=chat_openai_client)
             is_grand = int(result.result.is_grand_prize)

@@ -89,6 +89,7 @@ class LotExtraInfo(Base):
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     lottery_id = mapped_column(BigInteger, nullable=False, comment='关联lotdata.lottery_id')
+    is_lot = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='LLM判断是否为抽奖: 1-是, 0-否')
     is_grand_prize = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否大奖: 1-是, 0-否')
     need_comment = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否需要评论: 1-是, 0-否')
     need_repost = mapped_column(TINYINT(1), nullable=False, server_default=text('0'), comment='是否需要转发: 1-是, 0-否')

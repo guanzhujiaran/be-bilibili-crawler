@@ -26,13 +26,11 @@ from Models.lottery_database.bili.LotteryDataModels import (
     BulkAddTopicLotteryReq,
     BulkAddOthersLotDynReq,
     LotdataResp,
-    SubmitFeedbackReq,
     OthersLotDynItem,
     OthersLotDynSortEnum,
     OthersLotDynSortOrderEnum,
     TimePresetEnum,
     LotteryFilterParamsResp,
-    OthersLotPrizeInfo,
     LotExtraInfoResp,
 )
 from Models.lottery_database.bili.comm import (
@@ -44,7 +42,10 @@ from Models.lottery_database.bili.comm import (
 from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
 )
-from Models.v1.background_service.background_service_model import AllLotScrapyStatusResp, ScrapyTypeEnum
+from Models.v1.background_service.background_service_model import (
+    AllLotScrapyStatusResp,
+    ScrapyTypeEnum,
+)
 from Service.BackgroundServiceStatus.GetScrapyStaus import get_scrapy_status
 from Models.v1.background_service.background_service_model import TypeScrapyStatus
 from Service.LangChainCompo.text_embed import (
@@ -66,7 +67,6 @@ from Service.lottery_database.bili_lotterty import (
 )
 from Models.lottery_database.bili.comm import BiliLotDataStatusEnum, LotteryBusinessType
 from Utils.通用.Common import asyncio_gather
-from Utils.推送.PushMe import a_pushme
 from Utils.网关.gateway_auth import require_gateway_login, GatewayUserInfo
 from ApiRoutes import RouterPaths, RouterNames
 from fastapi import BackgroundTasks
@@ -127,8 +127,7 @@ async def api_GetMustReserveLottery(
         background_task=background_task,
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[ReserveInfoResp](
-            items=result_items, total=total)
+        data=ResponsePaginationItems[ReserveInfoResp](items=result_items, total=total)
     )
 
 
@@ -140,7 +139,6 @@ async def api_GetMustReserveLottery(
     description="""获取必抽的官方抽奖数据，支持高级筛选。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
-    response_model_exclude_none=True,
 )
 @cache(expire=180)
 async def api_GetMustOfficialLottery(
@@ -180,7 +178,6 @@ async def api_GetMustOfficialLottery(
     description="""获取必抽的充电抽奖数据，支持高级筛选。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
-    response_model_exclude_none=True,
 )
 @cache(expire=180)
 async def api_GetChargeLottery(
@@ -206,8 +203,7 @@ async def api_GetChargeLottery(
         )
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[ChargeLotteryResp](
-            items=result_items, total=total)
+        data=ResponsePaginationItems[ChargeLotteryResp](items=result_items, total=total)
     )
 
 
@@ -226,8 +222,7 @@ async def api_GetLiveLottery(
         pagination.page_num, pagination.page_size
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[LiveLotteryResp](
-            items=result_items, total=total)
+        data=ResponsePaginationItems[LiveLotteryResp](items=result_items, total=total)
     )
 
 
@@ -243,11 +238,12 @@ async def api_GetTopicLottery(
     pagination: LotteryAdvancedQueryParams,
 ):
     result_items, total = await get_topic_lottery(
-        pagination.page_num, pagination.page_size, keyword=pagination.keyword,
+        pagination.page_num,
+        pagination.page_size,
+        keyword=pagination.keyword,
     )
     return CommonResponseModel(
-        data=ResponsePaginationItems[TopicLotteryResp](
-            items=result_items, total=total)
+        data=ResponsePaginationItems[TopicLotteryResp](items=result_items, total=total)
     )
 
 
@@ -260,7 +256,6 @@ async def api_GetTopicLottery(
 获取svm判断过的必抽的预约抽奖数据和官方抽奖数据，按收录时间(created_at)和发布时间(pubTime)过滤普通抽奖
 普通抽奖列表支持分页：page_num 从 0 开始，page_size 默认 1000（最大 1000），page_size=0 时返回全部
         """,
-    response_model_exclude_none=True,
 )
 async def api_GetAllLottery(
     created_at_preset: TimePresetEnum | None = Query(
@@ -268,7 +263,9 @@ async def api_GetAllLottery(
         description="收录时间快捷筛选: 1d/3d/5d/7d/14d/30d，默认不筛选",
     ),
     created_at_start: int | None = Query(
-        default=None, ge=0, description="收录起始时间（Unix 秒），preset 优先级高于此字段"
+        default=None,
+        ge=0,
+        description="收录起始时间（Unix 秒），preset 优先级高于此字段",
     ),
     created_at_end: int | None = Query(
         default=None, ge=0, description="收录结束时间（Unix 秒）"
@@ -278,16 +275,18 @@ async def api_GetAllLottery(
         description="发布时间快捷筛选: 1d/3d/5d/7d/14d/30d，默认不筛选",
     ),
     pub_time_start: int | None = Query(
-        default=None, ge=0, description="发布起始时间（Unix 秒），preset 优先级高于此字段"
+        default=None,
+        ge=0,
+        description="发布起始时间（Unix 秒），preset 优先级高于此字段",
     ),
     pub_time_end: int | None = Query(
         default=None, ge=0, description="发布结束时间（Unix 秒）"
     ),
-    page_num: int = Query(
-        default=1, ge=1, description="页码，从 1 开始，最小值为 1"
-    ),
+    page_num: int = Query(default=1, ge=1, description="页码，从 1 开始，最小值为 1"),
     page_size: int = Query(
-        default=1000, ge=1, le=1000,
+        default=1000,
+        ge=1,
+        le=1000,
         description="每页数量，最大 1000，默认 1000，最小值为 1",
     ),
 ):
@@ -369,9 +368,7 @@ async def api_AddTopicLottery(
 async def api_BulkAddTopicLottery(
     data: BulkAddTopicLotteryReq = Body(...),
 ):
-    resp = await asyncio_gather(
-        *[add_topic_lottery(tid) for tid in data.topic_ids]
-    )
+    resp = await asyncio_gather(*[add_topic_lottery(tid) for tid in data.topic_ids])
     return CommonResponseModel(data=resp)
 
 
@@ -401,8 +398,7 @@ async def api_AddOthersLotDyn(
         data.dynamic_id_or_url
     )
     if dynamic_id is not None and lot_round_id is not None:
-        background_tasks.add_task(
-            process_others_lot_dyn, dynamic_id, lot_round_id)
+        background_tasks.add_task(process_others_lot_dyn, dynamic_id, lot_round_id)
     return CommonResponseModel(data=resp)
 
 
@@ -433,8 +429,7 @@ async def api_BulkAddOthersLotDyn(
     )
     for resp, dynamic_id, lot_round_id in results:
         if dynamic_id is not None and lot_round_id is not None:
-            background_tasks.add_task(
-                process_others_lot_dyn, dynamic_id, lot_round_id)
+            background_tasks.add_task(process_others_lot_dyn, dynamic_id, lot_round_id)
     return CommonResponseModel(data=[r[0] for r in results])
 
 
@@ -459,64 +454,15 @@ async def api_Search(
 
 
 @router.post(
-    RouterPaths.SUBMIT_FEEDBACK,
-    name=RouterNames.SUBMIT_FEEDBACK,
-    summary="提交反馈信息到 PushMe",
-    response_model=CommonResponseModel[dict],
-    response_model_exclude_none=True,
-)
-async def api_SubmitFeedback(
-    request: Request,
-    data: SubmitFeedbackReq,
-):
-    """
-    提交反馈信息到 PushMe
-    会自动从请求头中获取 uid 信息
-    :param request: FastAPI Request 对象
-    :param data: 反馈请求体，包含 message 字段
-    :return: 推送结果
-    """
-    # 从 header 中获取 uid，支持多种可能的 header 名称
-    uid = (
-        request.headers.get("x-bili-uid")
-        or request.headers.get("x-bili-mid")
-        or request.headers.get("uid")
-        or "unknown"
-    )
-
-    title = f"抽奖数据库反馈 - UID: {uid}"
-
-    try:
-        resp = await a_pushme(title=title, content=data.message, push_type="text")
-        return CommonResponseModel(
-            code=0,
-            msg="success",
-            data={
-                "status": "success",
-                "message": "反馈已提交",
-                "uid": uid,
-            },
-        )
-    except Exception as e:
-        return CommonResponseModel(
-            code=-1,
-            msg="异常错误",
-            data={
-                "status": "error",
-                "message": f"提交失败：{str(e)}",
-                "uid": uid,
-            },
-        )
-
-
-@router.post(
     RouterPaths.GET_SINGLE_SCRAPY_STATUS,
     name=RouterNames.GET_SINGLE_SCRAPY_STATUS,
     description="根据爬虫类型查询单个爬虫的状态",
     response_model=CommonResponseModel[TypeScrapyStatus],
     response_model_exclude_none=True,
 )
-def get_single_scrapy_status(scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型")):
+def get_single_scrapy_status(
+    scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型")
+):
     """
     根据传入的爬虫类型查询对应的单个爬虫实时状态
 
@@ -552,7 +498,6 @@ def get_all_scrapy_status():
     name=RouterNames.GET_OTHERS_LOT_DYN_LIST,
     summary="获取第三方抽奖动态列表（分页+排序+时间筛选）",
     response_model=CommonResponseModel[ResponsePaginationItems[OthersLotDynItem]],
-    response_model_exclude_none=True,
 )
 @cache(expire=180)
 async def api_GetOthersLotDynList(
@@ -606,22 +551,27 @@ async def api_GetOthersLotDynList(
         created_at_end=created_at_end,
     )
 
-    # 构建响应，附加 prize_info 和 extra_info（仅使用已有缓存）
+    # 构建响应，附加 extra_info（已合并 prize_names / lottery_time，统一来自 t_lot_extra_info）
     result_items: list[OthersLotDynItem] = []
     for item in items:
         obj = OthersLotDynItem.model_validate(item)
         cached = cached_infos.get(item.dynId)
-        if cached:
-            obj.prize_info = OthersLotPrizeInfo(
+        # 有 extra_info 数据时填充，否则直接为 None（不捏造默认值）
+        obj.extra_info = (
+            LotExtraInfoResp(
+                is_lot=bool(cached.is_lot),
+                is_grand_prize=bool(cached.is_grand_prize),
+                need_comment=bool(cached.need_comment),
+                need_repost=bool(cached.need_repost),
+                required_topic_text=cached.required_topic_text,
                 prize_names=cached.prize_names or [],
                 lottery_time=cached.lottery_time,
+                lot_type=cached.lot_type,
+                predicted_at=cached.predicted_at,
             )
-            if cached.extra_info:
-                obj.extra_info = LotExtraInfoResp(
-                    is_grand_prize=bool(cached.extra_info.is_grand_prize),
-                    need_comment=bool(cached.extra_info.need_comment),
-                    need_repost=bool(cached.extra_info.need_repost),
-                )
+            if cached
+            else None
+        )
         result_items.append(obj)
 
     return CommonResponseModel(
@@ -669,8 +619,7 @@ async def api_GetLotteryFilterParams():
         EndpointFilterMeta(
             endpoint_path="GetOthersLotDynList",
             display_name="第三方抽奖动态列表",
-            params=pydantic_model_to_filter_params(
-                OthersLotDynListFilterMetadata),
+            params=pydantic_model_to_filter_params(OthersLotDynListFilterMetadata),
         ),
     ]
     return CommonResponseModel(data=LotteryFilterParamsResp(endpoints=endpoints))

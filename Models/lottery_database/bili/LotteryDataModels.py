@@ -147,13 +147,48 @@ class ReserveInfoResp(reserveInfo):
 
 class OfficialLotType(StrEnum):
     """官方抽奖类型枚举"""
-    reserve_lot = '预约抽奖'
-    charge_lot = '充电抽奖'
-    official_lot = '官方抽奖'
-    lot_dyn_origin_dyn = '抽奖动态的源动态'
+
+    reserve_lot = "预约抽奖"
+    charge_lot = "充电抽奖"
+    official_lot = "官方抽奖"
+    lot_dyn_origin_dyn = "抽奖动态的源动态"
 
 
-class CommonLotteryResp(CustomBaseModel):
+class LotExtraInfoResp(BaseModel):
+    """抽奖附加信息 — 对应数据库 t_lot_extra_info 表
+
+    已合并原 t_others_lot_info 的奖品信息（prize_names / lottery_time），
+    所有 LLM 提取结果字段均由此模型统一返回。
+    """
+
+    is_lot: bool | None = Field(
+        default=None, description="LLM 判断是否为抽奖: true-是, false-否, null-未抽取"
+    )
+    is_grand_prize: bool | None = Field(
+        default=None, description="大奖标志: true-大奖, false-非大奖, null-未判断"
+    )
+    need_comment: bool | None = Field(
+        default=None, description="是否需要评论, null-未知"
+    )
+    need_repost: bool | None = Field(
+        default=None, description="是否需要转发, null-未知"
+    )
+    required_topic_text: str | None = Field(
+        default=None, description="转发/评论所需携带的话题文本，如 #抽奖#"
+    )
+    prize_names: list[str] | None = Field(
+        default=None, description="LLM 提取的奖品名称列表"
+    )
+    lottery_time: str | None = Field(
+        default=None, description="LLM 提取的开奖时间字符串"
+    )
+    lot_type: str | None = Field(
+        default=None, description="抽奖类型: common/reserve/official/charge"
+    )
+    predicted_at: datetime | None = Field(default=None, description="LLM 判断时间")
+
+
+class CommonLotteryResp(BaseModel):
     @computed_field
     @property
     def up_uid_str(self) -> str:
@@ -171,10 +206,12 @@ class CommonLotteryResp(CustomBaseModel):
     officialLotType: OfficialLotType | None
     officialLotId: str = ""
     isOfficialAccount: int
-    isManualReply: bool = Field(default=False, description="是否需要人工评论")
-    isLot: int
-    hashTag: str
-    isBigLot: int = Field(default=0, description="SVM 大奖判断结果: 1-大奖, 0-非大奖")
+    created_at: datetime | None = Field(
+        default=None, description="数据库创建时间（对应 t_lotdyninfo.created_at）"
+    )
+    extra_info: LotExtraInfoResp | None = Field(
+        default=None, description="抽奖附加信息（对应 t_lot_extra_info 表）"
+    )
 
     @field_validator("officialLotType", mode="before")
     @classmethod
@@ -184,7 +221,9 @@ class CommonLotteryResp(CustomBaseModel):
             return None
         return v
 
-    @field_validator("officialLotId", "dynamicUrl", "authorName", "dynContent", "hashTag", mode="before")
+    @field_validator(
+        "officialLotId", "dynamicUrl", "authorName", "dynContent", mode="before"
+    )
     @classmethod
     def _str_none_to_empty(cls, v):
         # 数据库中这些文本字段可能为 None，转为空字符串
@@ -192,15 +231,7 @@ class CommonLotteryResp(CustomBaseModel):
             return ""
         return v
 
-    @field_validator("isManualReply", mode="before")
-    @classmethod
-    def _to_bool(cls, v):
-        # 兼容旧数据：'人工判断'/1/True -> True，''/0/None/False -> False
-        if isinstance(v, str):
-            return v == '人工判断'
-        return bool(v)
-
-    @field_validator("isOfficialAccount", "isLot", "up_uid", mode="before")
+    @field_validator("isOfficialAccount", "up_uid", mode="before")
     @classmethod
     def _int_none_to_zero(cls, v):
         # 数据库中这些整数字段可能为 None，转为 0
@@ -217,14 +248,7 @@ class CommonLotteryResp(CustomBaseModel):
         return v
 
 
-class LotExtraInfoResp(CustomBaseModel):
-    """抽奖附加信息 — 对应数据库 t_lot_extra_info 表，方便后续扩展"""
-    is_grand_prize: bool = Field(default=False, description="大奖标志: true-大奖, false-非大奖")
-    need_comment: bool = Field(default=False, description="是否需要评论")
-    need_repost: bool = Field(default=False, description="是否需要转发")
-
-
-class OfficialLotteryResp(CustomBaseModel):
+class OfficialLotteryResp(BaseModel):
     @computed_field
     @property
     def lottery_id_str(self) -> str:
@@ -237,11 +261,13 @@ class OfficialLotteryResp(CustomBaseModel):
     dynId: str
     sender_uid: str
     lottery_id: int
-    extra_info: LotExtraInfoResp | None = Field(default=None, description="抽奖附加信息")
+    extra_info: LotExtraInfoResp | None = Field(
+        default=None, description="抽奖附加信息"
+    )
     raw: LotdataResp
 
 
-class ChargeLotteryResp(CustomBaseModel):
+class ChargeLotteryResp(BaseModel):
     @computed_field
     @property
     def lottery_id_str(self) -> str:
@@ -255,11 +281,13 @@ class ChargeLotteryResp(CustomBaseModel):
     sender_uid: str
     lottery_id: int
     upower_level_str: str
-    extra_info: LotExtraInfoResp | None = Field(default=None, description="抽奖附加信息")
+    extra_info: LotExtraInfoResp | None = Field(
+        default=None, description="抽奖附加信息"
+    )
     raw: LotdataResp
 
 
-class TopicLotteryResp(CustomBaseModel):
+class TopicLotteryResp(BaseModel):
     jump_url: str
     app_sche: str
     title: str
@@ -299,7 +327,9 @@ class LiveLotteryResp(CustomBaseModel):
 
 
 class AllLotteryResp(CustomBaseModel):
-    common_lottery: list[CommonLotteryResp] = Field(..., description="一般抽奖（分页后）")
+    common_lottery: list[CommonLotteryResp] = Field(
+        ..., description="一般抽奖（分页后）"
+    )
     common_lottery_total: int = Field(
         default=0, description="一般抽奖总数（分页前），用于前端计算总页数"
     )
@@ -350,12 +380,6 @@ class BulkAddTopicLotteryReq(CustomBaseModel):
 
 class BulkAddOthersLotDynReq(CustomBaseModel):
     dynamic_id_or_urls: list[str]
-
-
-class SubmitFeedbackReq(CustomBaseModel):
-    """提交反馈请求模型"""
-
-    message: str = Field(..., description="反馈内容")
 
 
 class AddTopicLotteryResp(BaseAddLotteryResp):
@@ -491,18 +515,21 @@ class BiliLotStatisticRankDateTypeEnum(StrEnum):
 # region 第三方抽奖动态列表模型
 class OthersLotDynSortEnum(StrEnum):
     """排序字段枚举"""
+
     pub_time = "pubTime"
     created_at = "created_at"
 
 
 class OthersLotDynSortOrderEnum(StrEnum):
     """排序方向枚举"""
+
     asc = "asc"
     desc = "desc"
 
 
 class LotteryDataSortEnum(StrEnum):
     """抽奖数据排序字段枚举（用于预约/官方/充电抽奖）"""
+
     lottery_time = "lottery_time"  # 开奖时间
     participants = "participants"  # 参与人数
     first_prize = "first_prize"  # 一等奖份数
@@ -511,12 +538,14 @@ class LotteryDataSortEnum(StrEnum):
 
 class SortOrderEnum(StrEnum):
     """通用排序方向枚举"""
+
     asc = "asc"
     desc = "desc"
 
 
 class TimePresetEnum(StrEnum):
     """时间快捷筛选"""
+
     last_1_day = "1d"
     last_3_days = "3d"
     last_5_days = "5d"
@@ -529,17 +558,12 @@ class TimePresetEnum(StrEnum):
     last_365_days = "365d"
 
 
-class OthersLotPrizeInfo(BaseModel):
-    """第三方抽奖动态的提取信息（UIE 提取）"""
-    model_config = ConfigDict(extra="forbid")
-    prize_names: list[str] = Field(
-        default_factory=list, description="提取到的奖品名称列表")
-    lottery_time: str | None = Field(
-        default=None, description="提取到的开奖时间字符串")
+class OthersLotDynItem(BaseModel):
+    """第三方抽奖动态条目
 
-
-class OthersLotDynItem(CustomBaseModel):
-    """第三方抽奖动态条目"""
+    奖品信息（prize_names / lottery_time）已并入 extra_info（t_lot_extra_info），
+    接口统一通过 extra_info 返回，不再使用独立的 prize_info 字段。
+    """
 
     @computed_field
     @property
@@ -562,14 +586,12 @@ class OthersLotDynItem(CustomBaseModel):
     likeCount: int | None
     officialLotType: OfficialLotType | None
     isOfficialAccount: int | None
-    isManualReply: bool | None = Field(default=None, description="是否需要人工评论")
-    isLot: int | None
-    hashTag: str | None
     created_at: datetime | None  # 数据库创建时间
-    prize_info: OthersLotPrizeInfo | None = Field(
-        default=None, description="UIE 提取的奖品信息，首次提取后缓存")
+    isManualReply: bool | None = None
     extra_info: LotExtraInfoResp | None = Field(
-        default=None, description="抽奖附加信息")
+        default=None,
+        description="抽奖附加信息（含奖品名/开奖时间，统一来自 t_lot_extra_info）",
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -588,12 +610,13 @@ class OthersLotDynItem(CustomBaseModel):
         if v is None:
             return None
         if isinstance(v, str):
-            return v == '人工判断'
+            return v == "人工判断"
         return bool(v)
 
 
 class FilterParamTypeEnum(StrEnum):
     """筛选参数类型枚举"""
+
     INT = "int"
     STR = "str"
     ENUM = "enum"
@@ -603,20 +626,24 @@ class FilterParamTypeEnum(StrEnum):
 
 class FilterEnumValue(CustomBaseModel):
     """枚举选项值"""
+
     label: str = Field(..., description="显示名称")
     value: str = Field(..., description="实际值")
 
 
 class FilterParamMeta(CustomBaseModel):
     """单个筛选参数元数据"""
+
     param_name: str = Field(..., description="API 参数名")
     display_name: str = Field(..., description="中文显示名称")
-    param_type: str = Field(...,
-                            description="后端接收的参数类型: int/str/enum/bool")
-    widget: str = Field(default="input",
-                        description="前端UI组件类型: input/number/datetime/select/switch")
+    param_type: str = Field(..., description="后端接收的参数类型: int/str/enum/bool")
+    widget: str = Field(
+        default="input",
+        description="前端UI组件类型: input/number/datetime/select/switch",
+    )
     enum_values: Optional[list[FilterEnumValue]] = Field(
-        default=None, description="枚举选项（仅枚举类型）")
+        default=None, description="枚举选项（仅枚举类型）"
+    )
     default_value: Optional[Any] = Field(default=None, description="默认值")
     description: str = Field(default="", description="参数说明")
     required: bool = Field(default=False, description="是否必填")
@@ -625,16 +652,20 @@ class FilterParamMeta(CustomBaseModel):
 
 class EndpointFilterMeta(CustomBaseModel):
     """端点筛选参数元数据"""
+
     endpoint_path: str = Field(..., description="API 端点路径")
     display_name: str = Field(..., description="端点中文名称")
     params: list[FilterParamMeta] = Field(
-        default_factory=list, description="筛选参数列表")
+        default_factory=list, description="筛选参数列表"
+    )
 
 
 class LotteryFilterParamsResp(CustomBaseModel):
     """抽奖查询筛选参数响应"""
+
     endpoints: list[EndpointFilterMeta] = Field(
-        default_factory=list, description="各端点筛选参数列表")
+        default_factory=list, description="各端点筛选参数列表"
+    )
 
 
 # region 筛选参数元数据 — 自动生成工具
@@ -642,6 +673,7 @@ class LotteryFilterParamsResp(CustomBaseModel):
 
 class FilterWidgetType(StrEnum):
     """前端控件类型"""
+
     INPUT = "input"
     NUMBER = "number"
     DATETIME = "datetime"
@@ -684,13 +716,17 @@ def _extract_enum_values(annotation: Any) -> list[FilterEnumValue] | None:
         if len(non_none) == 1:
             annotation = non_none[0]
     if isinstance(annotation, type) and issubclass(annotation, StrEnum):
-        return [FilterEnumValue(label=member.value, value=member.value) for member in annotation]
+        return [
+            FilterEnumValue(label=member.value, value=member.value)
+            for member in annotation
+        ]
     return None
 
 
 def _get_field_default(field_info) -> Any:
     """安全获取 Pydantic 字段默认值"""
     from pydantic.fields import PydanticUndefined
+
     default = field_info.default
     if default is PydanticUndefined:
         return None
@@ -703,7 +739,9 @@ def _get_field_default(field_info) -> Any:
     return default
 
 
-def pydantic_model_to_filter_params(model_cls: type[CustomBaseModel | BaseModel]) -> list[FilterParamMeta]:
+def pydantic_model_to_filter_params(
+    model_cls: type[CustomBaseModel | BaseModel],
+) -> list[FilterParamMeta]:
     """将 Pydantic 模型字段自省为 FilterParamMeta 列表
 
     模型字段上的 json_schema_extra 中包含 filter_* 键的会被提取用于前端元数据。
@@ -711,32 +749,42 @@ def pydantic_model_to_filter_params(model_cls: type[CustomBaseModel | BaseModel]
     """
     params: list[FilterParamMeta] = []
     for field_name, field_info in model_cls.model_fields.items():
-        extra = (field_info.json_schema_extra or {}) if field_info.json_schema_extra else {}
+        extra = (
+            (field_info.json_schema_extra or {}) if field_info.json_schema_extra else {}
+        )
 
         display_name = extra.get("filter_display_name", field_name)
-        param_type = extra.get("filter_param_type") or _infer_param_type(field_info.annotation)
+        param_type = extra.get("filter_param_type") or _infer_param_type(
+            field_info.annotation
+        )
         widget = extra.get("filter_widget", "input")
         description = extra.get("filter_description", field_info.description or "")
         placeholder = extra.get("filter_placeholder")
         required = extra.get("filter_required", field_info.is_required())
-        default_value = extra.get("filter_default") if "filter_default" in extra else _get_field_default(field_info)
+        default_value = (
+            extra.get("filter_default")
+            if "filter_default" in extra
+            else _get_field_default(field_info)
+        )
 
         # 枚举值：优先用 json_schema_extra 中声明的，否则从 StrEnum 注解自动提取
         enum_values = extra.get("filter_enum_values")
         if enum_values is None and param_type == "enum":
             enum_values = _extract_enum_values(field_info.annotation)
 
-        params.append(FilterParamMeta(
-            param_name=field_name,
-            display_name=display_name,
-            param_type=param_type,
-            widget=widget,
-            enum_values=enum_values,
-            default_value=default_value,
-            description=description,
-            required=required,
-            placeholder=placeholder,
-        ))
+        params.append(
+            FilterParamMeta(
+                param_name=field_name,
+                display_name=display_name,
+                param_type=param_type,
+                widget=widget,
+                enum_values=enum_values,
+                default_value=default_value,
+                description=description,
+                required=required,
+                placeholder=placeholder,
+            )
+        )
     return params
 
 

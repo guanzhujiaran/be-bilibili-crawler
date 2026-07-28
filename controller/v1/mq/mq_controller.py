@@ -14,7 +14,7 @@ from Models.MQ.MQRouterModels import (
     VoucherInfo,
     RabbitMQTestMsgModel,
 )
-from Models.MQ.PrizeExtractMQModel import PrizeExtractReq
+from Models.MQ.PrizeExtractMQModel import PrizeExtractParams
 from log.base_log import MQ_logger
 from Service.MQ.base.MQClient.BiliLotDataFastStream import (
     official_reserve_charge_lot,
@@ -126,7 +126,7 @@ async def handle_bili_voucher(
 
 @router.subscriber(**prize_extract_biliopus.sub_params)
 async def handle_prize_extract_biliopus(
-    body: PrizeExtractReq,
+    body: PrizeExtractParams,
     msg: RabbitMessage,
 ) -> None:
     MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")
@@ -138,7 +138,7 @@ async def handle_prize_extract_biliopus(
 
 @router.subscriber(**prize_extract_dyndetail.sub_params)
 async def handle_prize_extract_dyndetail(
-    body: PrizeExtractReq,
+    body: PrizeExtractParams,
     msg: RabbitMessage,
 ) -> None:
     MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{body}")

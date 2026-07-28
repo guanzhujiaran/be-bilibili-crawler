@@ -6,7 +6,6 @@ from Models.MQ.MQRouterModels import RabbitMQTestMsgModel
 from Models.MQ.BaseMQModel import MQPropBase, QueueName, ExchangeName
 from Models.MQ.UpsertLotDataModel import LotDataReq, LotDataDynamicReq, TopicLotData
 from Models.MQ.PrizeExtractMQModel import (
-    PrizeExtractReq,
     PrizeExtractParams,
     PrizeExtractTargetEnum,
 )
@@ -185,7 +184,7 @@ class BiliLotDataPublisher:
     @staticmethod
     @_mq_retry_wrapper(max_retries=-1)
     async def pub_prize_extract(
-        req: PrizeExtractReq,
+        params: PrizeExtractParams,
         mq_props=None,
         extra_routing_key: str = "",
         *args,
@@ -193,18 +192,18 @@ class BiliLotDataPublisher:
     ):
         """发布入库请求：由对应队列的消费者判断并（按需）调用大模型写库。
 
-        消息体为统一的 PrizeExtractReq（params 自定义参数决定入哪个库）。
+        消息体为统一的 PrizeExtractParams（target_db 字段决定入哪个库）。
         mq_props 不传时按 params.target_db 自动选择队列。
         消费者在「并发已满」重新入队时，也会带上自己的 mq_props 指定回原队列。
         """
         if mq_props is None:
             mq_props = BiliLotDataPublisher._select_prize_extract_mq_props(
-                req.params.target_db
+                params.target_db
             )
         for i, value in enumerate(args, start=1):
             kwargs[f"extra_field_{i}"] = value
         do_publish = publisher_producer(mq_props=mq_props)
-        return await do_publish(message=req, extra_routing_key=extra_routing_key)
+        return await do_publish(message=params, extra_routing_key=extra_routing_key)
 
     @staticmethod
     @_mq_retry_wrapper(max_retries=-1)
@@ -224,14 +223,14 @@ class BiliLotDataPublisher:
         lottery_text = " ".join(filter(lambda a: a, prize_cmts)).strip()
         if lottery_id is None or not lottery_text:
             return None
-        params = PrizeExtractParams(
-            target_db=PrizeExtractTargetEnum.DYNDETAIL,
-            lottery_id=int(lottery_id),
-            lottery_text=lottery_text,
-            **kwargs,
-        )
         return await BiliLotDataPublisher.pub_prize_extract(
-            PrizeExtractReq(params=params), extra_routing_key=extra_routing_key
+            PrizeExtractParams(
+                target_db=PrizeExtractTargetEnum.DYNDETAIL,
+                lottery_id=int(lottery_id),
+                lottery_text=lottery_text,
+                **kwargs,
+            ),
+            extra_routing_key=extra_routing_key,
         )
 
     @staticmethod
@@ -242,6 +241,8 @@ class BiliLotDataPublisher:
         dyn_publish_time: datetime | None = None,
         lot_type: str = "common",
         need_comment: int | None = None,
+        comment_count: int | None = None,
+        forward_count: int | None = None,
         extra_routing_key: str = "",
         **kwargs,
     ):
@@ -250,17 +251,19 @@ class BiliLotDataPublisher:
         等价替代 SqlHelper.addDynInfo 中「直接调用大模型提取并写库」的同步逻辑，
         改为投递到 biliopusdb 入库队列，由消费者判断后异步提取写库。
         """
-        params = PrizeExtractParams(
-            target_db=PrizeExtractTargetEnum.BILIOPUSDB,
-            ref_id=int(dyn_id),
-            lot_type=lot_type,
-            dyn_content=dyn_content,
-            dyn_publish_time=dyn_publish_time,
-            need_comment=need_comment,
-            **kwargs,
-        )
         return await BiliLotDataPublisher.pub_prize_extract(
-            PrizeExtractReq(params=params), extra_routing_key=extra_routing_key
+            PrizeExtractParams(
+                target_db=PrizeExtractTargetEnum.BILIOPUSDB,
+                ref_id=int(dyn_id),
+                lot_type=lot_type,
+                dyn_content=dyn_content,
+                dyn_publish_time=dyn_publish_time,
+                need_comment=need_comment,
+                comment_count=comment_count,
+                forward_count=forward_count,
+                **kwargs,
+            ),
+            extra_routing_key=extra_routing_key,
         )
 
     @staticmethod

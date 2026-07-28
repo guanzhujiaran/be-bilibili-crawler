@@ -11,6 +11,7 @@
   4. 不存在 → 调用大模型提取并写库；存在或并发满 → 跳过/重新入队。
 - 具体落库目标由消息体里的自定义参数类 PrizeExtractParams.target_db 决定。
 """
+
 import asyncio
 import time
 import traceback
@@ -21,7 +22,7 @@ from faststream.rabbit.fastapi import RabbitMessage
 from log.base_log import MQ_logger
 from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
 from Utils.推送.PushMe import a_push_error
-from CONFIG import CONFIG
+from CONFIG import CONFIG, settings
 
 from Service.MQ.base.MQClient.base import (
     BaseFastStreamMQ,
@@ -30,25 +31,22 @@ from Service.MQ.base.MQClient.base import (
 )
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Models.MQ.PrizeExtractMQModel import (
-    PrizeExtractReq,
     PrizeExtractParams,
     PrizeExtractTargetEnum,
 )
+from Models.MQ.PrizeExtractResult import PrizeExtractResult
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     extract_prize_info_for_biliopusdb,
-    extract_prize_info_for_dyndetail,
+    extract_prize_info_for_lotdata,
 )
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 
 
 # ============ 异常兜底（与 BiliLotDataFastStream.handle_exception 一致）============
-async def handle_exception(
-        module_name: str,
-        e: Exception,
-        params,
-        msg: RabbitMessage
-):
+async def handle_exception(module_name: str, e: Exception, params, msg: RabbitMessage):
     error_msg = f"[ERROR]队列:{module_name}\n异常类型:{type(e)}\n异常:{e}\n时间:{time.strftime('%Y-%m-%d %H:%M:%S')}\n参数:{params}"
     MQ_logger.exception(error_msg)
     await a_push_error(
@@ -59,11 +57,11 @@ async def handle_exception(
 
 
 # ============ 并发/去重相关常量（两队列共享同一把全局信号量）============
-LOCK_TTL = 600           # 秒：去重锁兜底过期
-MAX_CONCURRENCY = 10     # 全局大模型并发上限
-SEM_TTL = 600            # 秒：信号量 key 过期（崩溃自愈）
+LOCK_TTL = 600  # 秒：去重锁兜底过期
+MAX_CONCURRENCY: int = len(settings.llm_apis)  # 全局大模型并发上限
+SEM_TTL = 600  # 秒：信号量 key 过期（崩溃自愈）
 SEM_ACQUIRE_TIMEOUT = 60.0  # 秒：阻塞等待信号量超时
-SEM_KEY = "global"       # 全局唯一 key，所有提取共享同一把并发闸
+SEM_KEY = "global"  # 全局唯一 key，所有提取共享同一把并发闸
 
 
 # ============ redis 锁 + 信号量 ============
@@ -105,9 +103,7 @@ class PrizeExtractRedisManager(RedisManagerBase):
     return 1
     """
 
-    async def acquire_semaphore(
-        self, key: str, max_concurrency: int, ttl: int
-    ) -> bool:
+    async def acquire_semaphore(self, key: str, max_concurrency: int, ttl: int) -> bool:
         """原子地尝试获取一个信号量名额。返回 True 表示成功占用一个并发位。"""
         sem_key = f"{self.RedisMap.sem_prefix.value}:{key}"
         async with redis_client_factory(pool=self.pool) as r:
@@ -142,6 +138,7 @@ class PrizeExtractRedisManager(RedisManagerBase):
                 return True
             await asyncio.sleep(0.2)
         return False
+
     # endregion
 
 
@@ -168,74 +165,82 @@ async def _already_stored(params: PrizeExtractParams) -> bool:
     return await SqlHelper.is_extra_info_exists(ref_id=ref_id, lot_type=params.lot_type)
 
 
-async def _do_extract_and_store(req: PrizeExtractReq) -> None:
-    """调用大模型提取并把结果写库；成功后把 result 回填到 req。
+async def _do_extract_and_store(params: PrizeExtractParams) -> PrizeExtractResult:
+    """调用大模型提取并把结果写库，返回 result（值），不回填到 req。
 
     具体提取函数与落库目标由 params.target_db 决定。
     """
-    params = req.params
     if params.target_db == PrizeExtractTargetEnum.DYNDETAIL:
         lottery_id = params.lottery_id
         if lottery_id is None:
             MQ_logger.warning(f"【dyndetail】缺少 lottery_id，跳过提取: {params}")
-            return
-        result = await extract_prize_info_for_dyndetail(
-            dyn_content=params.lottery_text)
+            return PrizeExtractResult()
+        result = await extract_prize_info_for_lotdata(dyn_content=params.lottery_text)
         await grpc_sql_helper.save_extra_info(
             lottery_id=lottery_id,
             is_grand_prize=int(result.result.is_grand_prize),
         )
-        req.result = result.result
+        return result.result
     else:
         ref_id = params.ref_id
         if ref_id is None:
             MQ_logger.warning(f"【biliopusdb】缺少 ref_id，跳过提取: {params}")
-            return
+            return PrizeExtractResult()
         result = await extract_prize_info_for_biliopusdb(
             dyn_content=params.dyn_content,
             dyn_publish_time=params.dyn_publish_time,
         )
         r = result.result
-        if r.prize_names or r.lottery_time:
-            await SqlHelper.save_prize(
-                dyn_id=ref_id,
-                prize_names=r.prize_names,
-                lottery_time=r.lottery_time,
-            )
-        if r.is_grand_prize or r.need_repost or r.required_topic_text:
-            await SqlHelper.save_extra_info(
-                ref_id=ref_id,
-                lot_type=params.lot_type,
-                is_grand_prize=int(r.is_grand_prize),
-                need_repost=int(r.need_repost),
-                need_comment=params.need_comment,
-            )
-        req.result = r
+        # is_lot 判断逻辑（从 judge_lottery 移入）：
+        # LLM 判断为抽奖，或互动量超阈值（评论>2000 或 转发>1000）也算抽奖
+        comment_count = params.comment_count or 0
+        forward_count = params.forward_count or 0
+        r.is_lot = r.is_lot or (comment_count > 2000 or forward_count > 1000)
+
+        # 所有 LLM 提取信息（含 prize_names / lottery_time）统一保存到 t_lot_extra_info，
+        # 不再使用独立的 t_others_lot_info 表（is_lot 不存 t_lotdyninfo，只存 t_lot_extra_info）
+        await SqlHelper.save_extra_info(
+            ref_id=ref_id,
+            lot_type=params.lot_type,
+            is_lot=int(r.is_lot),
+            is_grand_prize=int(r.is_grand_prize),
+            need_repost=int(r.need_repost),
+            need_comment=params.need_comment,
+            required_topic_text=(
+                r.required_topic_text if r.required_topic_text else None
+            ),
+            prize_names=r.prize_names,
+            lottery_time=r.lottery_time,
+        )
+        return r
 
 
 async def process_prize_extract(
-        mq_props, req: PrizeExtractReq, msg: RabbitMessage
-) -> None:
+    mq_props, params: PrizeExtractParams, msg: RabbitMessage
+) -> PrizeExtractResult | None:
     """两队列共享的处理流程：去重锁 → 查库 → 信号量 → 大模型提取写库。
 
     mq_props 用于「并发已满」时把消息重新入队回原队列。
+    result 单独返回（不塞进 params）。
     """
     module_name = mq_props.queue_name
-    params = req.params
+    # 值传递：从入参复制出独立的 params 对象，避免直接引用共享入参的内部状态
+    params = PrizeExtractParams.model_validate(params.model_dump())
     lock_key = _lock_key(params)
     sem_acquired = False
+    result: PrizeExtractResult | None = None
     try:
         # 1) redis 锁：正在查询/处理则跳过
         if not await prize_extract_redis.acquire_lock(lock_key, LOCK_TTL):
-            MQ_logger.info(
-                f"【{module_name}】{lock_key} 正在查询/处理中，跳过")
-            return await msg.ack()
+            MQ_logger.info(f"【{module_name}】{lock_key} 正在查询/处理中，跳过")
+            await msg.ack()
+            return None
 
         # 2) 直接查对应数据库是否已存在提取信息
         if await _already_stored(params):
-            MQ_logger.info(
-                f"【{module_name}】{lock_key} 已存在提取信息，跳过")
-            return await msg.ack()
+            MQ_logger.info(f"【{module_name}】{lock_key} 已存在提取信息，跳过")
+            await msg.ack()
+            return None
 
         # 3) 全局信号量：限制大模型提取并发数
         #    并发已满则重新入队到队尾，稍后（信号量释放后）再处理，
@@ -249,27 +254,33 @@ async def process_prize_extract(
         if not sem_acquired:
             MQ_logger.warning(
                 f"【{module_name}】{lock_key} 大模型提取并发已满"
-                f"({MAX_CONCURRENCY})，重新入队稍后处理")
-            await BiliLotDataPublisher.pub_prize_extract(req, mq_props=mq_props)
-            return await msg.ack()
+                f"({MAX_CONCURRENCY})，重新入队稍后处理"
+            )
+            await BiliLotDataPublisher.pub_prize_extract(params, mq_props=mq_props)
+            await msg.ack()
+            return None
 
         # 4) 不存在 → 调用大模型提取并写库
         #    大模型彻底失败：直接 nack，交给 RabbitMQ 延迟重试
-        await _do_extract_and_store(req)
+        result = await _do_extract_and_store(params)
 
-        MQ_logger.info(
-            f"【{module_name}】{lock_key} 提取并入库完成: {req.result}")
-        return await msg.ack()
+        MQ_logger.info(f"【{module_name}】{lock_key} 提取并入库完成: {result}")
+        await msg.ack()
+        return result
     except Exception as e:
         MQ_logger.warning(
             f"【{module_name}】{lock_key} 大模型提取失败，"
-            f"nack 交给 RabbitMQ 延迟重试: {type(e).__name__}: {e}")
-        return await msg.nack()
+            f"nack 交给 RabbitMQ 延迟重试: {type(e).__name__}: {e}"
+        )
+        await msg.nack()
+        return None
     finally:
         # 释放信号量（仅在持有名额时）与 redis 去重锁
         if sem_acquired:
             await prize_extract_redis.release_semaphore(SEM_KEY)
         await prize_extract_redis.release_lock(lock_key)
+
+
 # endregion
 
 
@@ -283,9 +294,8 @@ class PrizeExtractConsumer(BaseFastStreamMQ):
     def __init__(self, mq_props):
         super().__init__(mq_props=mq_props)
 
-    async def consume(self, body: PrizeExtractReq, msg: RabbitMessage):
-        MQ_logger.debug(
-            f"【{self.mq_props.queue_name}】消费消息: {body}")
+    async def consume(self, body: PrizeExtractParams, msg: RabbitMessage):
+        MQ_logger.debug(f"【{self.mq_props.queue_name}】消费消息: {body}")
         await process_prize_extract(self.mq_props, body, msg)
 
 

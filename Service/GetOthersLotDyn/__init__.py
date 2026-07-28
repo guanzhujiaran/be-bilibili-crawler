@@ -14,7 +14,7 @@ from Service.GetOthersLotDyn.parser.dynamic_detail_parser import parse_dynamic_i
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     PrizeExtractResult,
     extract_prize_info_for_biliopusdb,
-    extract_prize_info_for_dyndetail,
+    extract_prize_info_for_lotdata,
 )
 from Service.GetOthersLotDyn.filter.lottery_filter import (
     is_need_lot,

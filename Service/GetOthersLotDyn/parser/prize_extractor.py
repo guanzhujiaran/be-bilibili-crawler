@@ -3,8 +3,8 @@
 使用 ChatOpenAI.with_structured_output() 进行结构化信息提取，LLM 直接返回 Pydantic 模型。
 
 提供两个入口函数，分别对应 biliopusdb 和 dyndetail 两个数据库的 t_lot_extra_info 需求:
-- extract_prize_info_for_biliopusdb() → 适用于普通抽奖动态 (ref_id + lot_type)
-- extract_prize_info_for_dyndetail()  → 适用于官方/充电抽奖 (lottery_id)
+- extract_prize_info_for_biliopusdb() → 适用于普通/预约抽奖 (ref_id + lot_type)
+- extract_prize_info_for_lotdata()     → 适用于官方/充电抽奖 (lottery_id)
 
 核心特性：
 - with_structured_output 驱动 LLM 调用，无需 agent 层
@@ -178,11 +178,11 @@ async def extract_prize_info_for_biliopusdb(
     面向 biliopusdb (普通抽奖动态) 的抽奖信息提取。
 
     返回的 PrizeExtractResult 包含完整字段:
-      - prize_names, lottery_time → 用于 t_others_lot_info 表缓存
+      - prize_names, lottery_time → 用于 t_lot_extra_info 表缓存
       - is_lot, need_repost, required_topic_text → 用于抽奖判断
       - is_grand_prize → 用于 t_lot_extra_info (ref_id + lot_type='common')
       - chat_openai_client -> 支持传入自定义的客户端来执行操作
-    调用方通常进一步通过 SqlHelper.save_prize() / save_extra_info() 入库。
+    调用方通常进一步通过 SqlHelper.save_extra_info() 统一入库（含 prize_names / lottery_time）。
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
     不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
@@ -193,7 +193,7 @@ async def extract_prize_info_for_biliopusdb(
     )
 
 
-async def extract_prize_info_for_dyndetail(
+async def extract_prize_info_for_lotdata(
     *,
     dyn_content: str,
     chat_openai_client: ChatOpenAI | None = None,
@@ -232,8 +232,8 @@ if __name__ == "__main__":
         result = await extract_prize_info_for_biliopusdb(dyn_content=text)
         print(f"biliopusdb 提取结果: {result}")
 
-        result2 = await extract_prize_info_for_dyndetail(dyn_content=text)
-        print(f"dyndetail 提取结果: {result2}")
+        result2 = await extract_prize_info_for_lotdata(dyn_content=text)
+        print(f"lotdata 提取结果: {result2}")
 
     async def _to_csv():
         import csv
@@ -244,7 +244,7 @@ if __name__ == "__main__":
         async with SqlHelper.async_session() as session:
             sql = (
                 select(TLotdyninfo)
-                .where(TLotdyninfo.isLot == 1)
+                .where(TLotdyninfo.officialLotType.isnot(None))
                 .order_by(func.char_length(TLotdyninfo.dynContent).desc())
                 .limit(10)
             )

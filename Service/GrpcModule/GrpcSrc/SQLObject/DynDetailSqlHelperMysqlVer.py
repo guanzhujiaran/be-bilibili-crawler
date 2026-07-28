@@ -1272,7 +1272,7 @@ ORDER BY
     @log_sql_retry_wrapper()
     async def sync_all_lottery_result_2_bili_user_info(self, *, lottery_id: int | None = None):
         """
-        同步所有抽奖结果到用户信息表
+        同步所有抽奖结果到数据库的用户信息表
         :param lottery_id: 抽奖id  如果为None则同步所有抽奖结果
         :return:
         """

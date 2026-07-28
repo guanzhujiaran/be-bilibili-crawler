@@ -92,6 +92,13 @@ url = "https://mirrors.huaweicloud.com/repository/pypi/simple/"
 asyncio_mode = "auto"
 testpaths = ["test"]
 pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "aiosqlite>=0.22.1",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]
 [[tool.uv.index]]
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple/"

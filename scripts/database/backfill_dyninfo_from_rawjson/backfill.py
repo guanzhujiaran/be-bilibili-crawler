@@ -58,8 +58,10 @@ BATCH_SIZE = 50
 
 class ExtraInfoParams(BaseModel):
     """t_lot_extra_info 更新参数"""
+    is_lot: int
     need_comment: int
     need_repost: int
+    required_topic_text: str | None = None
 
 
 class DynInfoUpdates(BaseModel):
@@ -73,8 +75,6 @@ class DynInfoUpdates(BaseModel):
     dynamicUrl: str | None = None
     officialLotType: str | None = None
     officialLotId: str | None = None
-    isManualReply: int | None = None
-    isLot: int | None = None
 
 
 class BackfillResult(BaseModel):
@@ -212,6 +212,8 @@ async def _process_and_build_full_updates(dyn: TLotdyninfo) -> BackfillResult | 
         # prize extract result (一次模型调用提取全部信息)
         prize_result = await extract_prize_info_for_biliopusdb(dyn_content=dynamic_content) if dynamic_content else None
         need_repost = prize_result.result.need_repost if prize_result else False
+        llm_is_lot = prize_result.result.is_lot if prize_result else False
+        llm_required_topic_text = prize_result.result.required_topic_text if prize_result else ""
 
         # manual_judge (need_comment)
         manual_judge = False
@@ -256,13 +258,13 @@ async def _process_and_build_full_updates(dyn: TLotdyninfo) -> BackfillResult | 
             dynamicUrl=ret_url,
             officialLotType=official_lot_type.value if official_lot_type else None,
             officialLotId=str(lot_rid) if lot_rid else None,
-            isManualReply=int(manual_judge),
-            isLot=int(is_lot),
         )
 
         extra_info = ExtraInfoParams(
+            is_lot=int(llm_is_lot),
             need_comment=int(manual_judge),
             need_repost=int(need_repost),
+            required_topic_text=llm_required_topic_text if llm_required_topic_text else None,
         )
 
         return BackfillResult(dyn_info=dyn_info, extra_info=extra_info)
@@ -307,13 +309,15 @@ async def backfill_dyninfo(limit: int = 0, dry_run: bool = False):
                     await session.execute(stmt)
                     updated += 1
 
-                    # 更新 t_lot_extra_info
+                    # 更新 t_lot_extra_info（LLM 提取的全部字段）
                     if result.extra_info:
                         await SqlHelper.save_extra_info(
                             ref_id=dyn.dynId,
                             lot_type="common",
+                            is_lot=result.extra_info.is_lot,
                             need_comment=result.extra_info.need_comment,
                             need_repost=result.extra_info.need_repost,
+                            required_topic_text=result.extra_info.required_topic_text,
                         )
 
                     myfastapi_logger.info(

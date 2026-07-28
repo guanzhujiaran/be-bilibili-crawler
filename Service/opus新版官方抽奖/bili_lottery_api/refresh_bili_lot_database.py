@@ -60,6 +60,7 @@ class RefreshBiliLotDatabaseCrawler(UnlimitedCrawler[RBDParamsType]):
                     )
 
     async def handle_fetch(self, params: RBDParamsType) -> WorkerStatus | Any:
+        # 现在不用redis了,直接存到数据库里面了,加缓存读取很快,不需要浪费内存了
         # k = params.BiliLotStatisticRankDateType
         # _lot_type = params.BiliLotStatisticLotType
         # j = params.BiliLotStatisticRankType

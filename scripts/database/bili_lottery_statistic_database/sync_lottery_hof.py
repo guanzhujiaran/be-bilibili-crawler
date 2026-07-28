@@ -77,11 +77,11 @@ async def main() -> None:
         help="仅同步指定抽奖ID的开奖结果；不传则全量同步",
     )
     parser.add_argument(
-        "--skip-sync-ts", action="store_true",
+        "--skip-sync-ts", action="store_true",default=True,
         help="全量同步后不同步 Redis 的 sync_ts（仅对全量同步生效）",
     )
     parser.add_argument(
-        "--count", action="store_true",
+        "--count", action="store_true",default=False,
         help="仅统计待同步的源数据条数，不做任何写入",
     )
     args = parser.parse_args()
@@ -97,7 +97,7 @@ async def main() -> None:
     await grpc_sql_helper.sync_all_lottery_result_2_bili_user_info(
         lottery_id=args.lottery_id
     )
-    myfastapi_logger.info(f"lottery_hof 数据同步完成（{scope}）")
+    myfastapi_logger.info(f"lottery_hof 数据库同步完成（{scope}）")
 
     # 仅全量同步时刷新 sync_ts（单抽奖增量同步不更新“最后全量同步时间”）
     if args.lottery_id is None and not args.skip_sync_ts:
