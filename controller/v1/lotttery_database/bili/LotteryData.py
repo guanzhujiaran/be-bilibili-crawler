@@ -31,7 +31,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     OthersLotDynSortOrderEnum,
     TimePresetEnum,
     LotteryFilterParamsResp,
-    LotExtraInfoResp,
+    CommonLotExtraInfoResp,
 )
 from Models.lottery_database.bili.comm import (
     LotteryPaginationParams,
@@ -100,7 +100,6 @@ def _parse_status(status: Optional[str]) -> BiliLotDataStatusEnum | None:
     description="""获取必抽的预约抽奖数据，支持高级筛选。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
-    response_model_exclude_none=True,
 )
 @cache(expire=180)
 async def api_GetMustReserveLottery(
@@ -290,7 +289,7 @@ async def api_GetAllLottery(
         description="每页数量，最大 1000，默认 1000，最小值为 1",
     ),
 ):
-    result = await get_all_lottery(
+    result: AllLotteryResp = await get_all_lottery(
         created_at_preset=created_at_preset,
         created_at_start=created_at_start,
         created_at_end=created_at_end,
@@ -558,7 +557,7 @@ async def api_GetOthersLotDynList(
         cached = cached_infos.get(item.dynId)
         # 有 extra_info 数据时填充，否则直接为 None（不捏造默认值）
         obj.extra_info = (
-            LotExtraInfoResp(
+            CommonLotExtraInfoResp(
                 is_lot=bool(cached.is_lot),
                 is_grand_prize=bool(cached.is_grand_prize),
                 need_comment=bool(cached.need_comment),

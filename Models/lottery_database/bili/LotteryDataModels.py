@@ -58,7 +58,7 @@ class LotdataResp(CustomBaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class reserveInfo(CustomBaseModel):
+class reserveInfo(BaseModel):
     reserve_url: str  # 空间动态链接 like https://space.bilibili.com/1927279531
     lottery_prize_info: str  # 奖品名称
     etime: int  # 结束时间(秒)
@@ -154,11 +154,32 @@ class OfficialLotType(StrEnum):
     lot_dyn_origin_dyn = "抽奖动态的源动态"
 
 
-class LotExtraInfoResp(BaseModel):
-    """抽奖附加信息 — 对应数据库 t_lot_extra_info 表
+class OfficialLotExtraInfoResp(BaseModel):
+    """官方/预约/充电抽奖附加信息 — 严格对应 GrpcModule 数据库 t_lot_extra_info 表的列。
 
-    已合并原 t_others_lot_info 的奖品信息（prize_names / lottery_time），
-    所有 LLM 提取结果字段均由此模型统一返回。
+    该表仅存储 LLM 大奖/抽奖/互动判断结果，不含奖品名、开奖时间、话题文本等字段。
+    奖品信息由主表 Lotdata 的 first_prize_cmt 等字段提供。
+    """
+
+    is_lot: bool | None = Field(
+        default=None, description="LLM 判断是否为抽奖: true-是, false-否, null-未抽取"
+    )
+    is_grand_prize: bool | None = Field(
+        default=None, description="大奖标志: true-大奖, false-非大奖, null-未判断"
+    )
+    need_comment: bool | None = Field(
+        default=None, description="是否需要评论, null-未知"
+    )
+    need_repost: bool | None = Field(
+        default=None, description="是否需要转发, null-未知"
+    )
+
+
+class CommonLotExtraInfoResp(BaseModel):
+    """普通/第三方抽奖附加信息 — 对应数据库 t_lot_extra_info 表中 lot_type=common 的记录
+
+    普通抽奖的奖品信息由 LLM 从动态正文提取，因此额外包含 prize_names / lottery_time。
+    赋值需传入 LLM 提取的 prize_names / lottery_time，相较官方抽奖多这两个必填（可空）参数。
     """
 
     is_lot: bool | None = Field(
@@ -183,7 +204,7 @@ class LotExtraInfoResp(BaseModel):
         default=None, description="LLM 提取的开奖时间字符串"
     )
     lot_type: str | None = Field(
-        default=None, description="抽奖类型: common/reserve/official/charge"
+        default=None, description="抽奖类型: common"
     )
     predicted_at: datetime | None = Field(default=None, description="LLM 判断时间")
 
@@ -209,7 +230,7 @@ class CommonLotteryResp(BaseModel):
     created_at: datetime | None = Field(
         default=None, description="数据库创建时间（对应 t_lotdyninfo.created_at）"
     )
-    extra_info: LotExtraInfoResp | None = Field(
+    extra_info: CommonLotExtraInfoResp | None = Field(
         default=None, description="抽奖附加信息（对应 t_lot_extra_info 表）"
     )
 
@@ -261,7 +282,7 @@ class OfficialLotteryResp(BaseModel):
     dynId: str
     sender_uid: str
     lottery_id: int
-    extra_info: LotExtraInfoResp | None = Field(
+    extra_info: OfficialLotExtraInfoResp | None = Field(
         default=None, description="抽奖附加信息"
     )
     raw: LotdataResp
@@ -281,7 +302,7 @@ class ChargeLotteryResp(BaseModel):
     sender_uid: str
     lottery_id: int
     upower_level_str: str
-    extra_info: LotExtraInfoResp | None = Field(
+    extra_info: OfficialLotExtraInfoResp | None = Field(
         default=None, description="抽奖附加信息"
     )
     raw: LotdataResp
@@ -588,7 +609,7 @@ class OthersLotDynItem(BaseModel):
     isOfficialAccount: int | None
     created_at: datetime | None  # 数据库创建时间
     isManualReply: bool | None = None
-    extra_info: LotExtraInfoResp | None = Field(
+    extra_info: CommonLotExtraInfoResp | None = Field(
         default=None,
         description="抽奖附加信息（含奖品名/开奖时间，统一来自 t_lot_extra_info）",
     )

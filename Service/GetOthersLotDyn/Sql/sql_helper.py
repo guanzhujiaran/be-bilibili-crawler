@@ -4,7 +4,7 @@ import json
 import time
 from datetime import datetime
 from enum import StrEnum
-from typing import Union, List, Sequence, Optional
+from typing import Union, List, Sequence, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -238,13 +238,15 @@ class __SqlHelper(SqlHelperBase):
         created_at_end: int | None = None,
         pub_time_start: int | None = None,
         pub_time_end: int | None = None,
-    ) -> Sequence[TLotdyninfo]:
-        """按收录时间(created_at)和发布时间(pubTime)范围过滤抽奖动态
+    ) -> Tuple[List[TLotdyninfo], dict[int, TLotExtraInfo]]:
+        """按收录时间(created_at)和发布时间(pubTime)范围过滤抽奖动态，
+        并通过 LEFT JOIN 一次查询附带 t_lot_extra_info。
 
         :param created_at_start: 收录起始时间（Unix 秒），None 表示不限制下界
         :param created_at_end: 收录结束时间（Unix 秒），None 表示不限制上界
         :param pub_time_start: 发布起始时间（Unix 秒），None 表示不限制下界
         :param pub_time_end: 发布结束时间（Unix 秒），None 表示不限制上界
+        :return: (items, extra_map) — extra_map 以 dynId(=ref_id) 为键
         """
         conditions = [self._is_lot_condition()]
         if created_at_start is not None:
@@ -266,14 +268,23 @@ class __SqlHelper(SqlHelperBase):
                 TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end)
             )
         stmt = (
-            select(TLotdyninfo)
+            select(TLotdyninfo, TLotExtraInfo)
+            .outerjoin(TLotExtraInfo,
+                TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+            )
             .filter(and_(*conditions))
             .order_by(TLotdyninfo.pubTime.desc())
         )
         async with self.async_session() as session:
             res = await session.execute(stmt)
-            ret = res.scalars().all()
-            return ret
+            rows = res.all()
+            items: list[TLotdyninfo] = []
+            extra_map: dict[int, TLotExtraInfo] = {}
+            for dyn_info, extra_info in rows:
+                items.append(dyn_info)
+                if extra_info is not None:
+                    extra_map[dyn_info.dynId] = extra_info
+            return items, extra_map
 
     @log_sql_retry_wrapper()
     async def countValidLotByUidList(

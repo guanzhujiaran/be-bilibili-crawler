@@ -22,7 +22,8 @@ from Models.lottery_database.bili.LotteryDataModels import (
     LotdataResp,
     AddTopicLotteryResp,
     TimePresetEnum,
-    LotExtraInfoResp,
+    OfficialLotExtraInfoResp,
+    CommonLotExtraInfoResp,
 )
 from Models.lottery_database.redisModel.biliRedisModel import bili_live_lottery_redis
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
@@ -82,7 +83,7 @@ async def get_common_lottery(
             isOfficialAccount=x.isOfficialAccount,
             created_at=x.created_at,
             extra_info=(
-                LotExtraInfoResp(
+                CommonLotExtraInfoResp(
                     is_lot=bool(_ei.is_lot),
                     is_grand_prize=bool(_ei.is_grand_prize),
                     need_comment=bool(_ei.need_comment),
@@ -190,14 +191,11 @@ async def get_official_lottery(
             jump_url=f"https://www.bilibili.com/opus/{str(x.business_id)}",
             app_sche=f"bilibili://opus/detail/{str(x.business_id)}",
             extra_info=(
-                LotExtraInfoResp(
+                OfficialLotExtraInfoResp(
                     is_lot=bool(_ei.is_lot),
                     is_grand_prize=bool(_ei.is_grand_prize),
                     need_comment=bool(_ei.need_comment),
                     need_repost=bool(_ei.need_repost),
-                    required_topic_text=_ei.required_topic_text,
-                    lot_type=_ei.lot_type,
-                    predicted_at=_ei.predicted_at,
                 )
                 if (_ei := extra_map.get(x.lottery_id))
                 else None
@@ -243,14 +241,11 @@ async def get_charge_lottery(
                 ).strip(),
                 upower_level_str=upower_level_str,
                 extra_info=(
-                    LotExtraInfoResp(
+                    OfficialLotExtraInfoResp(
                         is_lot=bool(_ei.is_lot),
                         is_grand_prize=bool(_ei.is_grand_prize),
                         need_comment=bool(_ei.need_comment),
                         need_repost=bool(_ei.need_repost),
-                        required_topic_text=_ei.required_topic_text,
-                        lot_type=_ei.lot_type,
-                        predicted_at=_ei.predicted_at,
                     )
                     if (_ei := extra_map.get(x.lottery_id))
                     else None
@@ -383,7 +378,7 @@ async def get_all_lottery(
         effective_pub_time_start = int(time.time() - 30 * 86400)
 
     # 三个查询并行执行：普通抽奖 / 预约抽奖 / 官方抽奖
-    common_lotterys, (reserve_lottery_resp_infos, _), (official_lottery_resp_infos, _) = await asyncio.gather(
+    (common_lotterys, common_extra_map), (reserve_lottery_resp_infos, _), (official_lottery_resp_infos, _) = await asyncio.gather(
         bds.getAllLotDynByInsertTimeRange(
             created_at_start=effective_created_at_start,
             created_at_end=created_at_end,
@@ -413,12 +408,7 @@ async def get_all_lottery(
         ),
     )
 
-    # 构造普通抽奖响应列表（isLot/isManualReply/hashTag 已移入 t_lot_extra_info）
-    common_extra_map = {}
-    if common_lotterys:
-        common_dyn_ids = [int(x.dynId) for x in common_lotterys]
-        common_extra_map = await bds.get_extra_info_map_by_ref_ids(common_dyn_ids, lot_type="common")
-
+    # 构造普通抽奖响应列表（extra_info 已通过 getAllLotDynByInsertTimeRange 的 LEFT JOIN 一次性获取）
     comon_lottery_resp = [
         CommonLotteryResp(
             dynId=str(x.dynId),
@@ -435,7 +425,7 @@ async def get_all_lottery(
             isOfficialAccount=x.isOfficialAccount,
             created_at=x.created_at,
             extra_info=(
-                LotExtraInfoResp(
+                CommonLotExtraInfoResp(
                     is_lot=bool(_ei.is_lot),
                     is_grand_prize=bool(_ei.is_grand_prize),
                     need_comment=bool(_ei.need_comment),
@@ -456,19 +446,15 @@ async def get_all_lottery(
     if page_size > 0:
         start = (page_num - 1) * page_size
         end = start + page_size
-        paged_common_lottery = comon_lottery_resp[start:end]
+        paged_common_lottery: list[CommonLotteryResp] = comon_lottery_resp[start:end]
     else:
         # 未给分页参数时默认只返回前 1000 条，避免全量返回
-        paged_common_lottery = comon_lottery_resp[:1000]
+        paged_common_lottery: list[CommonLotteryResp] = comon_lottery_resp[:1000]
 
-    # 直接从数据库大奖 flag 子表读取（仅查询当前页，减少查询量）
-    dyn_ids = [int(x.dynId) for x in paged_common_lottery]
-    grand_prize_flags = await bds.get_extra_info_by_ref_ids(dyn_ids, "common")
-    must_join_common_lottery = []
-    for x in paged_common_lottery:
-        x.isBigLot = grand_prize_flags.get(int(x.dynId), 0)
-        if x.isBigLot == 1:
-            must_join_common_lottery.append(x)
+    must_join_common_lottery: list[CommonLotteryResp] = [
+        x for x in paged_common_lottery
+        if x.extra_info and x.extra_info.is_grand_prize
+    ]
 
     # 合并
     return AllLotteryResp(

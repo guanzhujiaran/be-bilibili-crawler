@@ -33,7 +33,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     OthersLotDynSortOrderEnum,
     TimePresetEnum,
     LotteryFilterParamsResp,
-    LotExtraInfoResp,
+    CommonLotExtraInfoResp,
     EndpointFilterMeta,
     pydantic_model_to_filter_params,
 )
@@ -242,7 +242,7 @@ async def handle_get_others_lot_dyn_list(params: GetOthersLotDynListRpcParams) -
         obj = OthersLotDynItem.model_validate(item)
         cached = cached_infos.get(item.dynId)
         if cached:
-            obj.extra_info = LotExtraInfoResp(
+            obj.extra_info = CommonLotExtraInfoResp(
                 is_lot=bool(cached.is_lot),
                 is_grand_prize=bool(cached.is_grand_prize),
                 need_comment=bool(cached.need_comment),
