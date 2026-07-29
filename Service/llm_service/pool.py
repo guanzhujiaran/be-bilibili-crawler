@@ -13,6 +13,7 @@
 
 from typing import Any
 
+from langchain_core.rate_limiters import InMemoryRateLimiter
 from pydantic import SecretStr
 
 from CONFIG import settings
@@ -30,6 +31,13 @@ def _build_free_llms() -> list[TrackedChatOpenAI]:
     llms: list[TrackedChatOpenAI] = []
     for cfg in settings.llm_apis:
         if cfg.base_url and cfg.model_name:
+            # 每个云端实例独立限流：ainvoke/invoke 前会先获取令牌，
+            # 超速时自动阻塞等待，避免触发上游 API 的 429 限制。
+            rate_limiter = InMemoryRateLimiter(
+                requests_per_second=cfg.requests_per_second,
+                check_every_n_seconds=0.1,
+                max_bucket_size=1,
+            )
             llms.append(
                 TrackedChatOpenAI(
                     model=cfg.model_name,
@@ -37,6 +45,7 @@ def _build_free_llms() -> list[TrackedChatOpenAI]:
                     api_key=(
                         SecretStr(cfg.token) if cfg.token else SecretStr("not-needed")
                     ),
+                    rate_limiter=rate_limiter,
                 )
             )
     return llms
@@ -45,7 +54,12 @@ def _build_free_llms() -> list[TrackedChatOpenAI]:
 def _get_free_llms() -> list[TrackedChatOpenAI]:
     """获取云端 LLM 实例列表（带缓存，配置变化自动失效）"""
     global _free_llm_cache, _free_llm_cache_key
-    key = str([(c.base_url, c.model_name, c.token) for c in settings.llm_apis])
+    key = str(
+        [
+            (c.base_url, c.model_name, c.token, c.requests_per_second)
+            for c in settings.llm_apis
+        ]
+    )
     if _free_llm_cache_key != key:
         _free_llm_cache = _build_free_llms()
         _free_llm_cache_key = key

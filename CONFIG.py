@@ -218,6 +218,8 @@ class LLMApiConfig(BaseModel):
     base_url: str = ""
     model_name: str = ""
     token: str = ""
+    # 每秒最大请求数（InMemoryRateLimiter），默认 0.5 即每 2 秒最多 1 次请求
+    requests_per_second: float = 0.5
 
 
 class Settings(BaseSettings):
@@ -257,6 +259,8 @@ class Settings(BaseSettings):
 
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []
+
+    sqlalchemy_logging: bool = False
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -373,7 +377,7 @@ class DataBaseConfig:
 class SqlAlchemyConfig:
     # 业务连接池配置 - 供 router/service 等业务使用，保留足够的连接处理外部请求
     engine_config = dict(
-        echo=False,
+        echo=settings.sqlalchemy_logging,
         pool_size=100,
         max_overflow=40,
         pool_use_lifo=True,
@@ -396,7 +400,7 @@ class CrawlerSqlAlchemyConfig:
     """
 
     engine_config = dict(
-        echo=False,
+        echo=settings.sqlalchemy_logging,
         pool_size=100,  # 与业务池大小相同，独立使用
         max_overflow=40,
         pool_use_lifo=True,

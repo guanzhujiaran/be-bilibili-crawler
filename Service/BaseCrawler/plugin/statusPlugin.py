@@ -112,16 +112,28 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         # No need to calculate _total_run_duration or _current_speed here,
         # the properties will return the final values when accessed.
 
+        fail_count = self._processed_items_count - self._succ_count
+        valid_count = self._succ_count - self._null_count
+        success_rate = (
+            (self._succ_count / self._processed_items_count * 100)
+            if self._processed_items_count
+            else 0.0
+        )
         summary = (
-            f"StatsPlugin Summary:\n"
-            f"  Initial Params: {self._init_params}\n"
-            f"  Final Params: {self._end_params}\n"
-            f"  Is Running: {self._is_running}\n"
-            f"  Processed Items: {self._processed_items_count}\n"
-            f"  Total Duration: {self.total_run_duration:.2f} seconds\n"
-            f"  Average Speed: {self.crawling_speed:.2f} items/second\n"
-            f"  Last Update Time: {time.ctime(self.last_update_time)}\n"
-            f"  Success Count: {self.succ_count}"
+            f"StatsPlugin 运行结束统计:\n"
+            f"  爬虫类型: {self.crawler.__class__.__name__}\n"
+            f"  开始时间: {self.start_time_str:%Y-%m-%d %H:%M:%S}\n"
+            f"  结束时间: {self.last_update_time_str:%Y-%m-%d %H:%M:%S}\n"
+            f"  总运行时长: {self.total_run_duration:.2f} 秒\n"
+            f"  处理任务数: {self._processed_items_count}\n"
+            f"  成功数(含空数据): {self._succ_count}\n"
+            f"  有效数据数: {valid_count}\n"
+            f"  空数据数: {self._null_count}\n"
+            f"  失败数: {fail_count}\n"
+            f"  成功率: {success_rate:.1f}%\n"
+            f"  平均速度: {self.crawling_speed:.2f} 项/秒\n"
+            f"  是否运行中: {self._is_running}\n"
+            f"  健康状态: {self.health_status}"
         )
         self.log.info(self.crawler.format_log(summary))
         if self.push_result:

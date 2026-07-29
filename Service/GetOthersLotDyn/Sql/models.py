@@ -57,6 +57,8 @@ class TLotdyninfo(Base):
     __table_args__ = (
         ForeignKeyConstraint(['dynLotRound_id'], ['t_lotmaininfo.lotRound_id'], name='t_lotdyninfo_ibfk_1'),
         Index('dynLotRound_id', 'dynLotRound_id'),
+        Index('idx_created_at', 'created_at'),
+        Index('idx_pub_time', 'pubTime'),
     )
 
     dynId = mapped_column(BigInteger, primary_key=True, server_default=text('(0)'))
@@ -111,6 +113,7 @@ class TLotExtraInfo(Base):
     __tablename__ = 't_lot_extra_info'
     __table_args__ = (
         Index('idx_ref_id_type', 'ref_id', 'lot_type', unique=True),
+        Index('idx_lot_type_is_lot', 'lot_type', 'is_lot'),
     )
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)

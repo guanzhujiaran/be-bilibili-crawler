@@ -861,42 +861,98 @@ class __SqlHelper(SqlHelperBase):
         :return: (items, total, extra_map) — extra_map 以 dynId(=ref_id) 为键
         """
         async with self.async_session() as session:
-            # --- 构建共用筛选条件 ---
-            conditions = []
-            if is_lot is not None:
-                conditions.append(
-                    self._is_lot_condition() if is_lot else ~self._is_lot_condition()
-                )
+            # --- 构建共用时间筛选条件（COUNT 与 data 查询共用）---
+            time_conditions = []
             if pub_time_start is not None:
-                conditions.append(TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start))
+                time_conditions.append(TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start))
             if pub_time_end is not None:
-                conditions.append(TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end))
+                time_conditions.append(TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end))
             if created_at_start is not None:
-                conditions.append(TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start))
+                time_conditions.append(TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start))
             if created_at_end is not None:
-                conditions.append(TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end))
+                time_conditions.append(TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end))
 
             sort_column = getattr(TLotdyninfo, sort_by, TLotdyninfo.pubTime)
             order_clause = sort_column.asc() if sort_order == "asc" else sort_column.desc()
             offset = max(0, (page_num - 1) * page_size)
 
-            # --- 1. COUNT 查询：索引覆盖扫描 ---
-            total = (await session.execute(
-                select(func.count(TLotdyninfo.dynId)).where(*conditions)
-            )).scalar() or 0
+            # 第三方抽奖列表：is_lot 仅由 t_lot_extra_info.is_lot 决定。
+            # 官方/预约/充电抽奖的 officialLotType 列不在此接口的筛选范围内
+            # （它们各自有独立接口，混入会产生错误的 total 与冗余数据）。
+            common_is_lot_exists = exists().where(and_(
+                TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+                TLotExtraInfo.lot_type == "common",
+                TLotExtraInfo.is_lot == 1,
+            )).correlate(TLotdyninfo)
 
-            # --- 2. LEFT JOIN 一次查出动态信息 + t_lot_extra_info ---
-            data_stmt = (
-                select(TLotdyninfo, TLotExtraInfo)
-                .outerjoin(TLotExtraInfo, and_(
+            # --- 1. COUNT 查询 ---
+            if is_lot is True:
+                if time_conditions:
+                    # 有时间筛选时必须关联 t_lotdyninfo 的时间列
+                    total = (await session.execute(
+                        select(func.count(TLotdyninfo.dynId)).where(
+                            *time_conditions, common_is_lot_exists
+                        )
+                    )).scalar() or 0
+                else:
+                    # 无时间筛选：直接统计 t_lot_extra_info（走 idx_lot_type_is_lot，极快）
+                    total = (await session.execute(
+                        select(func.count()).select_from(TLotExtraInfo).where(
+                            TLotExtraInfo.lot_type == "common",
+                            TLotExtraInfo.is_lot == 1,
+                        )
+                    )).scalar() or 0
+            elif is_lot is False:
+                total = (await session.execute(
+                    select(func.count(TLotdyninfo.dynId)).where(
+                        *time_conditions, ~common_is_lot_exists
+                    )
+                )).scalar() or 0
+            else:
+                total = (await session.execute(
+                    select(func.count(TLotdyninfo.dynId)).where(*time_conditions)
+                )).scalar() or 0
+
+            # --- 2. data 查询 ---
+            # 强制按排序字段走索引（idx_created_at / idx_pub_time），避免优化器误选
+            # 「先扫 t_lot_extra_info 再 filesort」的慢路径。反向索引扫描 + 提前终止，
+            # 只触碰 LIMIT 所需的少数行，而非全表。
+            sort_index = 'idx_created_at' if sort_by == 'created_at' else 'idx_pub_time'
+
+            if is_lot is True:
+                # INNER JOIN 直接过滤出 common 抽奖，同时一次拿到 extra_info（避免冗余 EXISTS）
+                join_on = and_(
                     TLotExtraInfo.ref_id == TLotdyninfo.dynId,
                     TLotExtraInfo.lot_type == "common",
-                ))
-                .where(*conditions)
-                .order_by(order_clause)
-                .offset(offset)
-                .limit(page_size)
-            )
+                    TLotExtraInfo.is_lot == 1,
+                )
+                data_stmt = (
+                    select(TLotdyninfo, TLotExtraInfo)
+                    .with_hint(TLotdyninfo, f'FORCE INDEX ({sort_index})')
+                    .join(TLotExtraInfo, join_on)
+                    .where(*time_conditions)
+                    .order_by(order_clause)
+                    .offset(offset)
+                    .limit(page_size)
+                )
+            else:
+                # is_lot=False / None：LEFT JOIN 取 extra_info（如有），不强制 is_lot=1
+                join_on = and_(
+                    TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+                    TLotExtraInfo.lot_type == "common",
+                )
+                data_where = list(time_conditions)
+                if is_lot is False:
+                    data_where.append(~common_is_lot_exists)
+                data_stmt = (
+                    select(TLotdyninfo, TLotExtraInfo)
+                    .with_hint(TLotdyninfo, f'FORCE INDEX ({sort_index})')
+                    .outerjoin(TLotExtraInfo, join_on)
+                    .where(*data_where)
+                    .order_by(order_clause)
+                    .offset(offset)
+                    .limit(page_size)
+                )
             data_res = await session.execute(data_stmt)
             rows = data_res.all()
 

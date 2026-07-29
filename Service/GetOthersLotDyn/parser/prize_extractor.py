@@ -14,6 +14,7 @@
   judge_grand_prize 回填大奖判断结果
 - 采样参数通过 get_all_free_llms() 关键字参数传入
 """
+
 from langchain_openai import ChatOpenAI
 import asyncio
 import json
@@ -29,11 +30,12 @@ from Service.llm_service import get_all_free_llms, SamplingPreset
 from Utils.推送.PushMe import a_push_error
 
 # 繁体转简体转换器（线程安全，可全局复用）
-_t2s_converter = opencc.OpenCC('t2s.json')
+_t2s_converter = opencc.OpenCC("t2s.json")
 
 
 class PrizeExtractResp(BaseModel):
     """抽奖信息提取返回内容（result 的类型随目标数据库不同而不同）"""
+
     dyn_content: str = Field(description="原始文本内容")
     consume_time: float = Field(description="处理耗时，单位秒")
     result: BaseModel = Field(description="抽奖信息提取结果")
@@ -44,7 +46,7 @@ class PrizeExtractResp(BaseModel):
 
 # ============ System Prompt ============
 
-_AGENT_SYSTEM_PROMPT = """从文本中提取抽奖信息。
+_COMMON_LOTTERY_SYSTEM_PROMPT = """从文本中提取抽奖信息。
 规则：
 1. prize_names: 奖品名称列表，没有则为空列表
 2. lottery_time: 开奖时间，格式YYYY-MM-DD，没有则为null
@@ -62,19 +64,23 @@ _OFFICIAL_SYSTEM_PROMPT = """官方/充电抽奖，抽奖方式由 lottery_type 
 def _build_system_prompt(pub_time: datetime | None) -> str:
     """构建系统提示词，可选附加动态发布时间作为时间参考"""
     if pub_time:
-        return _AGENT_SYSTEM_PROMPT + f"\n\n发布时间：{pub_time.strftime('%Y-%m-%d')}，开奖时间应不早于此时间。"
-    return _AGENT_SYSTEM_PROMPT
+        return (
+            _COMMON_LOTTERY_SYSTEM_PROMPT
+            + f"\n\n发布时间：{pub_time.strftime('%Y-%m-%d')}，开奖时间应不早于此时间。"
+        )
+    return _COMMON_LOTTERY_SYSTEM_PROMPT
 
 
 def _preprocess_text(dyn_content: str) -> str:
     """文本预处理：去除链接、繁体转简体"""
-    text = re.sub(r'https?://[^\s\u4e00-\u9fff]*', '', dyn_content)
+    text = re.sub(r"https?://[^\s\u4e00-\u9fff]*", "", dyn_content)
     return _t2s_converter.convert(text)
 
 
 # ================================================================
 # 核心提取逻辑（共享）
 # ================================================================
+
 
 async def _push_cloud_unavailable_error(exc: Exception) -> None:
     """云端 LLM 全部不可用/失败时推送错误告警（由 PushMe 内部限流/去重）"""
@@ -149,35 +155,37 @@ async def _do_extract(
             ]
             result = await structured_llm.ainvoke(
                 messages,
-                extra_body={"chat_template_kwargs": {
-                    "enable_thinking": False}
-                }
+                extra_body={
+                    "chat_template_kwargs": {"enable_thinking": False},
+                    "thinking": {"type": "disabled"},
+                },
             )
             logger.info(
-                f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}")
+                f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}"
+            )
             return PrizeExtractResp(
-                dyn_content=text,
-                consume_time=time.time() - start_ts,
-                result=result)
+                dyn_content=text, consume_time=time.time() - start_ts, result=result
+            )
         except Exception as e:
-            logger.warning(
+            logger.error(
                 f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
-                f"（{type(e).__name__}: {e}），等待10s后尝试下一个")
+                f"（{type(e).__name__}: {e}），等待10s后尝试下一个"
+            )
             last_err = e
             await asyncio.sleep(10)
             continue
 
     # 全部免费 LLM 均失败：不再回退，直接抛错，由调用方跳过保存
     await _push_cloud_unavailable_error(
-        last_err or RuntimeError("全部免费 LLM 均调用失败"))
-    raise RuntimeError(
-        f"全部 {len(all_llms)} 个免费 LLM 均调用失败"
-    ) from last_err
+        last_err or RuntimeError("全部免费 LLM 均调用失败")
+    )
+    raise RuntimeError(f"全部 {len(all_llms)} 个免费 LLM 均调用失败") from last_err
 
 
 # ================================================================
 # 公开入口 — 分别对应 biliopusdb / dyndetail 的 t_lot_extra_info 需求
 # ================================================================
+
 
 async def extract_prize_info_for_biliopusdb(
     *,
@@ -255,6 +263,7 @@ if __name__ == "__main__":
         from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
         from pandas import DataFrame
         from sqlalchemy import select, func
+
         async with SqlHelper.async_session() as session:
             sql = (
                 select(TLotdyninfo)
@@ -272,7 +281,11 @@ if __name__ == "__main__":
             )
             prize_extract_results.append(result)
         pd = DataFrame([r.model_dump() for r in prize_extract_results])
-        pd.to_csv("dyn_content_result.csv", index=False, encoding="utf-8",
-                  quoting=csv.QUOTE_NONNUMERIC)
+        pd.to_csv(
+            "dyn_content_result.csv",
+            index=False,
+            encoding="utf-8",
+            quoting=csv.QUOTE_NONNUMERIC,
+        )
 
     asyncio.run(_test())
