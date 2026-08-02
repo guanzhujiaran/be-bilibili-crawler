@@ -11,7 +11,7 @@ RPC 服务信息控制器
 from fastapi import APIRouter
 
 from ApiRoutes import RouterPrefix, RouterTags, RouterPaths
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Models.rpc_models import RpcMethodInfoResponse, build_method_responses
 
 router = APIRouter()

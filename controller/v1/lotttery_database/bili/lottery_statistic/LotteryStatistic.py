@@ -7,7 +7,7 @@ from fastapi import Query
 
 from ApiRoutes import RouterPaths, RouterNames
 from controller.v1.lotttery_database.bili.base import new_router
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Models.lottery_database.bili.LotteryDataModels import BiliLotStatisticInfoResp, \
     BiliLotStatisticRankTypeEnum, BiliLotStatisticLotTypeEnum, BiliLotStatisticLotteryResultResp, \
     BiliLotStatisticRankDateTypeEnum

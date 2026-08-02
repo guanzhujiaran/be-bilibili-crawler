@@ -1,4 +1,4 @@
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Models.v1.ip_info.ip_model import IpInfoResp
 from Service.ipinfo.get_ipv6 import get_ipv6_from_redis
 from ApiRoutes import RouterPaths, RouterNames

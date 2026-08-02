@@ -7,7 +7,8 @@ from typing import List, Optional
 from Models.lottery_database.bili.LotteryDataModels import EndpointFilterMeta
 from fastapi import Query, Body, Request, Depends
 from fastapi_cache.decorator import cache
-from Models.common import CommonResponseModel, ResponsePaginationItems
+from bili_common.models.response import StandardResponse as CommonResponseModel
+from bili_common.models.pagination import ResponsePaginationItems
 from Models.lottery_database.bili.LotteryDataBaseQueryModels import (
     BiliLotDataQueryModel,
 )

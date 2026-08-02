@@ -43,7 +43,7 @@ from controller.v1.background_service import BackgroundServiceController
 from controller.v1.mq import mq_controller as MQController
 from controller.v1.samsClub import samsClubController
 from controller.v1.captcha import captchaController
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from controller.v1.lotttery_database.bili.zhuanlan import zhuanlanController
 
 app = FastAPI(lifespan=life_span)

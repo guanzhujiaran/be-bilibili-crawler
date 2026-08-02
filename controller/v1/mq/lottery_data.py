@@ -13,7 +13,8 @@ LotteryData RPC handlers
 
 import time
 
-from Models.common import CommonResponseModel, ResponsePaginationItems
+from bili_common.models.response import StandardResponse as CommonResponseModel
+from bili_common.models.pagination import ResponsePaginationItems
 from Models.lottery_database.bili.LotteryDataBaseQueryModels import BiliLotDataQueryModel
 from Models.lottery_database.bili.LotteryDataModels import (
     AddDynamicLotteryResp,

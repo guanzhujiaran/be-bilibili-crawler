@@ -4,7 +4,7 @@ from typing import Optional
 from pydantic import Field
 
 from Models.base.custom_pydantic import CustomBaseModel
-from Models.common import RequestPaginationParams
+from bili_common.models.pagination import RequestPaginationParams
 from Models.lottery_database.bili.LotteryDataModels import (
     LotteryDataSortEnum,
     SortOrderEnum,

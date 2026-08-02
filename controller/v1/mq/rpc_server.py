@@ -47,7 +47,7 @@ from pydantic import BaseModel
 from Service.MQ.base.MQClient.base import router
 from log.base_log import MQ_logger as logger
 from Models.rpc_models import RpcMethodName, ROUTING_KEY_PREFIX
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 
 # RPC 默认超时时间（秒）：超时后服务器主动取消任务以释放资源
 DEFAULT_RPC_TIMEOUT: float = 60.0

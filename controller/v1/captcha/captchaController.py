@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from io import BytesIO
 
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Models.v1.CaptchaGen.model import CaptchaGenResp, CaptchaVerifyReq
 from Service.CaptchaGen.captcha_service import CaptchaService
 from ApiRoutes import RouterPaths, RouterNames

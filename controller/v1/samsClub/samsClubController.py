@@ -1,4 +1,4 @@
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Service.samsclub.Sql.SdlHelper import graphql_app
 from Service.samsclub.api.samsclub_api import SamsClubApiStatus
 from Service.samsclub.main import sams_club_crawler

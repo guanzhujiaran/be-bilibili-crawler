@@ -3,7 +3,7 @@ import asyncio
 import inspect
 from datetime import datetime
 from typing import Union, Any
-from Models.common import CommonResponseModel
+from bili_common.models.response import StandardResponse as CommonResponseModel
 from Models.v1.background_service.background_service_model import (
     BackgroundServiceName,
     ProxyStatusResp,
