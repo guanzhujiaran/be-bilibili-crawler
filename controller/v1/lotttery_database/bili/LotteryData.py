@@ -34,7 +34,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     LotteryFilterParamsResp,
     CommonLotExtraInfoResp,
 )
-from Models.lottery_database.bili.comm import (
+from bili_common.models import (
     LotteryPaginationParams,
     LotterySearchPaginationParams,
     LotteryAdvancedQueryParams,

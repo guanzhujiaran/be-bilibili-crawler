@@ -30,21 +30,25 @@ from Models.lottery_database.bili.LotteryDataModels import (
     BulkAddDynamicLotteryReq,
     LotdataResp,
     OthersLotDynItem,
-    OthersLotDynSortEnum,
-    OthersLotDynSortOrderEnum,
-    TimePresetEnum,
     LotteryFilterParamsResp,
     CommonLotExtraInfoResp,
     EndpointFilterMeta,
     pydantic_model_to_filter_params,
 )
 from Models.lottery_database.bili.comm import (
+    BiliLotDataStatusEnum,
+    LotteryBusinessType,
+)
+from bili_common.models import (
     LotteryPaginationParams,
     LotterySearchPaginationParams,
     LotteryAdvancedQueryParams,
     OthersLotDynListFilterMetadata,
-    BiliLotDataStatusEnum,
-    LotteryBusinessType,
+    OthersLotDynSortEnum,
+    OthersLotDynSortOrderEnum,
+    TimePresetEnum,
+    LotteryDataSortEnum,
+    SortOrderEnum,
 )
 from Models.v1.background_service.background_service_model import AllLotScrapyStatusResp
 from Service.BackgroundServiceStatus.GetScrapyStaus import get_scrapy_status
@@ -68,8 +72,8 @@ from Service.lottery_database.bili_lotterty import (
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 
 from Utils.推送.PushMe import a_pushme
-from Models.rpc_models import RpcMethodName
-from Models.rpc_params import (
+from bili_common.models import RpcMethodName
+from bili_common.models import (
     GetReserveLotteryRpcParams,
     GetOfficialLotteryRpcParams,
     GetChargeLotteryRpcParams,

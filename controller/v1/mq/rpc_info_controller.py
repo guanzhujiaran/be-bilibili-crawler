@@ -4,7 +4,7 @@ RPC 服务信息控制器
 提供通用接口查询 FastapiApp 暴露的所有 RPC 方法元数据，
 供 RPA-Browser 或前端获取可选 RPC 方法列表。
 
-单一数据源：方法元数据统一定义在 Models/rpc_models.py 的 ALLOWED_RPC_METHODS，
+单一数据源：方法元数据统一定义在 bili_common.models 的 ALLOWED_RPC_METHODS，
 本控制器仅负责对外暴露，避免在多处维护重复列表。
 """
 
@@ -12,7 +12,7 @@ from fastapi import APIRouter
 
 from ApiRoutes import RouterPrefix, RouterTags, RouterPaths
 from bili_common.models.response import StandardResponse as CommonResponseModel
-from Models.rpc_models import RpcMethodInfoResponse, build_method_responses
+from bili_common.models import RpcMethodInfoResponse, build_method_responses
 
 router = APIRouter()
 router.tags = [RouterTags.RPC]

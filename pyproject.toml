@@ -101,10 +101,6 @@ dev = [
     "pytest-asyncio>=1.4.0",
 ]
 
-[tool.ty]
-# bili-common 以本地路径依赖（非 editable）安装进 site-packages，ty 可直接解析，
-# 无需 pythonpath / .pth 等宿主机相关配置，Docker 构建亦安全。
-
 [[tool.uv.index]]
 name = "tuna"
 url = "https://pypi.tuna.tsinghua.edu.cn/simple/"
@@ -115,6 +111,17 @@ url = "https://pypi.mirrors.ustc.edu.cn/simple/"
 name = "bfsu"
 url = "https://mirrors.bfsu.edu.cn/pypi/web/simple/"
 
+
 [tool.uv.sources]
+# 本地路径依赖（非 editable）：uv sync 会把 bili-common 作为普通包复制进 site-packages，
+# 这样 ty 等静态工具可直接解析，且不依赖宿主机绝对路径，Docker 构建也安全。
 bili-common = { path = "../bili-common", editable = true }
 
+
+[tool.ty.environment]
+# bili-common 在本地以 editable 方式安装（MetaPathFinder / .pth 中执行 import 语句），
+# ty 不做动态执行，无法静态解析该包；这里把其源码目录加入优先搜索路径。
+# 相对路径基于本 pyproject 所在目录（be-message-service）：../bili-common 即仓库内的 bili-common 目录，
+# 该目录内含 bili_common 包。Docker 构建时 bili-common 也被 COPY 到 /bili-common，
+# 相对 ../bili-common 同样成立，两套环境均可解析。
+extra-paths = ["../bili-common"]

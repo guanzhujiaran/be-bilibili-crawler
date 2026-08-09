@@ -6,6 +6,15 @@ from pydantic import computed_field
 
 from Models.base.custom_pydantic import CustomBaseModel
 
+# 排序/时间筛选枚举已统一迁移至 bili_common.models，此处 re-export 供存量引用兼容
+from bili_common.models import (
+    LotteryDataSortEnum,
+    SortOrderEnum,
+    OthersLotDynSortEnum,
+    OthersLotDynSortOrderEnum,
+    TimePresetEnum,
+)
+
 
 class LotdataResp(CustomBaseModel):
     @computed_field
@@ -569,50 +578,9 @@ class BiliLotStatisticRankDateTypeEnum(StrEnum):
 
 
 # region 第三方抽奖动态列表模型
-class OthersLotDynSortEnum(StrEnum):
-    """排序字段枚举"""
-
-    pub_time = "pubTime"
-    created_at = "created_at"
-
-
-class OthersLotDynSortOrderEnum(StrEnum):
-    """排序方向枚举"""
-
-    asc = "asc"
-    desc = "desc"
-
-
-class LotteryDataSortEnum(StrEnum):
-    """抽奖数据排序字段枚举（用于预约/官方/充电抽奖）"""
-
-    lottery_time = "lottery_time"  # 开奖时间
-    participants = "participants"  # 参与人数
-    first_prize = "first_prize"  # 一等奖份数
-    created_at = "created_at"  # 收录时间
-
-
-class SortOrderEnum(StrEnum):
-    """通用排序方向枚举"""
-
-    asc = "asc"
-    desc = "desc"
-
-
-class TimePresetEnum(StrEnum):
-    """时间快捷筛选"""
-
-    last_1_day = "1d"
-    last_3_days = "3d"
-    last_5_days = "5d"
-    last_7_days = "7d"
-    last_14_days = "14d"
-    last_30_days = "30d"
-    last_60_days = "60d"
-    last_90_days = "90d"
-    last_180_days = "180d"
-    last_365_days = "365d"
-
+# 注意：OthersLotDynSortEnum / OthersLotDynSortOrderEnum / LotteryDataSortEnum /
+# SortOrderEnum / TimePresetEnum 已统一迁移至 bili_common.models，
+# 请通过 `from bili_common.models import ...` 引用。
 
 class OthersLotDynItem(BaseModel):
     """第三方抽奖动态条目

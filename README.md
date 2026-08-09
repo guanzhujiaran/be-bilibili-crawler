@@ -1,111 +1,174 @@
-构建docker镜像，需要能访问github的机器。
+# be-bilibili-crawler
 
-```bash
-docker build -t ghcr.io/guanzhujiaran/bilibiliexplosion .
+BilibiliExplosion 的**核心爬虫后端**。基于 FastAPI，负责 B 站抽奖动态、话题抽奖、预约抽奖、山姆会员店等数据的抓取、解析、入库与判定，并向 RPA-Browser、消息推送、前端网关等提供数据 API。内置 Alembic 多库迁移、SVM/LLM 大奖判定、数据回填等运维脚本。
+
+## 功能
+
+- B 站抽奖：普通动态抽奖、官方（opus）抽奖、话题抽奖、充电/预约抽奖的抓取与入库
+- 山姆会员店商品数据抓取入库
+- 第三方用户抽奖动态挖掘（`GetOthersLotDyn`）
+- 抽奖大奖判定：SVM 模型 + LLM（Qwen 等）二阶段判定，结果写入子表
+- `rawJsonStr` 全字段回填脚本
+- 统一消息告警推送（对接 `be-message-service`）
+- 调用 `unidbgSpringBoot` 计算签名、`llama.cpp` 做本地推理
+- 6 个 MySQL 业务库的 Alembic 版本管理
+
+## 技术栈
+
+| 类别 | 技术 |
+| --- | --- |
+| Web 框架 | FastAPI（uvicorn / uvloop） |
+| 数据库 | MySQL 8（aiomysql）+ Redis + Milvus（向量库） |
+| ORM / 迁移 | SQLAlchemy 2.x + Alembic（6 库多 target） |
+| 消息队列 | RabbitMQ（FastStream / aio-pika） |
+| 爬虫 | Playwright / Patchright、curl_cffi、cloudscraper、grpc（极验） |
+| LLM | LangChain + Ollama / OpenAI 兼容 API |
+| 签名 | 通过 HTTP 调用 `unidbgSpringBoot` |
+| 依赖管理 | uv（Python 3.13+） |
+
+## 目录结构
+
+```
+be-bilibili-crawler/
+├── main.py                       # 主服务入口（端口 23333）：抽奖数据 API + 全局告警
+├── faststream_app.py             # MQ 消费服务入口（端口 23334）
+├── CONFIG.py                     # Settings / 数据库 / Redis / RabbitMQ / 推送 配置
+├── create_database.py            # 初始化 6 个业务库
+├── dev_env_main.py
+├── pyproject.toml / uv.lock
+├── alembic/  alembic.ini         # 6 库迁移配置
+├── controller/                   # 路由层（v1: 抽奖库/统计/ip信息/后台/samsClub/验证码/mq）
+├── Service/                      # 业务服务层
+│   ├── BaseCrawler/              # 爬虫基类与注册表
+│   ├── lottery_database/         # 抽奖数据解析入库
+│   ├── opus新版官方抽奖/         # 官方抽奖（opus）专用
+│   ├── GetOthersLotDyn/          # 第三方用户抽奖动态挖掘
+│   ├── samsclub/                 # 山姆会员店
+│   ├── BiliLiveScrape/           # 直播抓取
+│   ├── PlayWright/  CaptchaGen/  # 浏览器自动化 / 验证码
+│   ├── GrpcModule/               # 极验 grpc 调用
+│   ├── MQ/  Auth/  BackgroundService/  # 消息队列 / 鉴权 / 后台任务
+│   ├── llm_service/ LangChainCompo/     # LLM 相关
+│   ├── toutiao/  zhihu/  ipinfo/        # 其它数据源
+├── dao/  models/  Models/        # 数据访问 / ORM 模型
+├── Utils/                        # 工具（推送、FastAPI、argParse 等）
+└── scripts/                      # 运维脚本（judge_grand_prize / 数据回填等）
 ```
 
-## 数据库版本管理 (Alembic)
+## 安装与启动
 
-项目通过 Alembic 管理 6 个 MySQL 数据库的 schema 版本，通过 `-x db=xxx` 指定目标库：
+### 本地（uv）
 
 ```bash
 cd be-bilibili-crawler
-
-# 查看各数据库当前版本
-alembic -x db=biliopusdb  current
-alembic -x db=bilidb      current
-alembic -x db=bili_reserve current
-alembic -x db=dyndetail   current
-alembic -x db=proxy_db    current
-alembic -x db=samsclub    current
-
-# 生成迁移脚本 (autogenerate 对比模型与数据库自动生成)
-alembic -x db=biliopusdb revision --autogenerate -m "描述此次变更"
-
-# 执行迁移到最新版本
-alembic -x db=biliopusdb upgrade head
-
-# 回滚一个版本
-alembic -x db=biliopusdb downgrade -1
-
-# 查看迁移历史
-alembic -x db=biliopusdb history
+uv sync
+# 前端静态资源（部分页面用到）
+npm install
+# 启动主服务
+uv run python main.py          # http://0.0.0.0:23333
+# 启动 MQ 消费服务（另一个进程）
+uv run python faststream_app.py
 ```
 
-### 数据库对应关系
+### Docker（推荐）
 
-| `-x db=`       | 数据库         | 主要表                                       |
-| -------------- | -------------- | -------------------------------------------- |
-| `biliopusdb`   | 普通抽奖动态库 | `t_lotdyninfo` / `t_lot_grand_prize_flag` 等 |
-| `bilidb`       | 话题抽奖库     | `t_topic` / `t_traffic_card` 等              |
-| `bili_reserve` | 预约抽奖库     | `t_up_reserve_relation_info` 等              |
-| `dyndetail`    | 动态详情库     | `bilidyndetail` / `lotdata` 等               |
-| `proxy_db`     | 代理数据库     | `proxy_tab` / `available_proxy`              |
-| `samsclub`     | 山姆会员店库   | `spu_info` / `spu_category` 等               |
+```bash
+cd /home/minato/BilibiliExplosion
+docker compose up -d be-bilibili-crawler
+```
 
-## SVM 大奖判断脚本
+容器内端口 `23333`，由 `docker-compose.yml` 的 `FASTAPI_PORT` 映射到宿主机；依赖 `mysql` / `redis` / `rabbitmq` / `unidbg` / `milvus` / `be-message-service`。
 
-对所有已入库的抽奖数据执行 SVM 判断，将结果写入 `t_lot_grand_prize_flag` 子表：
+## 配置
+
+通过 `docker-compose.yml` 注入环境变量（见 `CONFIG.py` 的 `Settings`）：
+
+| 变量 | 说明 |
+| --- | --- |
+| `MYSQL_HOST` / `MYSQL_PORT` / `MYSQL_USER` / `MYSQL_PASSWORD` | MySQL 连接（6 个业务库） |
+| `REDIS_HOST` / `REDIS_PORT` / `REDIS_PWD` | Redis 连接 |
+| `RABBITMQ_HOST` / `RABBITMQ_USER` / `RABBITMQ_PASSWORD` | RabbitMQ 连接 |
+| `UNIDBG_HOST` / `UNIDBG_PORT` | unidbg 签名服务地址 |
+| `MILVUS_HOST` / `MILVUS_PORT` | Milvus 向量库 |
+| `LLAMA_HOST` / `LLAMA_PORT` | llama.cpp 推理服务 |
+| `PROXY_SERVER` / `V2RAY_HOST` / `V2RAY_PORT` | IPv6 代理池 / V2Ray 出口 |
+| `MESSAGE_CONFIG` | 统一推送渠道配置（JSON，与 message-service / rpa-browser 共用） |
+| `MESSAGE_SERVICE_HOST` / `MESSAGE_SERVICE_PORT` | message-service 地址 |
+| `llm_apis` | 外部 LLM API 列表（OpenAI 兼容） |
+| `SERVER_NAME` / `SERVER_ADDRESS` | 服务标识（写入告警标题） |
+| `SHOW_LOG` / `IS_DEV` | 日志开关 / 是否开发环境 |
+
+6 个业务库：`biliopusdb`（普通抽奖动态）、`bilidb`（话题抽奖）、`bili_reserve`（预约抽奖）、`dyndetail`（动态详情）、`proxy_db`（代理）、`samsclub`（山姆会员店）。
+
+## 与其它服务的关系
+
+```
+                         ┌──────────────┐
+            HTTP/数据 API│              │
+  前端网关 ─────────────▶│ be-bilibili- │◀── RabbitMQ RPC ── RPA-Browser
+  puppeteer_Bili         │   crawler    │
+                         │              │
+                         └──┬───┬───┬──┘
+                            │   │   │
+                  sign ─────┘   │   └───── 推送 ──▶ be-message-service
+                  unidbgSpringBoot  │
+                          llama.cpp ┘  (LLM 判定)
+                          milvus (向量)
+```
+
+## 附录：运维脚本
+
+### 数据库版本管理（Alembic）
+
+通过 `-x db=xxx` 指定目标库，共管理 6 个 MySQL 库：
 
 ```bash
 cd be-bilibili-crawler
-
-# 预演模式（查看有多少条待判断，不实际写入）
-uv run python -m scripts.judge_grand_prize --dry-run
-
-# 正式执行（默认每批200条，仅判断未标记的记录）
-uv run python -m scripts.judge_grand_prize
-
-# 自定义批次大小
-uv run python -m scripts.judge_grand_prize --batch-size 500
-
-# 强制重新判断所有记录（覆盖已有结果）
-uv run python -m scripts.judge_grand_prize
-
-# 使用本地的gpu ollama 进行判断，保存到服务器端数据库
-uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:11434/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514
-
-## 使用本地的gpu ollama 进行判断，保存到本地数据库
-uv run python -m scripts.judge_grand_prize --llm-base-url http://localhost:12000/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host localhost --db-port 10000 --db-user root --db-password 114514
-
-# modelscope notebook 运行
-uv run python -m scripts.judge_grand_prize --llm-base-url https://2034000-proxy-1111.dsw-gateway-cn-hangzhou.data.aliyun.com/v1 --llm-token ollama --llm-model /mnt/workspace/models/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive-Q8_K_P.gguf --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514 --llm-headers '{"Cookie":"xxxx"}' --concurrency 8
-
-
+alembic -x db=biliopusdb current        # 查看当前版本
+alembic -x db=biliopusdb upgrade head   # 执行迁移
+alembic -x db=biliopusdb downgrade -1   # 回滚一个版本
+alembic -x db=biliopusdb history        # 迁移历史
 ```
 
-## rawJsonStr 数据回填脚本
+| `-x db=` | 数据库 | 主要表 |
+| --- | --- | --- |
+| `biliopusdb` | 普通抽奖动态库 | `t_lotdyninfo` / `t_lot_grand_prize_flag` 等 |
+| `bilidb` | 话题抽奖库 | `t_topic` / `t_traffic_card` 等 |
+| `bili_reserve` | 预约抽奖库 | `t_up_reserve_relation_info` 等 |
+| `dyndetail` | 动态详情库 | `bilidyndetail` / `lotdata` 等 |
+| `proxy_db` | 代理数据库 | `proxy_tab` / `available_proxy` |
+| `samsclub` | 山姆会员店库 | `spu_info` / `spu_category` 等 |
 
-从 `t_lotdyninfo.rawJsonStr` 重新解析并全量更新所有字段（替代原有只回填评论转发数的脚本）：
+### SVM / LLM 大奖判断
+
+对所有已入库抽奖数据执行判定，结果写入 `t_lot_grand_prize_flag`：
 
 ```bash
 cd be-bilibili-crawler
+uv run python -m scripts.judge_grand_prize --dry-run                 # 预演
+uv run python -m scripts.judge_grand_prize                           # 正式（默认每批 200 条）
+uv run python -m scripts.judge_grand_prize --batch-size 500         # 自定义批次
+# 使用本地 ollama 判断并写入数据库
+uv run python -m scripts.judge_grand_prize \
+  --llm-base-url http://localhost:11434/v1 --llm-token ollama \
+  --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF"
+```
 
-# 统计有 rawJsonStr 的记录数
-uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --count
+### rawJsonStr 数据回填
 
-# 预演模式（查看哪些记录会被更新，不实际写入）
-uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --dry-run
+从 `t_lotdyninfo.rawJsonStr` 重新解析并全量更新所有字段：
 
-# 回填前 N 条（大表建议分批执行）
+```bash
+cd be-bilibili-crawler
+uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --count   # 统计
+uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --dry-run # 预演
 uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --limit 500
-
-# 回填全部
-uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill
-
-uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill --force-update --llm-base-url http://localhost:11434/v1 --llm-token ollama --llm-model "modelscope.cn/unsloth/Qwen3.5-4B-GGUF" --db-host 192.168.81.172 --db-port 10000 --db-user root --db-password 114514
-
+uv run python -m scripts.database.backfill_dyninfo_from_rawjson.backfill            # 全量
 ```
 
-回填字段包括：
+回填字段包括互动数据（`commentCount`/`repostCount`/`likeCount`）、基本信息（`authorName`/`pubTime`/`dynContent`）、抽奖类型（`officialLotType`/`officialLotId`）、`isLot`、`isManualReply` 及 `t_lot_extra_info`（`need_comment`/`need_repost`）。
 
-- 互动数据：`commentCount` / `repostCount` / `likeCount`
-- 基本信息：`authorName` / `pubTime` / `dynContent` / `dynamicUrl`
-- 抽奖类型：`officialLotType` / `officialLotId`（重新判断 官方/充电/预约）
-- `isLot`：官方抽奖=1，预约/充电=0，其余用 `extract_is_lot`
-- `isManualReply`：转为 0/1 (bool)
-- `t_lot_extra_info` 表：`need_comment` / `need_repost`
+## FAQ
 
-FAQ:
-1.milvus数据库报错无法读写的时候,执行 `sudo chown -R 999:999 ./docker_vol/milvus/data ` 修复权限问题
-2.wsl2 mirrored连不上网的时候重启winnat `net stop winnat` `net start winnat`
+1. Milvus 报错无法读写：`sudo chown -R 999:999 ./docker_vol/milvus/data`
+2. WSL2 mirrored 连不上网：重启 winnat（`net stop winnat` → `net start winnat`）

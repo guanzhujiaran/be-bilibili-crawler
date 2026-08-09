@@ -34,8 +34,8 @@ RPC handler 注册方式：在 mq_controller.py 末尾导入 lottery_data 模块
 
 使用方式：
     from controller.v1.mq.rpc_server import rpc_subscriber
-    from Models.rpc_models import RpcMethodName
-    from Models.rpc_params import GetReserveLotteryRpcParams
+    from bili_common.models import RpcMethodName
+    from bili_common.models import GetReserveLotteryRpcParams
 
     @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)
     async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
@@ -46,7 +46,7 @@ from faststream import AckPolicy
 from pydantic import BaseModel
 from Service.MQ.base.MQClient.base import router
 from log.base_log import MQ_logger as logger
-from Models.rpc_models import RpcMethodName, ROUTING_KEY_PREFIX
+from bili_common.models import RpcMethodName, ROUTING_KEY_PREFIX
 from bili_common.models.response import StandardResponse as CommonResponseModel
 
 # RPC 默认超时时间（秒）：超时后服务器主动取消任务以释放资源
