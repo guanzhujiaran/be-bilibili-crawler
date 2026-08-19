@@ -80,8 +80,14 @@ from bili_common.models import (
     GetTopicLotteryRpcParams,
     GetAllLotteryRpcParams,
     GetOthersLotDynListRpcParams,
+    CheckLotteryExistRpcParams,
+    CheckLotteryExistRpcResult,
+    LotteryDetailItem,
 )
 from controller.v1.mq.rpc_server import rpc_subscriber
+from sqlalchemy import select
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 
 
 def _parse_status(status: str | None) -> BiliLotDataStatusEnum | None:
@@ -266,3 +272,89 @@ async def handle_get_others_lot_dyn_list(params: GetOthersLotDynListRpcParams) -
             total=total,
         )
     )
+
+
+@rpc_subscriber(RpcMethodName.CHECK_LOTTERY_EXIST, CheckLotteryExistRpcParams)
+async def handle_check_lottery_exist(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+    """校验 lottery 是否存在并回传基础详情（供 be-message 互动/转发时校验资源存在，2.20.0）。
+
+    RPC 模式下不校验登录态；`params.lottery_ids` 非空时批量查询（一次 SQL `IN (...)`），
+    否则按 `params.lottery_id` 单查。存在时回传 attach 卡片详情
+    （title=first_prize_cmt / cover=first_prize_pic / jumpUrl=lottery_detail_url），
+    供 be-message 读取动态时实时填充 RESOURCE=lottery 节点（2.20.1）。
+    """
+    if params.lottery_ids:
+        return await _handle_check_lottery_exist_batch(params)
+    return await _handle_check_lottery_exist_one(params)
+
+
+async def _handle_check_lottery_exist_one(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+    exists = False
+    title = cover = jump_url = None
+    try:
+        async with grpc_sql_helper.async_session() as session:
+            stmt = (
+                select(
+                    Lotdata.lottery_id,
+                    Lotdata.first_prize_cmt,
+                    Lotdata.first_prize_pic,
+                    Lotdata.lottery_detail_url,
+                )
+                .where(Lotdata.lottery_id == params.lottery_id)
+                .limit(1)
+            )
+            res = await session.execute(stmt)
+            row = res.first()
+            if row is not None:
+                exists = True
+                title = row.first_prize_cmt
+                cover = row.first_prize_pic
+                jump_url = row.lottery_detail_url
+    except Exception:  # noqa: BLE001
+        # 弱依赖：查询失败按不存在处理（be-message 侧校验失败会降级放行或 422，见调用方）
+        exists = False
+    return CommonResponseModel(
+        data=CheckLotteryExistRpcResult(
+            exists=exists,
+            lottery_id=params.lottery_id,
+            title=title or None,
+            cover=cover or None,
+            jumpUrl=jump_url or None,
+        )
+    )
+
+
+async def _handle_check_lottery_exist_batch(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+    items: list[LotteryDetailItem] = []
+    try:
+        ids = list(dict.fromkeys(params.lottery_ids))
+        async with grpc_sql_helper.async_session() as session:
+            stmt = select(
+                Lotdata.lottery_id,
+                Lotdata.first_prize_cmt,
+                Lotdata.first_prize_pic,
+                Lotdata.lottery_detail_url,
+            ).where(Lotdata.lottery_id.in_(ids))
+            res = await session.execute(stmt)
+            found: dict[int, tuple[str | None, str | None, str | None]] = {}
+            for row in res:
+                found[int(row.lottery_id)] = (
+                    row.first_prize_cmt,
+                    row.first_prize_pic,
+                    row.lottery_detail_url,
+                )
+            for lid in ids:
+                detail = found.get(lid)
+                items.append(
+                    LotteryDetailItem(
+                        lottery_id=lid,
+                        exists=detail is not None,
+                        title=(detail[0] if detail else None) or None,
+                        cover=(detail[1] if detail else None) or None,
+                        jumpUrl=(detail[2] if detail else None) or None,
+                    )
+                )
+    except Exception:  # noqa: BLE001
+        # 弱依赖：查询失败返回空 items（be-message 侧降级保留原节点）
+        items = []
+    return CommonResponseModel(data=CheckLotteryExistRpcResult(items=items))

@@ -8,6 +8,7 @@ TrackedChatOpenAI 在 invoke / ainvoke 时自动记录：
 - token 消耗量（输入 / 输出 / 总量）
 """
 
+import asyncio
 import time
 from collections import deque
 from typing import Any
@@ -23,6 +24,29 @@ MAX_CONSECUTIVE_FAILURES = 3
 
 # 速率统计窗口（秒）
 RATE_WINDOW_SECONDS = 60.0
+
+# 全局共享的 LLM 调用锁：所有 TrackedChatOpenAI 实例共用同一把锁，
+# 保证任意时刻只有一个 LLM 请求真正打到上游，消除账户级并发超限（429/1302）。
+_LLM_GLOBAL_LOCK: "asyncio.Lock | None" = None
+
+
+def _get_llm_global_lock() -> "asyncio.Lock | None":
+    """获取全局 LLM 锁。
+
+    仅在事件循环已运行时返回锁；无运行中 loop 时返回 None，
+    避免同步 invoke 路径在 throttling 场景触发
+    RuntimeError: no running event loop。
+    """
+    global _LLM_GLOBAL_LOCK
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        return None
+    if not loop.is_running():
+        return None
+    if _LLM_GLOBAL_LOCK is None:
+        _LLM_GLOBAL_LOCK = asyncio.Lock()
+    return _LLM_GLOBAL_LOCK
 
 
 class LLMUsageStats(BaseModel):
@@ -146,6 +170,8 @@ class TrackedChatOpenAI(ChatOpenAI):
         self._stats.record_start()
         start = time.monotonic()
         try:
+            # 同步 invoke 路径无法 await 锁，且本服务 LLM 调用均为异步，
+            # 故同步路径直接发起请求（全局锁仅作用于异步 ainvoke）。
             result = super().invoke(input, config, stop=stop, **kwargs)
         except BaseException as e:
             self._stats.record_failure(e)
@@ -171,8 +197,14 @@ class TrackedChatOpenAI(ChatOpenAI):
     ) -> Any:
         self._stats.record_start()
         start = time.monotonic()
+        # 所有 LLM 共享一把全局锁：持有期间串行化上游请求，消除账户级并发超限。
+        lock = _get_llm_global_lock()
         try:
-            result = await super().ainvoke(input, config, stop=stop, **kwargs)
+            if lock is not None:
+                async with lock:
+                    result = await super().ainvoke(input, config, stop=stop, **kwargs)
+            else:
+                result = await super().ainvoke(input, config, stop=stop, **kwargs)
         except BaseException as e:
             self._stats.record_failure(e)
             logger.warning(

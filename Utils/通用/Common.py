@@ -182,8 +182,8 @@ async def handle_sql_operational_error(func, log, err: OperationalError) -> bool
         return False
     # 1040: 连接数过多，并发太高，等待 MySQL 释放连接后重试
     if "(pymysql.err.OperationalError) (1040," in err_str:
-        log.error(
-            f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}"
+        log.exception(
+            f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}\n"
         )
         await asyncio.sleep(random.uniform(5, 120))
         return True
