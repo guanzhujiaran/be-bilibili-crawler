@@ -217,14 +217,18 @@ class ExtractOfficialLottery:
                         extra_routing_key="ExtractOfficialLottery.get_all_lots.__"
                     )
                 else:
-                    if lot_data_resp.get('code') == 9999:
-                        self.log.error(f'获取抽奖信息失败，动态可能已经被删除！{lotdata}')
+                    # B站返回 9999/-9999 表示动态已删除或无抽奖数据，属预期情况：
+                    # 标记该抽奖失效(-1)，不再反复拉取，也不作为错误刷日志
+                    if lot_data_resp.get('code') in (9999, -9999):
+                        self.log.info(
+                            f'获取抽奖信息失败，动态可能已被删除，标记失效: lottery_id={lotdata.lottery_id}, code={lot_data_resp.get("code")}')
                         await self.sql.update_lot_detail(
                             lottery_id=lotdata.lottery_id,
                             status=-1
                         )
-                    self.log.error(
-                        f'{sqlalchemy_model_2_dict(lotdata)}lot_data_resp:{lot_data_resp} is not complete!')
+                    else:
+                        self.log.error(
+                            f'{sqlalchemy_model_2_dict(lotdata)}lot_data_resp:{lot_data_resp} is not complete!')
                 self.refresh_official_lot_progress.succ_count += 1
 
             self.refresh_official_lot_progress = ProgressCounter()

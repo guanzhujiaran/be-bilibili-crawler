@@ -141,32 +141,59 @@ class BaseScheduler:
             f"[{self.exec_info.info.crawler_name}] 定时任务被触发，正在检查是否需要执行..."
         )
 
+        # 杀旧：若上一次任务仍在运行（如卡死/超长），先强制终止，避免
+        # APScheduler 因 max_instances=1 而 skip 本次触发，导致任务永久停摆
+        if self.crawler_asyncio_task and not self.crawler_asyncio_task.done():
+            self.logger.warning(
+                f"[{self.exec_info.info.crawler_name}] 检测到上一次任务仍在运行，先终止旧任务再重新执行"
+            )
+            self.crawler_asyncio_task.cancel()
+            try:
+                await self.crawler_asyncio_task
+            except asyncio.CancelledError:
+                pass
+            self.crawler_asyncio_task = None
+
         if await self.exec_info.is_need_to_execute():
             try:
                 self.logger.debug(
                     f"[{self.exec_info.info.crawler_name}] 开始执行爬虫任务..."
                 )
-                # 调用异步 main 函数
+                # 调用异步 main 函数；不 await，立即返回，
+                # 保证下次 cron 触发时能再次进入 run() 执行杀旧开新
                 self.crawler_asyncio_task = asyncio.create_task(
-                    self.func()
-                )  # 获取异步包装的Task实例
-                await self.crawler_asyncio_task  # 等待异步任务完成
-                await self.exec_info.save_last_exec_time()
-            except asyncio.CancelledError as e:
-                self.logger.error(
-                    f"[{self.exec_info.info.crawler_name}] 爬虫主动终止：{e}"
+                    self._run_and_save_exec_time()
                 )
             except Exception as e:
                 self.logger.exception(
-                    f"[{self.exec_info.info.crawler_name}] 爬虫执行出错：{e}"
+                    f"[{self.exec_info.info.crawler_name}] 创建爬虫任务失败：{e}"
                 )
                 await a_push_error(
                     subject="运行异常",
-                    content=f"{self.exec_info.info.crawler_name} 执行异常\n错误详情：{str(e)}",
+                    content=f"{self.exec_info.info.crawler_name} 创建任务失败\n错误详情：{str(e)}",
                 )
         else:
             self.logger.info(
                 f"[{self.exec_info.info.crawler_name}] 当前不满足执行条件，跳过本次任务。"
+            )
+
+    async def _run_and_save_exec_time(self):
+        """在后台执行爬虫任务，完成后保存执行时间。"""
+        try:
+            await self.func()
+            await self.exec_info.save_last_exec_time()
+        except asyncio.CancelledError:
+            self.logger.warning(
+                f"[{self.exec_info.info.crawler_name}] 爬虫任务被终止（杀旧开新）。"
+            )
+            raise
+        except Exception as e:
+            self.logger.exception(
+                f"[{self.exec_info.info.crawler_name}] 爬虫执行出错：{e}"
+            )
+            await a_push_error(
+                subject="运行异常",
+                content=f"{self.exec_info.info.crawler_name} 执行异常\n错误详情：{str(e)}",
             )
 
     def terminate(self):

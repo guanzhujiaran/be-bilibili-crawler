@@ -261,6 +261,10 @@ class Settings(BaseSettings):
     llm_apis: list[LLMApiConfig] = []
 
     sqlalchemy_logging: bool = False
+    # FastStream（RabbitMQ 消费者 / 发布者）内部日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL，
+    # 通过环境变量 FASTSTREAM_LOG_LEVEL 覆盖。仅影响 FastStream 框架自身的标准库日志，
+    # 不影响本项目 loguru 业务日志（MQ_logger 等）。
+    faststream_log_level: str = "WARNING"
 
     model_config = SettingsConfigDict(
         env_file=(

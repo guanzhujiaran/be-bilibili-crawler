@@ -1,7 +1,9 @@
+import logging
+
 from faststream import AckPolicy
 from faststream.rabbit import RabbitExchange, ExchangeType
 from faststream.rabbit.fastapi import RabbitRouter
-from CONFIG import CONFIG
+from CONFIG import CONFIG, settings
 
 from Models.MQ.BaseMQModel import ExchangeName, MQPropBase, QueueName, RoutingKey
 
@@ -34,8 +36,10 @@ class BaseFastStreamMQ:
         }
 
 
+# log_level 控制 FastStream 框架自身的日志级别（settings.faststream_log_level）
 router = RabbitRouter(
     url=CONFIG.RabbitMQConfig.broker_url,
+    log_level=getattr(logging, settings.faststream_log_level.upper(), logging.INFO),
 )
 
 
