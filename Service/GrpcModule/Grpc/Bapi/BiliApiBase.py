@@ -7,7 +7,7 @@ from Service.GrpcModule.Models.ApiResponseModel import FrontendFingerSpiResp, Bi
 from Utils.GrpcUtils.UserAgentParser import UserAgentParser
 from Service.GrpcModule.Grpc.Bapi.Constants import URL_FRONTEND_FINGER_SPI, URL_BILI_MAIN_PAGE, \
     URL_GEN_WEB_TICKET, URL_GAIA_EXCLIMB_WUZHI
-from Service.GrpcModule.Grpc.Bapi.Utils import request_wrapper
+from Service.GrpcModule.Grpc.Bapi.BapiUtils import request_wrapper
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.代理.redisProxyRequest.RedisRequestProxy import request_with_proxy_internal
 from Utils.加密.utils import hmac_sha256

@@ -31,7 +31,7 @@ from Utils.GrpcUtils.CONST import (
     ANDROID_KERNELS,
     ScreenDPIs,
 )
-from Service.GrpcModule.Grpc.Bapi.Utils import appsign
+from Service.GrpcModule.Grpc.Bapi.BapiUtils import appsign
 from Service.GrpcModule.Grpc.GrpcProto.bilibili.api.ticket.v1.ticket_pb2 import (
     GetTicketResponse,
     GetTicketRequest,

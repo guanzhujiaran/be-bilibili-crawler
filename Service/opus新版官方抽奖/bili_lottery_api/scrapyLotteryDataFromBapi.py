@@ -15,6 +15,7 @@ from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info, get_lot_
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.推送.PushMe import a_push_error
 from Utils.redisTool.RedisManager import RedisManagerBase
+from Service.GrpcModule.Grpc.Bapi.Constants import URL_RESERVE_RELATION_INFO
 
 BusinessIdType = Annotated[int, Field(gt=0)]  # 正整数
 BusinessType = Annotated[
@@ -123,7 +124,11 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         else:
 
             self.log.critical(
-                f"origin lottery_notice data：{data}\nlottery notice api data: {reserve_resp}\nhttps://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_id={ipt_business_id}&business_type={ipt_business_type}\n获取响应失败！"
+                f"origin lottery_notice data：{data}"
+                f"\nlottery notice api data: {reserve_resp}"
+                f"\ninput params: {reserve_sid}"
+                f"\nrequest url:{URL_RESERVE_RELATION_INFO}?ids={reserve_sid}"
+                f"\nhttps://api.vc.bilibili.com/lottery_svr/v1/lottery_svr/lottery_notice?business_id={ipt_business_id}&business_type={ipt_business_type}\n获取响应失败！"
             )
             return WorkerStatus.nullData
 
