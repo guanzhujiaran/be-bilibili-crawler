@@ -154,6 +154,7 @@ async def get_reserve_lottery(
             lottery_prize_info=t,
             jump_url=i.lottery_detail_url,
             reserve_sid=i.business_id,
+            lottery_id=i.lottery_id,
             available=True,
             raw=None,
             extra_info=(

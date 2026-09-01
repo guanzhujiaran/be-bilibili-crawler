@@ -1,11 +1,10 @@
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import datetime
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from enum import StrEnum
-from typing import Union
 
 from log.base_log import get_others_lot_logger as get_others_lot_log
 from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
@@ -22,7 +21,7 @@ from Utils.代理.mdoel.RequestConf import RequestConf
 _is_use_available_proxy = True
 
 
-class FileMap(StrEnum):
+class FileMap(StrEnumAutoDoc):
     current_file_path = os.path.dirname(os.path.abspath(__file__))
     github_bili_upload = os.path.join(
         current_file_path, '../../../../github/bili_upload')
@@ -199,8 +198,8 @@ class BiliDynamicItem:
         return dynamic_req
 
     async def _solve_official_lot_data(self,
-                                       dyn_id: Union[str, int],
-                                       lot_type: OfficialLotType,
+                                       dyn_id: str| int,
+                                       lot_type: OfficialLotType | None,
                                        official_lot_id: str):
         """
         将官方抽奖数据爬取并上传到数据库

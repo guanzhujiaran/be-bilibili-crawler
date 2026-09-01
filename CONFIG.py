@@ -1,6 +1,6 @@
+from bili_common.models import StrEnumAutoDoc
 import os
 from dataclasses import dataclass
-from enum import Enum, StrEnum
 from fake_useragent import UserAgent
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -228,7 +228,7 @@ class Settings(BaseSettings):
     MYSQL_USER: str
     MYSQL_PASSWORD: str
     REDIS_HOST: str
-    REDIS_PORT: str
+    REDIS_PORT: int
     REDIS_PWD: str
     RABBITMQ_HOST: str
     RABBITMQ_PORT: str
@@ -277,14 +277,14 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-class ModelName(StrEnum):
+class ModelName(StrEnumAutoDoc):
     """模型名称枚举，集中管理所有使用的 LLM / 嵌入模型名"""
 
     TEXT_EMBEDDING_MULTILINGUAL_E5_BASE = "text-embedding-multilingual-e5-base"
     QWEN3_5_0_8_Q4_K_M_GGUF = "Qwen3.5-0.8B-SpectralQuant-Q4_K_M"
 
 
-class PlaywrightUserDir(StrEnum):
+class PlaywrightUserDir(StrEnumAutoDoc):
     """
     枚举类，用于表示不同的用户数据目录
     """
@@ -361,7 +361,7 @@ class DataBaseConfig:
     class _REDISINFO:
         def __init__(self, db: int = 15):
             self.host: str = settings.REDIS_HOST
-            self.port: str = settings.REDIS_PORT
+            self.port: int = settings.REDIS_PORT
             self.db: int = db
             self.pwd: str = settings.REDIS_PWD
 
@@ -420,7 +420,7 @@ class CrawlerSqlAlchemyConfig:
 
 
 class RabbitMQConfig:
-    class QueueName(Enum):
+    class QueueName(StrEnumAutoDoc):
         ipv6_change = "ipv6_change"
 
     host = settings.RABBITMQ_HOST

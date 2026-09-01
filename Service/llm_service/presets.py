@@ -3,13 +3,13 @@
 按任务类型分为 4 组，调用方通过 SamplingPreset.to_kwargs() 生成 bind 参数。
 """
 
-from enum import StrEnum
+from bili_common.models import StrEnumAutoDoc
 from typing import Any
 
 _PRESET_KWARGS: dict["SamplingPreset", dict[str, Any]] = {}
 
 
-class SamplingPreset(StrEnum):
+class SamplingPreset(StrEnumAutoDoc):
     """采样参数预设，按任务类型分为 4 组"""
 
     TEXT_NON_THINKING = "text_non_thinking"  # 文本任务，非思考模式

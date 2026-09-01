@@ -1,6 +1,5 @@
 from Models.base.custom_pydantic import CustomBaseModel
 from pydantic import Field, computed_field
-from enum import Enum
 
 from Models.lottery_database.bili.comm import BiliLotDataStatusEnum, LotteryBusinessType
 from Models.lottery_database.bili.LotteryDataModels import (

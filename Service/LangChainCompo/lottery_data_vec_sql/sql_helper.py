@@ -1,5 +1,5 @@
+from bili_common.models import StrEnumAutoDoc
 import time
-from enum import StrEnum
 from typing import Dict, List
 
 from pymilvus.milvus_client import IndexParams
@@ -21,7 +21,7 @@ _milvus_lock = asyncio.Lock()
 
 
 class Sqlhelper:
-    class CollectionNameEnum(StrEnum):
+    class CollectionNameEnum(StrEnumAutoDoc):
         bili_lot_data = "bili_lot_data"
 
     __client: AsyncMilvusClient | None = None

@@ -1,3 +1,4 @@
+from bili_common.models import StrEnumAutoDoc
 import base64
 import json
 import random
@@ -6,7 +7,6 @@ import urllib.parse
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
-from enum import StrEnum
 from functools import reduce
 from hashlib import md5
 from typing import Literal, Dict
@@ -116,7 +116,7 @@ class My_dm_img_Redis(RedisManagerBase):
             "WbiKeys": WbiKeys()
         }
 
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         WbiKeys = "WbiKeys"
 
     async def get_wbiKeys(self) -> WbiKeys:

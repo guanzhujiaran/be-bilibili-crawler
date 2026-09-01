@@ -1,8 +1,8 @@
+from bili_common.models import StrEnumAutoDoc
 from pydantic import Field, computed_field
 import datetime
 import inspect
 import time
-from enum import StrEnum
 from typing import Any
 import numpy as np
 from Service.BaseCrawler.base.core import ParamsType, BaseCrawler
@@ -11,7 +11,7 @@ from Service.BaseCrawler.plugin.base import CrawlerPlugin
 from Utils.通用.Tool import ts_2_DateTime
 
 
-class CrawlerHealthStatus(StrEnum):
+class CrawlerHealthStatus(StrEnumAutoDoc):
     """爬虫健康状态枚举"""
 
     NORMAL = "normal"  # 正常运行

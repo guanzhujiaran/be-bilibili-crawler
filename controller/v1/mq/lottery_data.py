@@ -85,7 +85,7 @@ from bili_common.models import (
     LotteryDetailItem,
 )
 from controller.v1.mq.rpc_server import rpc_subscriber
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 

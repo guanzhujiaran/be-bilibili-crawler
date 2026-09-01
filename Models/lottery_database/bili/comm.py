@@ -1,4 +1,4 @@
-from enum import Enum
+from bili_common.core import IntEnumAutoDoc
 
 # 抽奖相关共享枚举与查询模型已统一迁移至 bili_common.models.lottery_query，
 # 本文件仅 re-export 供存量 `from Models.lottery_database.bili.comm import ...` 引用兼容，
@@ -16,13 +16,13 @@ from bili_common.models.lottery_query import (
 )
 
 
-class LotteryBusinessType(Enum):
+class LotteryBusinessType(IntEnumAutoDoc):
     Official = 1
     Reserve = 10
     Charge = 12
 
 
-class BiliLotDataStatusEnum(Enum):
+class BiliLotDataStatusEnum(IntEnumAutoDoc):
     CANCELED = -1
     DELETED = -2
     UNFINISHED = 0

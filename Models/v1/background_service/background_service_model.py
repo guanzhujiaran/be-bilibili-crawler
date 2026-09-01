@@ -1,13 +1,13 @@
+from bili_common.models import StrEnumAutoDoc
 from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 import time
-from enum import Enum
 from typing import Any
 
 from pydantic import computed_field, Field
 
 from Models.base.custom_pydantic import CustomBaseModel
 
-class BackgroundServiceName(str, Enum):
+class BackgroundServiceName(StrEnumAutoDoc):
     """后台服务名称枚举"""
     DYN_DETAIL_DATABASE_CLEANER = "DYN_DETAIL_DATABASE_CLEANER"
     GET_PROXY_METHODS_SCHEDULER = "GET_PROXY_METHODS_SCHEDULER"
@@ -24,7 +24,7 @@ class BackgroundServiceName(str, Enum):
     STUCK_CHECK_SCHEDULER = "STUCK_CHECK_SCHEDULER"
 
 
-class ScrapyTypeEnum(str, Enum):
+class ScrapyTypeEnum(StrEnumAutoDoc):
     """可查询的爬虫类型枚举，对应 get_scrapy_status 的合法入参"""
     DYN = "dyn"
     TOPIC = "topic"

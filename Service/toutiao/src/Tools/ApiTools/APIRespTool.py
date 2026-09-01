@@ -1,13 +1,13 @@
 # encoding=utf-8
+from bili_common.models import IntEnumAutoDoc
 import json
 from dataclasses import dataclass, field
 from typing import Any, Union
-from enum import Enum
 
 from loguru import logger
 
 
-class CellType(Enum):
+class CellType(IntEnumAutoDoc):
     视频 = 0
     微头条 = 32
     评论转发详情 = 56
@@ -33,7 +33,7 @@ class CommentBase:
     group_id: int
 
     def jumpUrl(self) -> str:
-        return f'https://www.toutiao.com/w/{self.group_id}/'
+        return f"https://www.toutiao.com/w/{self.group_id}/"
 
 
 @dataclass
@@ -50,7 +50,7 @@ class OriginThread:
     user: User
 
     def jumpUrl(self) -> str:
-        return f'https://www.toutiao.com/w/{self.thread_id}/'
+        return f"https://www.toutiao.com/w/{self.thread_id}/"
 
 
 @dataclass
@@ -69,7 +69,7 @@ class FeedData:
     title: str
 
     def jumpUrl(self) -> str:
-        return f'https://www.toutiao.com/w/{self.id}/'
+        return f"https://www.toutiao.com/w/{self.id}/"
 
 
 @dataclass
@@ -92,64 +92,70 @@ class FeedListApi:
         self.UsefulInfo = self.resolve()
 
     def resolve(self) -> FeedListApiResp:
-        has_more = self.RespDict.get('has_more', False)
-        message = self.RespDict.get('message')
-        max_behot_time = self.RespDict.get('next').get('max_behot_time')
-        offset = self.RespDict.get('offset')
+        has_more = self.RespDict.get("has_more", False)
+        message = self.RespDict.get("message")
+        max_behot_time = self.RespDict.get("next").get("max_behot_time")
+        offset = self.RespDict.get("offset")
         data = list()
-        for da in self.RespDict.get('data'):
+        for da in self.RespDict.get("data"):
             try:
-                publish_time: int = da.get('publish_time')
-                behot_time: int = da.get('behot_time')  # 刷新时间？
-                cell_type: int = da.get('cell_type')  # 文章的类型
-                comment_count: int = da.get('comment_count')  # 评论数量
-                data_type: int = da.get('data_type')  # 数据类型？
+                publish_time: int = da.get("publish_time")
+                behot_time: int = da.get("behot_time")  # 刷新时间？
+                cell_type: int = da.get("cell_type")  # 文章的类型
+                comment_count: int = da.get("comment_count")  # 评论数量
+                data_type: int = da.get("data_type")  # 数据类型？
                 origin_thread: Union[OriginThread, None] = None
                 comment_base: Union[CommentBase, None] = None
-                title: str = da.get('data_type')
-                content: str = ''
-                abstract: str = ''
+                title: str = da.get("data_type")
+                content: str = ""
+                abstract: str = ""
                 _id: int = 0
-                id_str: str = ''
+                id_str: str = ""
                 if cell_type == CellType.视频.value:
-                    _id = int(da.get('id'))
-                    id_str = da.get('id')
+                    _id = int(da.get("id"))
+                    id_str = da.get("id")
                 elif cell_type == CellType.文章.value:
-                    abstract = da.get('abstract')
-                    _id = int(da.get('id'))
-                    id_str = da.get('id')
+                    abstract = da.get("abstract")
+                    _id = int(da.get("id"))
+                    id_str = da.get("id")
                 elif cell_type == CellType.评论转发详情.value:
-                    _id = da.get('id')
-                    id_str = da.get('id_str')
-                    CommentBaseDict = da.get('comment_base')
-                    CommentBasecontent: str = CommentBaseDict.get('content')
-                    create_time: int = CommentBaseDict.get('create_time')
+                    _id = da.get("id")
+                    id_str = da.get("id_str")
+                    CommentBaseDict = da.get("comment_base")
+                    CommentBasecontent: str = CommentBaseDict.get("content")
+                    create_time: int = CommentBaseDict.get("create_time")
                     publish_time: int = create_time
-                    group_id: int = CommentBaseDict.get('group_id')
-                    comment_base = CommentBase(content=CommentBasecontent, create_time=create_time, group_id=group_id)
-                    if OriginThreadDict := da.get('origin_thread'):
-                        attach_card_info = OriginThreadDict.get('attach_card_info')
-                        brand_info = OriginThreadDict.get('brand_info')
-                        OriginThread_cell_type = OriginThreadDict.get('cell_type')
-                        OriginThread_content = OriginThreadDict.get('content')
-                        OriginThread_create_time = OriginThreadDict.get('create_time')
-                        OriginThread_thread_id = OriginThreadDict.get('thread_id')
-                        OriginThread_thread_id_str = OriginThreadDict.get('thread_id_str')
-                        OriginThread_title = OriginThreadDict.get('title')
-                        OriginThread_publish_time = OriginThreadDict.get('publish_time')
-                        UserDict = OriginThreadDict.get('user')
+                    group_id: int = CommentBaseDict.get("group_id")
+                    comment_base = CommentBase(
+                        content=CommentBasecontent,
+                        create_time=create_time,
+                        group_id=group_id,
+                    )
+                    if OriginThreadDict := da.get("origin_thread"):
+                        attach_card_info = OriginThreadDict.get("attach_card_info")
+                        brand_info = OriginThreadDict.get("brand_info")
+                        OriginThread_cell_type = OriginThreadDict.get("cell_type")
+                        OriginThread_content = OriginThreadDict.get("content")
+                        OriginThread_create_time = OriginThreadDict.get("create_time")
+                        OriginThread_thread_id = OriginThreadDict.get("thread_id")
+                        OriginThread_thread_id_str = OriginThreadDict.get(
+                            "thread_id_str"
+                        )
+                        OriginThread_title = OriginThreadDict.get("title")
+                        OriginThread_publish_time = OriginThreadDict.get("publish_time")
+                        UserDict = OriginThreadDict.get("user")
 
-                        User_id = UserDict.get('id')
-                        User_name = UserDict.get('name')
-                        User_user_id = UserDict.get('user_id')
-                        User_user_verified = UserDict.get('user_verified')
-                        User_verified_content = UserDict.get('verified_content')
+                        User_id = UserDict.get("id")
+                        User_name = UserDict.get("name")
+                        User_user_id = UserDict.get("user_id")
+                        User_user_verified = UserDict.get("user_verified")
+                        User_verified_content = UserDict.get("verified_content")
                         user = User(
                             id=User_id,
                             name=User_name,
                             user_id=User_user_id,
                             user_verified=User_user_verified,
-                            verified_content=User_verified_content
+                            verified_content=User_verified_content,
                         )
                         origin_thread = OriginThread(
                             attach_card_info=attach_card_info,
@@ -161,14 +167,14 @@ class FeedListApi:
                             thread_id_str=OriginThread_thread_id_str,
                             title=OriginThread_title,
                             publish_time=OriginThread_publish_time,
-                            user=user
+                            user=user,
                         )
                 elif cell_type == CellType.微头条.value:
-                    content = da.get('content')
-                    _id = da.get('thread_id')
-                    id_str = da.get('thread_id_str')
+                    content = da.get("content")
+                    _id = da.get("thread_id")
+                    id_str = da.get("thread_id_str")
                 else:
-                    logger.error(f'未知cell_type类型！cell_type:{cell_type}\n{da}')
+                    logger.error(f"未知cell_type类型！cell_type:{cell_type}\n{da}")
                 feedData = FeedData(
                     publish_time=publish_time,
                     behot_time=behot_time,
@@ -181,18 +187,16 @@ class FeedListApi:
                     cell_type=cell_type,
                     id=_id,
                     id_str=id_str,
-                    content=content
+                    content=content,
                 )
                 data.append(feedData)
             except Exception as e:
-                logger.error(f'解析单个空间数据失败！\n{da}\n{e}')
+                logger.error(f"解析单个空间数据失败！\n{da}\n{e}")
         feedListApiResp = FeedListApiResp(
             has_more=has_more,
             message=message,
             max_behot_time=max_behot_time,
             offset=offset,
-            data=data
+            data=data,
         )
         return feedListApiResp
-
-

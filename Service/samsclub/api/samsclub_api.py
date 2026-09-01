@@ -1,3 +1,4 @@
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import datetime
 import json
@@ -9,7 +10,6 @@ import aiofiles
 from curl_cffi import Response
 from curl_cffi.requests.exceptions import RequestException
 from httpx import HTTPError
-from enum import StrEnum
 from Models.base.custom_pydantic import CustomBaseModel
 from log.base_log import sams_club_logger
 from Models.v1.samsclub.api_model import RespUserProfile, ApiResponse, UserProfile
@@ -23,7 +23,7 @@ from Utils.代理.SealedRequests import my_async_httpx
 StringNumber = NewType('StringNumber', str)
 
 
-class SamsClubApiTokenStatEnum(StrEnum):
+class SamsClubApiTokenStatEnum(StrEnumAutoDoc):
     INIT = "初始化"
     FAIL = "失效"
     VALID = "有效"

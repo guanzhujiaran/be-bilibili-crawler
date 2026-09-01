@@ -517,8 +517,9 @@ if __name__ == "__main__":
         print(resp)
 
     async def _test_get_reservation_info():
-        await reserve_relation_info(
-            ids=
+        resp = await reserve_relation_info(
+            ids=5727405
         )
+        print(resp)
 
-    asyncio.run(_test_get_lot_notice())
+    asyncio.run(_test_get_reservation_info())

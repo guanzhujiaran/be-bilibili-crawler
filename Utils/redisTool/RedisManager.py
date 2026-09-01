@@ -1,10 +1,10 @@
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import random
 import time
 import traceback
 from datetime import timedelta
-from enum import StrEnum
-from typing import Union, Any, List, Dict, AsyncIterator, Optional
+from typing import Any, List, Dict, AsyncIterator, Optional
 import redis as sync_redis
 import redis.asyncio as redis
 from redis.exceptions import ConnectionError, BusyLoadingError
@@ -105,7 +105,7 @@ class SyncRedisManagerBase:
     RedisMap: 枚举Redis的key
     """
 
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         pass
 
     def __init__(
@@ -125,7 +125,7 @@ class SyncRedisManagerBase:
         self.RedisTimeout = 30
 
     @sync_retry
-    def _get(self, key: Union[Any, List[Any]]):
+    def _get(self, key: Any | List[Any]):
         """
         传入多个参数则使用pipeline批量获取
         :param key:
@@ -143,7 +143,7 @@ class SyncRedisManagerBase:
                     return r.get(key)
 
     @sync_retry
-    def _set(self, key: Union[Any, List[Any]], value: Union[Any, List[Any]]):
+    def _set(self, key: Any | List[Any], value: Any | List[Any]):
         with redis_client_factory(pool=self.pool, sync=True) as r:
             if type(key) is list:
                 pipe = r.pipeline()
@@ -158,9 +158,9 @@ class SyncRedisManagerBase:
     @sync_retry
     def _setex(
         self,
-        key: Union[Any, List[Any]],
-        value: Union[Any, List[Any]],
-        _time: Union[int, timedelta],
+        key: Any | List[Any],
+        value: Any | List[Any],
+        _time: int| timedelta,
     ):
         with redis_client_factory(pool=self.pool, sync=True) as r:
             if type(key) is list:
@@ -189,7 +189,7 @@ class RedisManagerBase:
     异步版本redis基类
     """
 
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         pass
 
     def __init__(
@@ -328,7 +328,7 @@ class RedisManagerBase:
                 return await r.set(key, value)
 
     @retry
-    async def _setex(self, key, value, _time: Union[int, timedelta]):
+    async def _setex(self, key, value, _time: int | timedelta):
         async with redis_client_factory(pool=self.pool) as r:
             if type(key) is list:
                 pipe = r.pipeline()
@@ -419,13 +419,20 @@ class RedisManagerBase:
 
     @retry
     async def _zget_range(
-        self, key, start: int = 0, end: int = -1, num: int = None, offset: int = None
+        self,
+        key,
+        start: int = 0,
+        end: int = -1,
+        num: int | None = None,
+        offset: int | None = None,
     ):
         async with redis_client_factory(pool=self.pool) as r:
             return await r.zrange(key, start=start, end=end, num=num, offset=offset)
 
     @retry
-    async def _zget_range_with_score(self, key, num: int = None, offset: int = None):
+    async def _zget_range_with_score(
+        self, key, num: int | None = None, offset: int | None = None
+    ):
         async with redis_client_factory(pool=self.pool) as r:
             return await r.zrevrangebyscore(
                 name=key, min="-inf", max="inf", num=num, start=offset, withscores=True
@@ -470,7 +477,12 @@ class RedisManagerBase:
 
     @retry
     async def _zget_range_by_score(
-        self, key, min_score: int, max_score: int, start: int = None, num: int = None
+        self,
+        key,
+        min_score: int,
+        max_score: int,
+        start: int | None = None,
+        num: int | None = None,
     ):
         async with redis_client_factory(pool=self.pool) as r:
             return await r.zrangebyscore(
@@ -494,7 +506,7 @@ class RedisManagerBase:
             return await r.zremrangebyrank(key, start, end)
 
     @retry
-    async def _zrand(self, key, count: int = None):
+    async def _zrand(self, key, count: int | None = None):
         async with redis_client_factory(pool=self.pool) as r:
             total = await r.zcard(key)
             if total == 0:

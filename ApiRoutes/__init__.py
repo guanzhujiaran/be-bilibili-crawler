@@ -8,6 +8,7 @@ API路由统一枚举定义模块
 - 具体路由名称 (RouterNames)
 
 使用方式：
+from bili_common.models import StrEnumAutoDoc
     from ApiRoutes import RouterPrefix, RouterTags, RouterNames
     
     # 引用路由前缀
@@ -19,11 +20,10 @@ API路由统一枚举定义模块
     # 引用路由名称
     name = RouterNames.GET_COMMON_LOTTERY
 """
+from bili_common.models import StrEnumAutoDoc
 
-from enum import StrEnum
 
-
-class RouterPrefix(StrEnum):
+class RouterPrefix(StrEnumAutoDoc):
     """API路由前缀枚举"""
     
     # ==================== V1 版本路由前缀 ====================
@@ -55,7 +55,7 @@ class RouterPrefix(StrEnum):
     RPC = "/api/v1/rpc"  # RPC 服务信息前缀
 
 
-class RouterTags(StrEnum):
+class RouterTags(StrEnumAutoDoc):
     """API路由标签枚举 - 用于OpenAPI文档分组"""
     
     # ==================== V1 版本路由标签 ====================
@@ -74,7 +74,7 @@ class RouterTags(StrEnum):
     RPC = "RPC服务"  # RPC 服务信息
 
 
-class RouterPaths(StrEnum):
+class RouterPaths(StrEnumAutoDoc):
     """
     API路由路径枚举 - 用于定义具体的路由路径
     
@@ -169,7 +169,7 @@ class RouterPaths(StrEnum):
     GET_LLM_STATS = "/llm/stats"  # 获取云端LLM实例使用统计
 
 
-class RouterNames(StrEnum):
+class RouterNames(StrEnumAutoDoc):
     """
     API路由名称枚举 - 用于reverse生成URL或标识路由
     
@@ -263,7 +263,7 @@ class RouterNames(StrEnum):
     GET_LLM_STATS = "get_llm_stats"  # 获取云端LLM实例使用统计
 
 
-class RouterModule(StrEnum):
+class RouterModule(StrEnumAutoDoc):
     """API路由模块枚举 - 用于标识路由所属的控制器模块"""
     
     DAMO = "controller.damo.DamoML"  # 达摩模块

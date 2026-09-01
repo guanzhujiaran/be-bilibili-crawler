@@ -12,12 +12,11 @@
 - 具体落库目标由消息体里的自定义参数类 PrizeExtractParams.target_db 决定。
 """
 
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import time
 import traceback
 from datetime import datetime
-from enum import StrEnum
-
 from faststream.rabbit.fastapi import RabbitMessage
 from log.base_log import MQ_logger
 from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
@@ -69,7 +68,7 @@ SEM_KEY = "global"  # 全局唯一 key，所有提取共享同一把并发闸
 
 # ============ redis 锁 + 信号量 ============
 class PrizeExtractRedisManager(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         lock_prefix = "prize_extract:lock"
         sem_prefix = "prize_extract:sem"
 

@@ -1,4 +1,4 @@
-from enum import StrEnum, Enum
+from bili_common.models import StrEnumAutoDoc
 
 from Models.base.custom_pydantic import CustomBaseModel
 
@@ -13,7 +13,7 @@ class CaptchaVerifyReq(CustomBaseModel):
     input_text: str
 
 
-class CaptchaVerifyStatusEnum(StrEnum):
+class CaptchaVerifyStatusEnum(StrEnumAutoDoc):
     VALID = "VALID"
     INVALID = "INVALID"
     EXPIRED = "EXPIRED"

@@ -1,5 +1,5 @@
+from bili_common.models import StrEnumAutoDoc,IntEnumAutoDoc
 import json
-from enum import Enum, StrEnum
 from typing import List
 from Utils.redisTool.RedisManager import RedisManagerBase
 from CONFIG import CONFIG
@@ -8,13 +8,13 @@ _reids_port = CONFIG.database.proxyRedis.port
 _reids_host = CONFIG.database.proxyRedis.host
 
 
-class BiliRedisDbEnum(Enum):
+class BiliRedisDbEnum(IntEnumAutoDoc):
     LiveLottery = 0
     Semantic = 1
 
 
 class BiliLiveLotteryRedis(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         all_live_lot = "all_live_lot"
 
     def __init__(self):
@@ -24,7 +24,7 @@ class BiliLiveLotteryRedis(RedisManagerBase):
 
     async def get_live_lottery(
         self, page_num: int = 0, page_size: int = 0
-    ) -> tuple[List[any], int]:
+    ) -> tuple[List, int]:
         if raw_json_str := await self._get(
             BiliLiveLotteryRedis.RedisMap.all_live_lot.value
         ):

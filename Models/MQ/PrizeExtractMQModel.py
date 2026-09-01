@@ -7,14 +7,14 @@
 - result（大模型返回数据）不放在消息体里，单独传递/返回，避免引用指针混乱。
 """
 
+from bili_common.models import StrEnumAutoDoc
 from pydantic import BaseModel, Field
 from datetime import datetime
-from enum import StrEnum
 
 from Models.lottery_database.bili.LotteryDataModels import LotExtraInfoLotType
 
 
-class PrizeExtractTargetEnum(StrEnum):
+class PrizeExtractTargetEnum(StrEnumAutoDoc):
     """入库目标数据库 & 提取逻辑标识"""
 
     BILIOPUSDB = "普通抽奖动态"  # 普通抽奖动态 → biliopusdb

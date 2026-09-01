@@ -1,10 +1,10 @@
+from bili_common.models import StrEnumAutoDoc
 from dataclasses import dataclass
-from enum import StrEnum
 
 from faststream.rabbit import RabbitQueue, RabbitExchange
 
 
-class QueueName(StrEnum):
+class QueueName(StrEnumAutoDoc):
     TestMQ = "test"
     OfficialReserveChargeLotMQ = "OfficialReserveChargeLotQueue"
     UpsertOfficialReserveChargeLotMQ = "UpsertOfficialReserveChargeLotQueue"
@@ -17,12 +17,12 @@ class QueueName(StrEnum):
     PrizeExtractDynDetailMQ = "PrizeExtractDynDetailQueue"
 
 
-class ExchangeName(StrEnum):
+class ExchangeName(StrEnumAutoDoc):
     bili_data = "bili_data"
 
 
 # 定义一个名为RoutingKey的类，继承自str和Enum
-class RoutingKey(StrEnum):
+class RoutingKey(StrEnumAutoDoc):
     TestMQ = "testRouter"
     OfficialReserveChargeLotMQ = "BiliData.OfficialReserveChargeLotMQ"
     UpsertOfficialReserveChargeLotMQ = "BiliData.UpsertOfficialReserveChargeLotMQ"

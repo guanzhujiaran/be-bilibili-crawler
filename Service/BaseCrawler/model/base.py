@@ -1,4 +1,4 @@
-from enum import Enum
+from bili_common.core import IntEnumAutoDoc
 from typing import TypeVar, Generic
 from datetime import datetime
 from pydantic import Field
@@ -7,7 +7,7 @@ from Models.base.custom_pydantic import CustomGenericModel, CustomBaseModelHasha
 ParamsType = TypeVar("ParamsType", bound=CustomBaseModelHashable)
 
 
-class WorkerStatus(Enum):
+class WorkerStatus(IntEnumAutoDoc):
     # region 成功的代码
     complete = 1
     nullData = 2

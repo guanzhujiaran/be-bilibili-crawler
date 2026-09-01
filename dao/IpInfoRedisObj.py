@@ -1,10 +1,10 @@
-from enum import Enum
+from bili_common.models import StrEnumAutoDoc
 from CONFIG import CONFIG
 from Utils.redisTool.RedisManager import RedisManagerBase
 
 
 class IpInfoRedisObj(RedisManagerBase):
-    class RedisMap(str, Enum):
+    class RedisMap(StrEnumAutoDoc):
         ipv6_addr = "ipv6_addr"
 
     def __init__(self):

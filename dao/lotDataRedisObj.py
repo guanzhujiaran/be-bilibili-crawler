@@ -1,12 +1,12 @@
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import time
-from enum import StrEnum
 from CONFIG import CONFIG
 from Utils.redisTool.RedisManager import RedisManagerBase
 
 
 class LotDataRedisObj(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         add_dynamic_lottery_queue = "add_dynamic_lottery_queue"
 
     def __init__(self):

@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
+from bili_common.models import StrEnumAutoDoc
 import asyncio
 import json
 import os.path
 import re
 import time
 import traceback
-from enum import StrEnum
 
 import aiofiles
 import bs4
@@ -27,7 +27,7 @@ get_pin_ts_txt_p = get_file_p('get_pin_ts.txt')
 uname_list_json_p = get_file_p('uname_list.json')
 
 
-class PinDetailType(StrEnum):
+class PinDetailType(StrEnumAutoDoc):
     moment = 'moment'
     zhuanlan = 'zhuanlan'
 

@@ -1,23 +1,25 @@
+from enum import EnumDict
+from bili_common.core import StrEnumAutoDoc, IntEnumAutoDoc
 import asyncio
+
 # windows中如果出现编码错误. 在引入execjs之前. 插入以下代码即可.
 import os
-from enum import Enum
 from typing import List, Optional
 
 from pydantic import Field
 
 from Models.base.custom_pydantic import CustomBaseModel
 
-os.environ['EXECJS_RUNTIME'] = 'Node'
+os.environ["EXECJS_RUNTIME"] = "Node"
 import subprocess
 from functools import partial
 
-subprocess.Popen = partial(subprocess.Popen, encoding='utf-8')
+subprocess.Popen = partial(subprocess.Popen, encoding="utf-8")
 
 import execjs
 
 
-class LotType(Enum):
+class LotType(StrEnumAutoDoc):
     activity_lottery = "h5转盘抽奖"
     activity_match_lottery = "赛事抽奖"
     activity_match_task = "赛事抽奖任务"
@@ -33,11 +35,13 @@ class CvTopicItem(CustomBaseModel):
     title: str
     lot_type_list: Optional[List[LotType]] = Field(default_factory=lambda: [])
     end_date_str: str
-    lottery_pool: Optional[List[str]] = Field(default_factory=lambda: [])  # 奖池内容（奖品列表）
-    lottery_sid: Optional[str] = ''  # 抽奖的sid信息
+    lottery_pool: Optional[List[str]] = Field(
+        default_factory=lambda: []
+    )  # 奖池内容（奖品列表）
+    lottery_sid: Optional[str] = ""  # 抽奖的sid信息
 
 
-class OpusType(Enum):
+class OpusType(IntEnumAutoDoc):
     ALBUM = 1
     ARTICLE = 2
     ARTICLE_H5 = 5
@@ -49,7 +53,7 @@ class OpusType(Enum):
     WORD = 6
 
 
-class Color(Enum):
+class Color(StrEnumAutoDoc):
     color_blue_01 = "#56c1fe"
     color_lblue_01 = "#73fdea"
     color_green_01 = "#89fa4e"
@@ -78,11 +82,15 @@ class Color(Enum):
     color_gray_03 = "#5f5f5f"
 
 
-class CutOff(Enum):
-    cut_off_5 = {"cut-off": {
-        "type": "5",
-        "url": "https://i0.hdslb.com/bfs/article/02db465212d3c374a43c60fa2625cc1caeaab796.png"
-    }}
+class CutOff(CustomBaseModel):
+    cut_off_5: dict[str, dict[str, str]] = Field(
+        default={
+            "cut-off": {
+                "type": "5",
+                "url": "https://i0.hdslb.com/bfs/article/02db465212d3c374a43c60fa2625cc1caeaab796.png",
+            }
+        }
+    )
 
 
 class CvContentAttr(CustomBaseModel):
@@ -98,18 +106,14 @@ class CvContentOps(CustomBaseModel):
 
 
 with open(
-        os.path.join(
-            os.path.dirname(__file__),
-            'read_editor.js'
-        ), 'r', encoding='utf-8') as f:
-    toOpusContent = execjs.compile(
-        f.read()
-    )
+    os.path.join(os.path.dirname(__file__), "read_editor.js"), "r", encoding="utf-8"
+) as f:
+    toOpusContent = execjs.compile(f.read())
 
 
 class CvContent(CustomBaseModel):
     ops: List[CvContentOps]
-    title: str = ''
+    title: str = ""
     abstract: str = ""
 
     @property
@@ -123,14 +127,13 @@ class CvContent(CustomBaseModel):
             if x.insert and type(x.insert) is str:
                 content_ls.append(x.insert)
             if x.attributes and x.attributes.link:
-                content_ls.append(x.attributes.link + ' ')  # 连接后面都加一个空格
-            if x.insert == CutOff.cut_off_5.value:
-                content_ls.append('\n\n\n')
+                content_ls.append(x.attributes.link + " ")  # 连接后面都加一个空格
+            if x.insert == CutOff.cut_off_5:
+                content_ls.append("\n\n\n")
                 continue
         return f"{self.abstract}\n{''.join(content_ls)}"
 
     async def toOpusContent(self, _type: OpusType):
         return await asyncio.to_thread(
-            toOpusContent.call,
-            'toOpusContent', _type.value, self.rawContent
+            toOpusContent.call, "toOpusContent", _type.value, self.rawContent
         )

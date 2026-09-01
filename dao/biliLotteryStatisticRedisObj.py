@@ -1,6 +1,6 @@
+from bili_common.models import StrEnumAutoDoc
 import ast
 import json
-from enum import StrEnum
 from typing import List
 
 from CONFIG import CONFIG
@@ -11,7 +11,7 @@ from Utils.redisTool.RedisManager import RedisManagerBase
 
 
 class LotteryDataStatisticRedis(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         lot_type_rank = 'LotteryDataStatisticRedis:{date}:{lot_type}:{rank_type}_prize'  # 转发抽奖类
         lot_sync_ts = 'LotteryDataStatisticRedis:{lot_type}:sync_ts'
         bili_user_uid_face_name = 'LotteryDataStatisticRedis:user_info'

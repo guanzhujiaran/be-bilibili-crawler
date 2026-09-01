@@ -1,4 +1,4 @@
-from enum import StrEnum
+from bili_common.models import StrEnumAutoDoc
 from typing import List
 from CONFIG import CONFIG
 from Models.MQ.BaseMQModel import ExchangeName
@@ -19,7 +19,7 @@ class CachedMessage(CustomBaseModel):
 
 
 class RedisObj(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         pending_messages = 'rabbitmq_pub_cache:pending_messages'  # 待发送消息列表 hashtable
 
     def __init__(self):

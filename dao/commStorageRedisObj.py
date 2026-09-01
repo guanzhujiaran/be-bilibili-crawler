@@ -1,10 +1,10 @@
-from enum import Enum
+from bili_common.models import StrEnumAutoDoc
 from CONFIG import CONFIG
 from Utils.redisTool.RedisManager import RedisManagerBase
 
 
 class CommStorageRedisObj(RedisManagerBase):
-    class RedisMap(str, Enum):
+    class RedisMap(StrEnumAutoDoc):
         reserve_scrapy_bot_rid_ls='reserve_scrapy_bot_rid_ls'
 
     def __init__(self):

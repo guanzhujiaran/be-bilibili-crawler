@@ -1,5 +1,6 @@
+from bili_common.models import StrEnumAutoDoc
+from bili_common.models import IntEnumAutoDoc
 from datetime import datetime, timedelta
-from enum import StrEnum, Enum, IntEnum
 from typing import Optional, Dict, Any, Union
 from pydantic import BaseModel, Field, ConfigDict, field_validator
 from pydantic import computed_field
@@ -143,6 +144,9 @@ class ReserveInfoResp(reserveInfo):
     etime: int  # 结束时间(秒)
     jump_url: str  # 单独抽奖的跳转链接，like https://www.bilibili.com/h5/lottery/result?business_id=3640758&business_type=10
     reserve_sid: int  # 直播预约sid
+    lottery_id: int | None = Field(
+        default=None, description="lotdata 主键 lottery_id（对外互动资源 ID）"
+    )
     available: bool  # 预约是否正常存在
     raw: TUpReserveRelationInfoResp | None
     dynamic_id: int | None
@@ -157,7 +161,7 @@ class ReserveInfoResp(reserveInfo):
         return str(self.dynamic_id) if self.dynamic_id else None
 
 
-class OfficialLotType(StrEnum):
+class OfficialLotType(StrEnumAutoDoc):
     """官方抽奖类型枚举"""
 
     reserve_lot = "预约抽奖"
@@ -166,7 +170,7 @@ class OfficialLotType(StrEnum):
     lot_dyn_origin_dyn = "抽奖动态的源动态"
 
 
-class LotExtraInfoLotType(StrEnum):
+class LotExtraInfoLotType(StrEnumAutoDoc):
     """t_lot_extra_info 表的 lot_type 枚举"""
 
     common = "common"
@@ -247,9 +251,7 @@ class CommonLotExtraInfoResp(BaseModel):
     lottery_time: str | None = Field(
         default=None, description="LLM 提取的开奖时间字符串"
     )
-    lot_type: str | None = Field(
-        default=None, description="抽奖类型: common"
-    )
+    lot_type: str | None = Field(default=None, description="抽奖类型: common")
     predicted_at: datetime | None = Field(default=None, description="LLM 判断时间")
 
 
@@ -466,7 +468,7 @@ class BiliLotStatisticInfoResp(BaseModel):
     total: int
 
 
-class AtariLotRankEnum(IntEnum):
+class AtariLotRankEnum(IntEnumAutoDoc):
     first_prize = 1
     second_prize = 2
     third_prize = 3
@@ -478,26 +480,26 @@ class BiliLotStatisticLotteryResultResp(CustomBaseModel):
     total: int
 
 
-class BiliLotteryStatusEnum(IntEnum):
+class BiliLotteryStatusEnum(IntEnumAutoDoc):
     not_drawn = 0
     end = 2
     canceled = -1
 
 
-class BiliBusinessTypeEnum(IntEnum):
+class BiliBusinessTypeEnum(IntEnumAutoDoc):
     official = 1
     reserve = 10
     charge = 12
 
 
-class BiliLotStatisticLotTypeEnum(StrEnum):
+class BiliLotStatisticLotTypeEnum(StrEnumAutoDoc):
     official = "official"
     reserve = "reserve"
     charge = "charge"
     total = "total"
 
     @property
-    def business_type(self) -> AtariLotRankEnum | None:
+    def business_type(self) -> BiliBusinessTypeEnum | None:
         mapping = {
             self.official: BiliBusinessTypeEnum.official,
             self.reserve: BiliBusinessTypeEnum.reserve,
@@ -506,7 +508,7 @@ class BiliLotStatisticLotTypeEnum(StrEnum):
         return mapping.get(self)
 
 
-class BiliLotStatisticRankTypeEnum(StrEnum):
+class BiliLotStatisticRankTypeEnum(StrEnumAutoDoc):
     first = "first"
     second = "second"
     third = "third"
@@ -522,7 +524,7 @@ class BiliLotStatisticRankTypeEnum(StrEnum):
         return mapping.get(self)
 
 
-class BiliLotStatisticRankDateTypeEnum(StrEnum):
+class BiliLotStatisticRankDateTypeEnum(StrEnumAutoDoc):
     month = "month"  # 当月
     pre_month = "pre_month"  # 上月
     year = "year"
@@ -582,6 +584,7 @@ class BiliLotStatisticRankDateTypeEnum(StrEnum):
 # SortOrderEnum / TimePresetEnum 已统一迁移至 bili_common.models，
 # 请通过 `from bili_common.models import ...` 引用。
 
+
 class OthersLotDynItem(BaseModel):
     """第三方抽奖动态条目
 
@@ -638,7 +641,7 @@ class OthersLotDynItem(BaseModel):
         return bool(v)
 
 
-class FilterParamTypeEnum(StrEnum):
+class FilterParamTypeEnum(StrEnumAutoDoc):
     """筛选参数类型枚举"""
 
     INT = "int"
@@ -695,7 +698,7 @@ class LotteryFilterParamsResp(CustomBaseModel):
 # region 筛选参数元数据 — 自动生成工具
 
 
-class FilterWidgetType(StrEnum):
+class FilterWidgetType(StrEnumAutoDoc):
     """前端控件类型"""
 
     INPUT = "input"
@@ -721,7 +724,7 @@ def _infer_param_type(annotation: Any) -> str:
     if isinstance(annotation, type):
         if issubclass(annotation, bool):
             return "bool"
-        if issubclass(annotation, (StrEnum, Enum)):
+        if issubclass(annotation, (StrEnumAutoDoc, IntEnumAutoDoc)):
             return "enum"
         if issubclass(annotation, int):
             return "int"
@@ -739,7 +742,7 @@ def _extract_enum_values(annotation: Any) -> list[FilterEnumValue] | None:
         non_none = [a for a in args if a is not type(None)]
         if len(non_none) == 1:
             annotation = non_none[0]
-    if isinstance(annotation, type) and issubclass(annotation, StrEnum):
+    if isinstance(annotation, type) and issubclass(annotation, StrEnumAutoDoc):
         return [
             FilterEnumValue(label=member.value, value=member.value)
             for member in annotation

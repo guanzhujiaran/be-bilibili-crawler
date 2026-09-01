@@ -1,14 +1,14 @@
+from bili_common.core import StrEnumAutoDoc
 from typing import TYPE_CHECKING
 import os
 import uuid
-from enum import Enum
 from loguru import logger
 
 if TYPE_CHECKING:
     from loguru import Logger
 
 
-class UserMap(Enum):
+class UserMap(StrEnumAutoDoc):
     samsclub_logger = "samsclub_logger"
     httpx = "httpx"
     background_task = "background_task"

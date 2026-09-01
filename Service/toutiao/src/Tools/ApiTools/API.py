@@ -1,7 +1,7 @@
+from bili_common.core import StrEnumAutoDoc
 import asyncio
 import json
 import random
-from enum import Enum
 from urllib.parse import urlparse
 from Service.toutiao.src.Tools.ApiTools.APIRespTool import FeedListApi
 import httpx
@@ -52,7 +52,7 @@ def get_ms_token(randomlength=107):
     return random_str
 
 
-class APIEnum(Enum):
+class APIEnum(StrEnumAutoDoc):
     api_pc_list_user_feed = 'https://www.toutiao.com/api/pc/list/user/feed'
 
 

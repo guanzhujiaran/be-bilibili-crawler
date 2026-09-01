@@ -1,10 +1,10 @@
+from bili_common.models import StrEnumAutoDoc
 import ast
 import asyncio
 import json
 import time
 from datetime import datetime
-from enum import StrEnum
-from typing import Union, List, Sequence, Optional, Tuple
+from typing import List, Sequence, Optional, Tuple
 
 from pydantic import BaseModel
 
@@ -29,16 +29,17 @@ from dao.base.sqlHelperBase import SqlHelperBase
 
 class TargetUserItem(BaseModel):
     """Redis 中存储的每个目标用户信息"""
+
     uid: int
-    uname: str = ""                                 # 用户名
-    last_dyn_pub_ts: int = 0                        # 最后一条抽奖动态发布时间(Unix)
-    last_dyn_pub_datetime: datetime | None = None    # 最后一条抽奖动态发布时间(人类可读)
-    last_round_lot_count: int = 0                   # 最后一轮有效抽奖次数
-    last_round_total_count: int = 0                 # 最后一轮总动态数
+    uname: str = ""  # 用户名
+    last_dyn_pub_ts: int = 0  # 最后一条抽奖动态发布时间(Unix)
+    last_dyn_pub_datetime: datetime | None = None  # 最后一条抽奖动态发布时间(人类可读)
+    last_round_lot_count: int = 0  # 最后一轮有效抽奖次数
+    last_round_total_count: int = 0  # 最后一轮总动态数
 
 
 class GetOtherLotRedisManager(RedisManagerBase):
-    class RedisMap(StrEnum):
+    class RedisMap(StrEnumAutoDoc):
         target_uid_list = "get_other_lot_redis_manager:target_uid_list"
         get_dyn_ts = "get_other_lot_redis_manager:get_dyn_ts"
 
@@ -49,13 +50,11 @@ class GetOtherLotRedisManager(RedisManagerBase):
             db=CONFIG.database.getOtherLotRedis.db,
         )
 
-    async def set_target_uid_list(
-        self, uid_list: list[TargetUserItem]
-    ):
+    async def set_target_uid_list(self, uid_list: list[TargetUserItem]):
         """保存用户列表，序列化为 JSON"""
         await self._set(
             self.RedisMap.target_uid_list.value,
-            json.dumps([item.model_dump(mode='json') for item in uid_list]),
+            json.dumps([item.model_dump(mode="json") for item in uid_list]),
         )
 
     async def get_target_uid_list(self) -> list[TargetUserItem]:
@@ -74,10 +73,7 @@ class GetOtherLotRedisManager(RedisManagerBase):
             return [TargetUserItem.model_validate(item) for item in data]
 
         # 最旧版 List[int|str] 格式，自动迁移
-        return [
-            TargetUserItem(uid=int(uid))
-            for uid in data
-        ]
+        return [TargetUserItem(uid=int(uid)) for uid in data]
 
     async def get_target_uid_set(self) -> set[int]:
         """便捷方法：直接获取 uid 集合"""
@@ -104,13 +100,12 @@ class __SqlHelper(SqlHelperBase):
         self.add_dyn_info_lock = asyncio.Lock()
 
     @log_sql_retry_wrapper()
-    async def getDynIdByRidType(self, rid: int, dynamic_type: int) -> Union[int, None]:
+    async def getDynIdByRidType(self, rid: int, dynamic_type: int) -> int | None:
         async with self.async_session() as session:
             sql = (
                 select(TRiddynid.dynamic_id)
                 .filter(
-                    and_(TRiddynid.rid == rid,
-                         TRiddynid.dynamic_type == dynamic_type)
+                    and_(TRiddynid.rid == rid, TRiddynid.dynamic_type == dynamic_type)
                 )
                 .limit(1)
             )
@@ -132,7 +127,7 @@ class __SqlHelper(SqlHelperBase):
 
     # region 获取抽奖轮次信息相关
     @log_sql_retry_wrapper()
-    async def getLatestFinishedRound(self) -> Union[TLotmaininfo, None]:
+    async def getLatestFinishedRound(self) -> TLotmaininfo | None:
         async with self.async_session() as session:
             sql = (
                 select(TLotmaininfo)
@@ -145,11 +140,10 @@ class __SqlHelper(SqlHelperBase):
             return ret
 
     @log_sql_retry_wrapper()
-    async def getLatestRound(self) -> Union[TLotmaininfo, None]:
+    async def getLatestRound(self) -> TLotmaininfo | None:
         async with self.async_session() as session:
             sql = (
-                select(TLotmaininfo).order_by(
-                    TLotmaininfo.lotRound_id.desc()).limit(1)
+                select(TLotmaininfo).order_by(TLotmaininfo.lotRound_id.desc()).limit(1)
             )
             res = await session.execute(sql)
             ret: TLotmaininfo = res.scalars().first()
@@ -251,13 +245,11 @@ class __SqlHelper(SqlHelperBase):
         conditions = [self._is_lot_condition()]
         if created_at_start is not None:
             conditions.append(
-                TLotdyninfo.created_at >= datetime.fromtimestamp(
-                    created_at_start)
+                TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start)
             )
         if created_at_end is not None:
             conditions.append(
-                TLotdyninfo.created_at <= datetime.fromtimestamp(
-                    created_at_end)
+                TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end)
             )
         if pub_time_start is not None:
             conditions.append(
@@ -269,7 +261,8 @@ class __SqlHelper(SqlHelperBase):
             )
         stmt = (
             select(TLotdyninfo, TLotExtraInfo)
-            .outerjoin(TLotExtraInfo,
+            .outerjoin(
+                TLotExtraInfo,
                 TLotExtraInfo.ref_id == TLotdyninfo.dynId,
             )
             .filter(and_(*conditions))
@@ -287,9 +280,7 @@ class __SqlHelper(SqlHelperBase):
             return items, extra_map
 
     @log_sql_retry_wrapper()
-    async def countValidLotByUidList(
-        self, uid_list: list[int | str]
-    ) -> dict[int, int]:
+    async def countValidLotByUidList(self, uid_list: list[int | str]) -> dict[int, int]:
         """统计每个用户的有效抽奖数量（全量历史）"""
         async with self.async_session() as session:
             stmt = (
@@ -335,25 +326,28 @@ class __SqlHelper(SqlHelperBase):
         """获取指定轮次中每个用户的抽奖统计：{uid: {'total': int, 'lot_count': int}}"""
         async with self.async_session() as session:
             # lot_count: 官方抽奖 + t_lot_extra_info.is_lot=1 的记录
-            lot_count_expr = (
-                func.sum(
-                    case(
-                        (TLotdyninfo.officialLotType.isnot(None), 1),
-                        (exists().where(
+            lot_count_expr = func.sum(
+                case(
+                    (TLotdyninfo.officialLotType.isnot(None), 1),
+                    (
+                        exists()
+                        .where(
                             and_(
                                 TLotExtraInfo.ref_id == TLotdyninfo.dynId,
                                 TLotExtraInfo.lot_type == "common",
                                 TLotExtraInfo.is_lot == 1,
                             )
-                        ).correlate(TLotdyninfo), 1),
-                        else_=0,
-                    )
-                ).label('lot_count')
-            )
+                        )
+                        .correlate(TLotdyninfo),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("lot_count")
             stmt = (
                 select(
                     TLotdyninfo.up_uid,
-                    func.count(TLotdyninfo.dynId).label('total'),
+                    func.count(TLotdyninfo.dynId).label("total"),
                     lot_count_expr,
                 )
                 .filter(
@@ -368,8 +362,8 @@ class __SqlHelper(SqlHelperBase):
             rows = res.all()
             return {
                 int(row[0]): {
-                    'total': row[1],
-                    'lot_count': row[2] or 0,
+                    "total": row[1],
+                    "lot_count": row[2] or 0,
                 }
                 for row in rows
             }
@@ -421,10 +415,9 @@ class __SqlHelper(SqlHelperBase):
             return ret
 
     @log_sql_retry_wrapper()
-    async def isExistDynInfoByDynId(self, DynId: str) -> Union[TLotdyninfo, None]:
+    async def isExistDynInfoByDynId(self, DynId: str) -> TLotdyninfo | None:
         async with self.async_session() as session:
-            sql = select(TLotdyninfo).filter(
-                TLotdyninfo.dynId == DynId).limit(1)
+            sql = select(TLotdyninfo).filter(TLotdyninfo.dynId == DynId).limit(1)
             res = await session.execute(sql)
             ret = res.scalars().first()
             return ret
@@ -455,7 +448,9 @@ class __SqlHelper(SqlHelperBase):
             return ret_list
 
     @log_sql_retry_wrapper()
-    async def addDynInfo(self, DynInfo: TLotdyninfo, need_comment: int | None = None) -> None:
+    async def addDynInfo(
+        self, DynInfo: TLotdyninfo, need_comment: int | None = None
+    ) -> None:
         """
         直接把最新的动态信息merge进去，同时发布到 MQ 异步提取奖品信息
         :param DynInfo: 动态信息
@@ -478,7 +473,6 @@ class __SqlHelper(SqlHelperBase):
                 comment_count=DynInfo.commentCount,
                 forward_count=DynInfo.repostCount,
             )
-    
 
     @staticmethod
     def _is_lot_condition():
@@ -488,15 +482,19 @@ class __SqlHelper(SqlHelperBase):
         避免外层 query 有 LEFT JOIN TLotExtraInfo 时发生 auto-correlation 冲突。
         """
         return or_(
-            and_(TLotdyninfo.officialLotType.isnot(None),
-                 TLotdyninfo.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value),
-            exists().correlate_except(TLotExtraInfo).where(
+            and_(
+                TLotdyninfo.officialLotType.isnot(None),
+                TLotdyninfo.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value,
+            ),
+            exists()
+            .correlate_except(TLotExtraInfo)
+            .where(
                 and_(
                     TLotExtraInfo.ref_id == TLotdyninfo.dynId,
                     TLotExtraInfo.lot_type == "common",
                     TLotExtraInfo.is_lot == 1,
                 )
-            )
+            ),
         )
 
     @log_sql_retry_wrapper()
@@ -517,7 +515,7 @@ class __SqlHelper(SqlHelperBase):
 
     # region LotUserInfo增删改查
     @log_sql_retry_wrapper()
-    async def getLotUserInfoByUid(self, uid: int) -> Union[TLotuserinfo, None]:
+    async def getLotUserInfoByUid(self, uid: int) -> TLotuserinfo | None:
         async with self.async_session() as session:
             sql = select(TLotuserinfo).filter(TLotuserinfo.uid == uid).limit(1)
             res = await session.execute(sql)
@@ -569,7 +567,7 @@ class __SqlHelper(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def getSpaceRespTillOffset(
-        self, uid: Union[int, str], offset: Union[int, str]
+        self, uid: int | str, offset: int | str
     ) -> list[dict]:
         """
         获取所有比offset值大的动态，也就是获取offset值之后发布的动态
@@ -655,8 +653,8 @@ class __SqlHelper(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def get_lot_user_info_updatetime_by_uid(
-        self, uid: Union[int, str]
-    ) -> Union[datetime, None]:
+        self, uid: int | str
+    ) -> datetime | None:
         async with self.async_session() as session:
             sql = (
                 select(TLotuserinfo.updatetime)
@@ -673,7 +671,7 @@ class __SqlHelper(SqlHelperBase):
     @log_sql_retry_wrapper()
     async def isExistSpaceInfoByDynId(
         self, dynamic_id
-    ) -> Union[TLotuserspaceresp, None]:
+    ) -> TLotuserspaceresp | None:
         async with self.async_session() as session:
             sql = (
                 select(TLotuserspaceresp)
@@ -751,9 +749,7 @@ class __SqlHelper(SqlHelperBase):
                         TLotdyninfo.commentCount > 0,
                     )
                 )
-                .order_by(
-                    (TLotdyninfo.commentCount + TLotdyninfo.repostCount).desc()
-                )
+                .order_by((TLotdyninfo.commentCount + TLotdyninfo.repostCount).desc())
                 .limit(top_n)
             )
             res = await session.execute(sql)
@@ -767,11 +763,7 @@ class __SqlHelper(SqlHelperBase):
         dynamic_id 获取评论区所需的 rid+type。纯文本动态不在此表中。
         """
         async with self.async_session() as session:
-            sql = (
-                select(TRiddynid)
-                .filter(TRiddynid.dynamic_id == int(dyn_id))
-                .limit(1)
-            )
+            sql = select(TRiddynid).filter(TRiddynid.dynamic_id == int(dyn_id)).limit(1)
             res = await session.execute(sql)
             ret = res.scalars().first()
             if ret:
@@ -811,22 +803,34 @@ class __SqlHelper(SqlHelperBase):
                     self._is_lot_condition() if is_lot else ~self._is_lot_condition()
                 )
             if pub_time_start is not None:
-                conditions.append(TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start))
+                conditions.append(
+                    TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start)
+                )
             if pub_time_end is not None:
-                conditions.append(TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end))
+                conditions.append(
+                    TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end)
+                )
             if created_at_start is not None:
-                conditions.append(TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start))
+                conditions.append(
+                    TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start)
+                )
             if created_at_end is not None:
-                conditions.append(TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end))
+                conditions.append(
+                    TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end)
+                )
 
             sort_column = getattr(TLotdyninfo, sort_by, TLotdyninfo.pubTime)
-            order_clause = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+            order_clause = (
+                sort_column.asc() if sort_order == "asc" else sort_column.desc()
+            )
             offset = max(0, (page_num - 1) * page_size)
 
             # 分为 COUNT + DATA 两条独立查询：COUNT 走索引覆盖，DATA 仅扫 LIMIT 行
-            total = (await session.execute(
-                select(func.count(TLotdyninfo.dynId)).where(*conditions)
-            )).scalar() or 0
+            total = (
+                await session.execute(
+                    select(func.count(TLotdyninfo.dynId)).where(*conditions)
+                )
+            ).scalar() or 0
 
             data_stmt = (
                 select(TLotdyninfo)
@@ -864,60 +868,86 @@ class __SqlHelper(SqlHelperBase):
             # --- 构建共用时间筛选条件（COUNT 与 data 查询共用）---
             time_conditions = []
             if pub_time_start is not None:
-                time_conditions.append(TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start))
+                time_conditions.append(
+                    TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start)
+                )
             if pub_time_end is not None:
-                time_conditions.append(TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end))
+                time_conditions.append(
+                    TLotdyninfo.pubTime <= datetime.fromtimestamp(pub_time_end)
+                )
             if created_at_start is not None:
-                time_conditions.append(TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start))
+                time_conditions.append(
+                    TLotdyninfo.created_at >= datetime.fromtimestamp(created_at_start)
+                )
             if created_at_end is not None:
-                time_conditions.append(TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end))
+                time_conditions.append(
+                    TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end)
+                )
 
             sort_column = getattr(TLotdyninfo, sort_by, TLotdyninfo.pubTime)
-            order_clause = sort_column.asc() if sort_order == "asc" else sort_column.desc()
+            order_clause = (
+                sort_column.asc() if sort_order == "asc" else sort_column.desc()
+            )
             offset = max(0, (page_num - 1) * page_size)
 
             # 第三方抽奖列表：is_lot 仅由 t_lot_extra_info.is_lot 决定。
             # 官方/预约/充电抽奖的 officialLotType 列不在此接口的筛选范围内
             # （它们各自有独立接口，混入会产生错误的 total 与冗余数据）。
-            common_is_lot_exists = exists().where(and_(
-                TLotExtraInfo.ref_id == TLotdyninfo.dynId,
-                TLotExtraInfo.lot_type == "common",
-                TLotExtraInfo.is_lot == 1,
-            )).correlate(TLotdyninfo)
+            common_is_lot_exists = (
+                exists()
+                .where(
+                    and_(
+                        TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+                        TLotExtraInfo.lot_type == "common",
+                        TLotExtraInfo.is_lot == 1,
+                    )
+                )
+                .correlate(TLotdyninfo)
+            )
 
             # --- 1. COUNT 查询 ---
             if is_lot is True:
                 if time_conditions:
                     # 有时间筛选时必须关联 t_lotdyninfo 的时间列
-                    total = (await session.execute(
-                        select(func.count(TLotdyninfo.dynId)).where(
-                            *time_conditions, common_is_lot_exists
+                    total = (
+                        await session.execute(
+                            select(func.count(TLotdyninfo.dynId)).where(
+                                *time_conditions, common_is_lot_exists
+                            )
                         )
-                    )).scalar() or 0
+                    ).scalar() or 0
                 else:
                     # 无时间筛选：直接统计 t_lot_extra_info（走 idx_lot_type_is_lot，极快）
-                    total = (await session.execute(
-                        select(func.count()).select_from(TLotExtraInfo).where(
-                            TLotExtraInfo.lot_type == "common",
-                            TLotExtraInfo.is_lot == 1,
+                    total = (
+                        await session.execute(
+                            select(func.count())
+                            .select_from(TLotExtraInfo)
+                            .where(
+                                TLotExtraInfo.lot_type == "common",
+                                TLotExtraInfo.is_lot == 1,
+                            )
                         )
-                    )).scalar() or 0
+                    ).scalar() or 0
             elif is_lot is False:
-                total = (await session.execute(
-                    select(func.count(TLotdyninfo.dynId)).where(
-                        *time_conditions, ~common_is_lot_exists
+                total = (
+                    await session.execute(
+                        select(func.count(TLotdyninfo.dynId)).where(
+                            *time_conditions, ~common_is_lot_exists
+                        )
                     )
-                )).scalar() or 0
+                ).scalar() or 0
             else:
-                total = (await session.execute(
-                    select(func.count(TLotdyninfo.dynId)).where(*time_conditions)
-                )).scalar() or 0
+                total = (
+                    await session.execute(
+                        select(func.count(TLotdyninfo.dynId)).where(*time_conditions)
+                    )
+                ).scalar() or 0
 
             # --- 2. data 查询 ---
             # 强制按排序字段走索引（idx_created_at / idx_pub_time），避免优化器误选
             # 「先扫 t_lot_extra_info 再 filesort」的慢路径。反向索引扫描 + 提前终止，
             # 只触碰 LIMIT 所需的少数行，而非全表。
-            sort_index = 'idx_created_at' if sort_by == 'created_at' else 'idx_pub_time'
+            sort_index = "idx_created_at" if sort_by == "created_at" else "idx_pub_time"
 
             if is_lot is True:
                 # INNER JOIN 直接过滤出 common 抽奖，同时一次拿到 extra_info（避免冗余 EXISTS）
@@ -928,7 +958,7 @@ class __SqlHelper(SqlHelperBase):
                 )
                 data_stmt = (
                     select(TLotdyninfo, TLotExtraInfo)
-                    .with_hint(TLotdyninfo, f'FORCE INDEX ({sort_index})')
+                    .with_hint(TLotdyninfo, f"FORCE INDEX ({sort_index})")
                     .join(TLotExtraInfo, join_on)
                     .where(*time_conditions)
                     .order_by(order_clause)
@@ -946,7 +976,7 @@ class __SqlHelper(SqlHelperBase):
                     data_where.append(~common_is_lot_exists)
                 data_stmt = (
                     select(TLotdyninfo, TLotExtraInfo)
-                    .with_hint(TLotdyninfo, f'FORCE INDEX ({sort_index})')
+                    .with_hint(TLotdyninfo, f"FORCE INDEX ({sort_index})")
                     .outerjoin(TLotExtraInfo, join_on)
                     .where(*data_where)
                     .order_by(order_clause)
@@ -1001,7 +1031,7 @@ class __SqlHelper(SqlHelperBase):
             }
             update_values = {
                 "is_grand_prize": is_grand_prize,
-                "predicted_at": text('CURRENT_TIMESTAMP'),
+                "predicted_at": text("CURRENT_TIMESTAMP"),
             }
             if is_lot is not None:
                 insert_values["is_lot"] = is_lot
@@ -1071,12 +1101,16 @@ class __SqlHelper(SqlHelperBase):
         奖品信息与附加信息现已统一存放在 t_lot_extra_info，故只需查本表。
         """
         async with self.async_session() as session:
-            stmt = select(TLotExtraInfo.ref_id).filter(
-                and_(
-                    TLotExtraInfo.ref_id == ref_id,
-                    TLotExtraInfo.lot_type == lot_type,
+            stmt = (
+                select(TLotExtraInfo.ref_id)
+                .filter(
+                    and_(
+                        TLotExtraInfo.ref_id == ref_id,
+                        TLotExtraInfo.lot_type == lot_type,
+                    )
                 )
-            ).limit(1)
+                .limit(1)
+            )
             res = await session.execute(stmt)
             return res.scalars().first() is not None
 
@@ -1086,12 +1120,16 @@ class __SqlHelper(SqlHelperBase):
     ) -> TLotExtraInfo | None:
         """根据 ref_id + lot_type 获取 t_lot_extra_info 完整记录，用于复用已有 LLM 提取结果。"""
         async with self.async_session() as session:
-            stmt = select(TLotExtraInfo).filter(
-                and_(
-                    TLotExtraInfo.ref_id == ref_id,
-                    TLotExtraInfo.lot_type == lot_type,
+            stmt = (
+                select(TLotExtraInfo)
+                .filter(
+                    and_(
+                        TLotExtraInfo.ref_id == ref_id,
+                        TLotExtraInfo.lot_type == lot_type,
+                    )
                 )
-            ).limit(1)
+                .limit(1)
+            )
             res = await session.execute(stmt)
             return res.scalars().first()
 
@@ -1107,14 +1145,11 @@ class __SqlHelper(SqlHelperBase):
                 subq = select(TLotExtraInfo.ref_id).filter(
                     TLotExtraInfo.lot_type == "common"
                 )
-                stmt = (
-                    select(TLotdyninfo.dynId)
-                    .filter(
-                        and_(
-                            TLotdyninfo.dynContent.isnot(None),
-                            TLotdyninfo.dynContent != "",
-                            TLotdyninfo.dynId.notin_(subq),
-                        )
+                stmt = select(TLotdyninfo.dynId).filter(
+                    and_(
+                        TLotdyninfo.dynContent.isnot(None),
+                        TLotdyninfo.dynContent != "",
+                        TLotdyninfo.dynId.notin_(subq),
                     )
                 )
                 if limit > 0:
@@ -1129,14 +1164,11 @@ class __SqlHelper(SqlHelperBase):
         """获取所有抽奖动态的dynId（用于全量判断脚本）
         limit=0 表示不限制数量，查询全部记录"""
         async with self.async_session() as session:
-            stmt = (
-                select(TLotdyninfo.dynId)
-                .filter(
-                    and_(
-                        self._is_lot_condition(),
-                        TLotdyninfo.dynContent.isnot(None),
-                        TLotdyninfo.dynContent != "",
-                    )
+            stmt = select(TLotdyninfo.dynId).filter(
+                and_(
+                    self._is_lot_condition(),
+                    TLotdyninfo.dynContent.isnot(None),
+                    TLotdyninfo.dynContent != "",
                 )
             )
             if limit > 0:
@@ -1156,6 +1188,7 @@ class __SqlHelper(SqlHelperBase):
             res = await session.execute(stmt)
             rows = res.all()
             return {row[0]: row[1] for row in rows if row[1]}
+
     # endregion
 
 
