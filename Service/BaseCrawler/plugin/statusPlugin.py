@@ -45,6 +45,12 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         self._processed_items_count: int = 0  # Fundamental counter
         self._null_count: int = 0
         self._succ_count: int = 0
+        # 本次尝试失败但已重新入队的次数（非最终失败）
+        self._requeued_count: int = 0
+        # 最终失败（不再重试）的任务次数
+        self._final_fail_count: int = 0
+        # 已重排、但还没走到 on_worker_end 的 seqId，用于把「待重试」与「最终失败」区分开
+        self._pending_requeue_seq_ids: set[int] = set()
         self._running_params_set: set[WorkerModel] = (
             set()
         )  # 把参数转换成字符串,避免unhashable的参数
@@ -65,8 +71,21 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         self._processed_items_count = 0
         self._null_count = 0
         self._succ_count = 0
+        self._requeued_count = 0
+        self._final_fail_count = 0
+        self._pending_requeue_seq_ids = set()
         self._running_params_set = set()
         await super().on_run_start(init_worker_model)
+
+    async def on_task_requeue(self, worker_model: WorkerModel):
+        """
+        任务被重新入队时触发：记为一次「重试」而不是「最终失败」。
+
+        这里只登记 seqId，真正的归类在 on_worker_end 中完成（重排先于 on_worker_end 执行）。
+        """
+        self._requeued_count += 1
+        self._pending_requeue_seq_ids.add(worker_model.seqId)
+        return await super().on_task_requeue(worker_model)
 
     async def on_worker_end(self, worker_model: WorkerModel):
         """
@@ -75,14 +94,23 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         """
         self._processed_items_count += 1
         self._last_update_time = time.time()  # Update wall clock time
-        if worker_model.fetchStatus in (WorkerStatus.complete, WorkerStatus.nullData):
+        status = worker_model.fetchStatus
+        if worker_model.seqId in self._pending_requeue_seq_ids:
+            # 本次已被重新入队（fetchStatus 此时已被重置为 pending）：
+            # 只计一次重试，不按最终状态归类，避免"待重试"被算成最终失败
+            self._pending_requeue_seq_ids.discard(worker_model.seqId)
+        elif status in (WorkerStatus.complete, WorkerStatus.nullData):
             self._succ_count += 1
-            if worker_model.fetchStatus == WorkerStatus.complete:
+            if status == WorkerStatus.complete:
                 self._end_success_params = worker_model
-            if worker_model.fetchStatus == WorkerStatus.nullData:
+            if status == WorkerStatus.nullData:
                 self._end_null_params = worker_model
                 self._null_count += 1
-        self._end_params = worker_model.params
+        elif status in (WorkerStatus.fail, WorkerStatus.timeoutError, WorkerStatus.pending):
+            # 走到这里说明本次没有被重排：要么已达最大重试次数，要么配置不重排、
+            # 要么 worker 被异常打断（状态仍为 pending）。都算作最终失败。
+            self._final_fail_count += 1
+        self._end_params = worker_model
         # Log current speed by calling the property, which calculates it on demand
         self._running_params_set.discard(worker_model)
         # self.log.debug(
@@ -112,8 +140,6 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         # No need to calculate _total_run_duration or _current_speed here,
         # the properties will return the final values when accessed.
 
-        fail_count = self._processed_items_count - self._succ_count
-        valid_count = self._succ_count - self._null_count
         success_rate = (
             (self._succ_count / self._processed_items_count * 100)
             if self._processed_items_count
@@ -125,12 +151,13 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             f"  开始时间: {self.start_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  结束时间: {self.last_update_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  总运行时长: {self.total_run_duration:.2f} 秒\n"
-            f"  处理任务数: {self._processed_items_count}\n"
-            f"  成功数(含空数据): {self._succ_count}\n"
-            f"  有效数据数: {valid_count}\n"
+            f"  尝试次数(含重试): {self._processed_items_count}\n"
+            f"  成功次数(含空数据): {self._succ_count}\n"
+            f"  有效数据数: {self.valid_count}\n"
             f"  空数据数: {self._null_count}\n"
-            f"  失败数: {fail_count}\n"
-            f"  成功率: {success_rate:.1f}%\n"
+            f"  重排重试次数: {self._requeued_count}\n"
+            f"  最终失败数: {self._final_fail_count}\n"
+            f"  成功率(按尝试次数): {success_rate:.1f}%\n"
             f"  平均速度: {self.crawling_speed:.2f} 项/秒\n"
             f"  是否运行中: {self._is_running}\n"
             f"  健康状态: {self.health_status}"
@@ -162,7 +189,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
     @computed_field
     @property
     def end_params(self) -> WorkerModel | None:
-        """最后的参数"""
+        """最后一个任务（WorkerModel，含参数与最终状态）"""
         return self._end_params
 
     @computed_field
@@ -191,8 +218,38 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
     @computed_field
     @property
     def processed_items_count(self) -> int:
-        """已处理的任务数量"""
+        """已处理的尝试次数（含失败重试，非去重任务数）"""
         return self._processed_items_count
+
+    @computed_field
+    @property
+    def attempt_count(self) -> int:
+        """尝试次数，与 processed_items_count 相同，语义更明确"""
+        return self._processed_items_count
+
+    @computed_field
+    @property
+    def requeued_count(self) -> int:
+        """失败/超时后被重新入队重试的次数（这些任务后续可能重试成功）"""
+        return self._requeued_count
+
+    @computed_field
+    @property
+    def fail_count(self) -> int:
+        """最终失败次数（不再重试），不含已重排重试的任务"""
+        return self._final_fail_count
+
+    @computed_field
+    @property
+    def fail_attempt_count(self) -> int:
+        """失败的尝试次数 = 最终失败 + 重排重试"""
+        return self._final_fail_count + self._requeued_count
+
+    @computed_field
+    @property
+    def valid_count(self) -> int:
+        """有效数据数 = 成功数 - 空数据数"""
+        return self._succ_count - self._null_count
 
     @computed_field
     @property

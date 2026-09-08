@@ -13,6 +13,7 @@ from CONFIG import CONFIG
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import DynDetailScrapyConfig
+from Service.BaseCrawler.model.base import WorkerStatus
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_lot_notice, reserve_relation_info
 from Service.GrpcModule.Grpc.grpc_api import bili_grpc
 from Service.GrpcModule.GrpcSrc.DynObjectClass import dynAllDetail
@@ -83,7 +84,7 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         # 配置（logger / 超时 / 重试 / 插件等）统一由 DynDetailScrapyConfig 控制
         super().__init__()
 
-    async def handle_fetch(self, params: DynDetailParams):
+    async def handle_fetch(self, params: DynDetailParams) -> WorkerStatus:
         detail = (await self.get_grpc_single_dynDetail(params.rid))[0]
         await self.Sqlhelper.upsert_DynDetail(
             doc_id=detail.get("rid"),
@@ -92,6 +93,11 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             lot_id=detail.get("lot_id"),
             dynamic_created_time=detail.get("dynamic_created_time"),
         )
+        # 必须显式返回状态：之前隐式返回 None 会被统一当作 complete，
+        # 导致"动态不存在"这类空数据也被计入有效成功，统计与连续空数据停止条件都会失真
+        if str(detail.get("dynamic_id")) == "-1":
+            return WorkerStatus.nullData
+        return WorkerStatus.complete
 
     async def key_params_gen(
         self, latest_params: DynDetailParams = None

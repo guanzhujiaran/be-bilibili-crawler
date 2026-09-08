@@ -267,10 +267,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         注意：
         - 此回调在任务重新入队前调用
-        - 此时任务状态已设置为 pending
+        - 此时任务状态已设置为 pending，retry_count 已在 _handle_requeue 中 +1
         - 修改 worker_model.params 会影响重试时的任务参数
+        - retry_count 的自增不放在这里：子类覆盖时若忘记调用 super 会导致重试计数失效
         """
-        worker_model.retry_count += 1
+        await asyncio_gather(
+            *[x.on_task_requeue(worker_model) for x in self._plugins], log=self.log
+        )
 
     async def on_worker_start(self, worker_model: WorkerModel):
         """
@@ -369,19 +372,33 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
             should_requeue = False
 
-            async with self.sem:
-                try:
-                    self.log.debug(self.format_log(f"开始处理任务: {worker_model.params}"))
-                    await self.on_worker_start(worker_model)
-                    worker_model.fetchStatus = await self._execute_fetch(worker_model)
-                    self.log.debug(self.format_log(f"完成任务状态: {worker_model.fetchStatus}"))
-                    should_requeue = self._should_requeue(worker_model)
-                finally:
-                    self.task_queue.task_done()
+            try:
+                async with self.sem:
+                    try:
+                        self.log.debug(self.format_log(f"开始处理任务: {worker_model.params}"))
+                        await self.on_worker_start(worker_model)
+                        worker_model.fetchStatus = await self._execute_fetch(worker_model)
+                        self.log.debug(self.format_log(f"完成任务状态: {worker_model.fetchStatus}"))
+                        should_requeue = self._should_requeue(worker_model)
+                    finally:
+                        self.task_queue.task_done()
 
-            if should_requeue:
-                self.log.debug(self.format_log(f"任务需要重试: {worker_model.params}"))
-                await self._handle_requeue(worker_model)
+                if should_requeue:
+                    self.log.debug(self.format_log(f"任务需要重试: {worker_model.params}"))
+                    await self._handle_requeue(worker_model)
+            except asyncio.CancelledError:
+                # 取消（如调度器"杀旧开新"）必须向上传播，此时不再触发统计回调，
+                # 否则 await 会立即被二次取消；task_done 已在内层 finally 中保证执行。
+                self.log.debug(self.format_log("worker 被取消，退出任务处理。"))
+                raise
+            except Exception as e:
+                # 兜底：任何未捕获异常都不能让 worker 协程静默退出（否则并发度永久 -1、
+                # 该任务也完全不进入统计）。标记失败后继续走统计回调。
+                self.log.exception(
+                    self.format_log(f"worker 处理任务异常: {worker_model.params}, {e!r}")
+                )
+                if worker_model.fetchStatus == WorkerStatus.pending:
+                    worker_model.fetchStatus = WorkerStatus.fail
 
             await self.on_worker_end(worker_model)
 
@@ -404,6 +421,16 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             await asyncio.sleep(self.worker_error_delay)
             return WorkerStatus.fail
 
+        if fetch_result is None:
+            # handle_fetch 未显式返回状态：按约定视为成功，但记录告警提醒补全返回值，
+            # 否则该任务永远不可能被判定为 nullData / fail，统计与停止条件都会失真。
+            self.log.warning(
+                self.format_log(
+                    f"handle_fetch 返回 None，已按成功处理，建议显式返回 WorkerStatus："
+                    f"{worker_model.params}"
+                )
+            )
+            return WorkerStatus.complete
         if not isinstance(fetch_result, WorkerStatus):
             return WorkerStatus.complete
         return fetch_result
@@ -418,8 +445,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         if status not in (WorkerStatus.fail, WorkerStatus.timeoutError):
             return False
 
+        # 注意：retry_count 只在 _handle_requeue 中自增一次，
+        # 此前在 _should_requeue 与 on_task_requeue 中各 +1，导致一轮重试被计成 2 次，
+        # 实际重试次数只有 max_retries 的一半。
         if self.max_retries < 0 or worker_model.retry_count < self.max_retries:
-            worker_model.retry_count += 1
             return True
 
         self.log.warning(
@@ -432,6 +461,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     async def _handle_requeue(self, worker_model: WorkerModel):
         """将任务重新入队（在信号量作用域外执行，避免死锁）。"""
         worker_model.fetchStatus = WorkerStatus.pending
+        worker_model.retry_count += 1
         await self.on_task_requeue(worker_model)
         await self.task_queue.put(worker_model)
 
@@ -468,6 +498,18 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         seqId = 0
         worker_model = WorkerModel(params=init_params, seqId=seqId)
+
+        # 重建任务队列：爬虫实例是复用的（调度器"杀旧开新"会 cancel 上一轮），
+        # 上一轮被中断时队列中可能残留未执行任务、且 unfinished_tasks 计数可能不为 0
+        # （cancel 打断在 get() 与 task_done() 之间时），残留会导致本轮统计被污染、
+        # 甚至下一轮 join() 永久等待。
+        leftover = self.task_queue.qsize()
+        if leftover:
+            self.log.warning(
+                self.format_log(f"发现上一轮残留任务 {leftover} 条，已丢弃并重建队列。")
+            )
+        self.task_queue = asyncio.Queue()
+
         await asyncio_gather(
             *[x.on_run_start(worker_model) for x in self._plugins], log=self.log
         )
@@ -527,8 +569,19 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             f"任务生成完成。正在等待剩余任务完成，当前活跃任务数：{len(task_set)}，队列大小：{self.task_queue.qsize()}"
         ))
         
-        # 等待队列中的所有任务被处理完毕
-        await self.task_queue.join()
+        # 等待队列中的所有任务被处理完毕。
+        # join() 与失败任务重排入队之间存在竞态：join 的等待 future 已被唤醒、但协程尚未
+        # 恢复时，worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务。
+        # 因此 join 返回后再确认队列确实为空，不为空则补一次等待。
+        while True:
+            await self.task_queue.join()
+            if self.task_queue.empty():
+                break
+            self.log.debug(
+                self.format_log(
+                    f"join 后仍有 {self.task_queue.qsize()} 个任务，继续等待（重排竞态）。"
+                )
+            )
         
         # 发送哨兵值通知所有 worker 退出
         # 发送 worker_count 个哨兵值，确保所有 worker 都能收到退出信号

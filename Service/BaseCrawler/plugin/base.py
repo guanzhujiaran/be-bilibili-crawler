@@ -46,6 +46,19 @@ class CrawlerPlugin(BaseModel, ABC, Generic[ParamsType]):
         """
         return None
 
+    async def on_task_requeue(self, worker_model: WorkerModel) -> Any:
+        """
+        任务失败/超时后被重新入队时触发（在 on_worker_end 之前）。
+
+        用途：
+        - 区分「本次尝试失败但会重试」与「最终失败」，避免统计把待重试任务算成失败
+        - 修改重试时的参数（也可在爬虫的 on_task_requeue 中处理）
+
+        注意：
+        - 此时 worker_model.fetchStatus 已被重置为 pending，retry_count 已 +1
+        """
+        return None
+
     async def should_stop_check(self) -> bool:
         """
         在每次生成新的 key_param 之前，检查是否应该停止。
