@@ -32,6 +32,13 @@ from Utils.推送.PushMe import a_push_error
 # 繁体转简体转换器（线程安全，可全局复用）
 _t2s_converter = opencc.OpenCC("t2s.json")
 
+# 全部 LLM 均失败时的等比退避重试参数
+# 等待时间按等比数列（公比 _RETRY_DELAY_FACTOR）递增，到 _RETRY_MAX_DELAY 后维持上限，
+# 持续重试直至某一次 LLM 调用成功为止，不再“放弃并跳过保存”。
+_RETRY_BASE_DELAY = 10    # 首次重试等待（秒）
+_RETRY_DELAY_FACTOR = 2   # 等比数列公比
+_RETRY_MAX_DELAY = 600    # 重试等待上限（秒）
+
 
 class PrizeExtractResp(BaseModel):
     """抽奖信息提取返回内容（result 的类型随目标数据库不同而不同）"""
@@ -86,10 +93,10 @@ async def _push_cloud_unavailable_error(exc: Exception) -> None:
     """云端 LLM 全部不可用/失败时推送错误告警（由 PushMe 内部限流/去重）"""
     try:
         await a_push_error(
-            subject="云端LLM抽奖判断不可用",
+            subject="云端LLM抽奖判断不可用（重试中）",
             content=(
-                "云端 LLM 当前全部不可用，抽奖判断（含大奖判断）将跳过保存，"
-                "相关记录留空，请检查云端 LLM 配置或可用性，稍后由手动脚本 judge_grand_prize 回填。\n"
+                "云端 LLM 当前全部不可用，抽奖判断（含大奖判断）将持续等比退避重试，"
+                f"等待上限 {_RETRY_MAX_DELAY}s，不会跳过保存。请检查云端 LLM 配置或可用性。\n"
                 f"错误类型：{type(exc).__name__}\n"
                 f"错误信息：{exc}\n"
                 f"错误堆栈：\n{traceback.format_exc()}"
@@ -144,42 +151,57 @@ async def _do_extract(
             await _push_cloud_unavailable_error(e)
             raise
 
+    # 全部 LLM 均失败时采用等比退避持续重试：等待时间按等比数列递增，
+    # 到 _RETRY_MAX_DELAY 后维持上限，直至某一次调用成功为止，不“放弃并跳过保存”。
+    # （示例序列：10s → 20s → 40s → ... → 300s → 300s → ...）
     last_err: Exception | None = None
-    for idx, llm in enumerate(all_llms):
-        try:
-            msg_content = system_prompt or _build_system_prompt(dyn_publish_time)
-            structured_llm = llm.with_structured_output(result_model)
-            messages = [
-                {"role": "system", "content": msg_content},
-                {"role": "user", "content": text},
-            ]
-            result = await structured_llm.ainvoke(
-                messages,
-                extra_body={
-                    "chat_template_kwargs": {"enable_thinking": False},
-                    "thinking": {"type": "disabled"},
-                },
-            )
-            logger.info(
-                f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}"
-            )
-            return PrizeExtractResp(
-                dyn_content=text, consume_time=time.time() - start_ts, result=result
-            )
-        except Exception as e:
-            logger.error(
-                f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
-                f"（{type(e).__name__}: {e}），等待10s后尝试下一个"
-            )
-            last_err = e
-            await asyncio.sleep(10)
-            continue
+    retry_delay = _RETRY_BASE_DELAY
+    alerted = False
+    while True:
+        for idx, llm in enumerate(all_llms):
+            try:
+                msg_content = system_prompt or _build_system_prompt(dyn_publish_time)
+                structured_llm = llm.with_structured_output(result_model)
+                messages = [
+                    {"role": "system", "content": msg_content},
+                    {"role": "user", "content": text},
+                ]
+                result = await structured_llm.ainvoke(
+                    messages,
+                    extra_body={
+                        "chat_template_kwargs": {"enable_thinking": False},
+                        "thinking": {"type": "disabled"},
+                    },
+                )
+                logger.info(
+                    f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}"
+                )
+                return PrizeExtractResp(
+                    dyn_content=text,
+                    consume_time=time.time() - start_ts,
+                    result=result,
+                )
+            except Exception as e:
+                logger.error(
+                    f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
+                    f"（{type(e).__name__}: {e}），尝试下一个"
+                )
+                last_err = e
+                continue
 
-    # 全部免费 LLM 均失败：不再回退，直接抛错，由调用方跳过保存
-    await _push_cloud_unavailable_error(
-        last_err or RuntimeError("全部免费 LLM 均调用失败")
-    )
-    raise RuntimeError(f"全部 {len(all_llms)} 个免费 LLM 均调用失败") from last_err
+        # 本轮所有 LLM 均失败：仅告警一次，然后按等比退避等待并继续重试
+        if not alerted:
+            await _push_cloud_unavailable_error(
+                last_err or RuntimeError("全部免费 LLM 均调用失败")
+            )
+            alerted = True
+        logger.warning(
+            f"本轮 {len(all_llms)} 个免费 LLM 均失败了，"
+            f"{retry_delay}s 后重试（等比退避，上限 {_RETRY_MAX_DELAY}s），"
+            f"最近错误：{type(last_err).__name__}: {last_err}"
+        )
+        await asyncio.sleep(retry_delay)
+        retry_delay = min(retry_delay * _RETRY_DELAY_FACTOR, _RETRY_MAX_DELAY)
 
 
 # ================================================================

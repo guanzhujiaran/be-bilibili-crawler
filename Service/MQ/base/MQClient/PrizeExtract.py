@@ -12,30 +12,21 @@
 - 具体落库目标由消息体里的自定义参数类 PrizeExtractParams.target_db 决定。
 """
 
-from bili_common.models import StrEnumAutoDoc
 import asyncio
 import time
-import traceback
-from datetime import datetime
-from faststream.rabbit.fastapi import RabbitMessage
-from log.base_log import MQ_logger
-from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
-from Utils.推送.PushMe import a_push_error
-from CONFIG import CONFIG, settings
 
-from Service.MQ.base.MQClient.base import (
-    BaseFastStreamMQ,
-    prize_extract_biliopus_mq_prop,
-    prize_extract_dyndetail_mq_prop,
-)
-from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
+from bili_common.models import StrEnumAutoDoc
+from faststream.rabbit.fastapi import RabbitMessage
+
+from CONFIG import CONFIG, settings
+from log.base_log import MQ_logger
 from Models.MQ.PrizeExtractMQModel import (
     PrizeExtractParams,
     PrizeExtractTargetEnum,
 )
 from Models.MQ.PrizeExtractResult import (
-    PrizeExtractResult,
     OfficialPrizeExtractResult,
+    PrizeExtractResult,
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     extract_prize_info_for_biliopusdb,
@@ -45,6 +36,14 @@ from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
 )
+from Service.MQ.base.MQClient.base import (
+    BaseFastStreamMQ,
+    prize_extract_biliopus_mq_prop,
+    prize_extract_dyndetail_mq_prop,
+)
+from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
+from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
+from Utils.推送.PushMe import a_push_error
 
 
 # ============ 异常兜底（与 BiliLotDataFastStream.handle_exception 一致）============

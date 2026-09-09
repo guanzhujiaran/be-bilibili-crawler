@@ -33,6 +33,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     TimePresetEnum,
     LotteryFilterParamsResp,
     CommonLotExtraInfoResp,
+    OfficialLotExtraInfoResp,
 )
 from bili_common.models import (
     LotteryPaginationParams,
@@ -42,6 +43,8 @@ from bili_common.models import (
 )
 from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
+    LotteryDetailResp,
+    GetLotteryDetailReq,
 )
 from Models.v1.background_service.background_service_model import (
     AllLotScrapyStatusResp,
@@ -54,7 +57,9 @@ from Service.LangChainCompo.text_embed import (
     search_lottery_text,
 )
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.lottery_database.bili_lotterty import (
+    bos,
     get_reserve_lottery,
     get_official_lottery,
     get_all_lottery,
@@ -71,6 +76,7 @@ from Utils.通用.Common import asyncio_gather
 from Utils.网关.gateway_auth import require_gateway_login, GatewayUserInfo
 from ApiRoutes import RouterPaths, RouterNames
 from fastapi import BackgroundTasks
+from sqlalchemy import select
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 
 from .base import new_router
@@ -623,3 +629,42 @@ async def api_GetLotteryFilterParams():
         ),
     ]
     return CommonResponseModel(data=LotteryFilterParamsResp(endpoints=endpoints))
+
+
+@router.post(
+    RouterPaths.GET_LOTTERY_DETAIL,
+    name=RouterNames.GET_LOTTERY_DETAIL,
+    summary="按 lottery_id 获取单个抽奖卡片详情",
+    response_model=CommonResponseModel[LotteryDetailResp],
+    response_model_exclude_none=True,
+    description="""供前端抽奖卡片详情页（/app/lot-data/card-detail?id=）按规范互动资源 ID
+（dyndetail.lotdata.lottery_id）拉取完整卡片数据：lotdata 原始行 + t_lot_extra_info 附加信息，
+形态与 GetOfficialLottery 列表项的 raw + extra_info 对齐，前端可直接 normalizeLotteryData 渲染。
+注意：预约 sid（business_id）/ 天选 lot_id / 第三方 dynId 均不是本接口的合法入参。""",
+)
+@cache(expire=60)
+async def api_GetLotteryDetail(params: GetLotteryDetailReq):
+    async with grpc_sql_helper.async_session() as session:
+        row = (
+            await session.execute(
+                select(Lotdata).where(Lotdata.lottery_id == params.lottery_id).limit(1)
+            )
+        ).scalar_one_or_none()
+    if row is None:
+        return CommonResponseModel(code=404, msg="抽奖不存在", data=None)
+    # extra_info 单独批量查（与主表解耦），仅落库 is_grand_prize，
+    # lottery_type 等与 GetOfficialLottery 同口径由 OfficialLotExtraInfoResp 计算
+    _ei = (await bos.get_extra_info_map([params.lottery_id])).get(params.lottery_id)
+    return CommonResponseModel(
+        data=LotteryDetailResp(
+            raw=LotdataResp.model_validate(row),
+            extra_info=(
+                OfficialLotExtraInfoResp(
+                    lottery_type=row.business_type,
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                )
+                if _ei
+                else None
+            ),
+        )
+    )

@@ -223,6 +223,27 @@ class OfficialLotExtraInfoResp(BaseModel):
         return self.lottery_type == _BUSINESS_TYPE_OFFICIAL
 
 
+class LotteryDetailResp(BaseModel):
+    """单条抽奖卡片详情响应（前端卡片详情页按 lottery_id 拉取完整卡片数据）。
+
+    raw 为 lotdata 原始行（LotdataResp 形态，与 GetOfficialLottery 列表项的 raw 一致），
+    extra_info 为 t_lot_extra_info 附加信息；前端 normalizeLotteryData 解包 raw 渲染完整卡片。
+    注意：不直接从 Lotdata ORM 行构建本模型——ORM 同名 `extra_info` 关系会触发懒加载
+    （DetachedInstanceError），因此 raw 单独经 LotdataResp.model_validate(行) 映射列字段。
+    """
+
+    raw: LotdataResp
+    extra_info: OfficialLotExtraInfoResp | None = Field(
+        default=None, description="抽奖附加信息（对应 t_lot_extra_info 表）"
+    )
+
+
+class GetLotteryDetailReq(BaseModel):
+    """按 lottery_id 获取单个抽奖卡片详情的请求体。"""
+
+    lottery_id: int = Field(description="lotdata 主键 lottery_id（对外互动资源 ID）")
+
+
 class CommonLotExtraInfoResp(BaseModel):
     """普通/第三方抽奖附加信息 — 对应数据库 t_lot_extra_info 表中 lot_type=common 的记录
 
