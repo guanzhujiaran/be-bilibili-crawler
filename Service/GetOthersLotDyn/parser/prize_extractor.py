@@ -15,6 +15,8 @@
 - 采样参数通过 get_all_free_llms() 关键字参数传入
 """
 
+from typing import TypeVar, Generic
+
 from langchain_openai import ChatOpenAI
 import asyncio
 import json
@@ -29,23 +31,28 @@ from Models.MQ.PrizeExtractResult import PrizeExtractResult, OfficialPrizeExtrac
 from Service.llm_service import get_all_free_llms, SamplingPreset
 from Utils.推送.PushMe import a_push_error
 
+T = TypeVar("T")
+# _do_extract 的结果模型类型：随调用入口在两种结果模型间切换
+_TResult = TypeVar(
+    "_TResult", bound=PrizeExtractResult | OfficialPrizeExtractResult
+)
 # 繁体转简体转换器（线程安全，可全局复用）
 _t2s_converter = opencc.OpenCC("t2s.json")
 
 # 全部 LLM 均失败时的等比退避重试参数
 # 等待时间按等比数列（公比 _RETRY_DELAY_FACTOR）递增，到 _RETRY_MAX_DELAY 后维持上限，
 # 持续重试直至某一次 LLM 调用成功为止，不再“放弃并跳过保存”。
-_RETRY_BASE_DELAY = 10    # 首次重试等待（秒）
-_RETRY_DELAY_FACTOR = 2   # 等比数列公比
-_RETRY_MAX_DELAY = 600    # 重试等待上限（秒）
+_RETRY_BASE_DELAY = 10  # 首次重试等待（秒）
+_RETRY_DELAY_FACTOR = 2  # 等比数列公比
+_RETRY_MAX_DELAY = 600  # 重试等待上限（秒）
 
 
-class PrizeExtractResp(BaseModel):
+class PrizeExtractResp(BaseModel, Generic[T]):
     """抽奖信息提取返回内容（result 的类型随目标数据库不同而不同）"""
 
     dyn_content: str = Field(description="原始文本内容")
     consume_time: float = Field(description="处理耗时，单位秒")
-    result: BaseModel = Field(description="抽奖信息提取结果")
+    result: T = Field(description="抽奖信息提取结果")
 
     def __post_init__(self):
         self.dyn_content = json.dumps(self.dyn_content)
@@ -111,9 +118,9 @@ async def _do_extract(
     dyn_content: str,
     dyn_publish_time: datetime | None = None,
     chat_openai_client: ChatOpenAI | None = None,
-    result_model: type[BaseModel] = PrizeExtractResult,
+    result_model: type[_TResult],
     system_prompt: str | None = None,
-) -> PrizeExtractResp:
+) -> PrizeExtractResp[_TResult]:
     """一次性提取抽奖相关信息（内部共享实现）
 
     仅使用云端 LLM 进行抽奖判断，不再使用本地大模型，也不做任何回退
@@ -143,9 +150,7 @@ async def _do_extract(
         all_llms = [chat_openai_client]
     else:
         try:
-            all_llms = get_all_free_llms(
-                **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256),
-            )
+            all_llms = get_all_free_llms()
         except RuntimeError as e:
             # 未配置任何云端 LLM：不再回退，直接抛错
             await _push_cloud_unavailable_error(e)
@@ -159,6 +164,9 @@ async def _do_extract(
     alerted = False
     while True:
         for idx, llm in enumerate(all_llms):
+            llm = llm.bind(
+                **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256)
+            )
             try:
                 msg_content = system_prompt or _build_system_prompt(dyn_publish_time)
                 structured_llm = llm.with_structured_output(result_model)
@@ -214,7 +222,7 @@ async def extract_prize_info_for_biliopusdb(
     dyn_content: str,
     dyn_publish_time: datetime | None = None,
     chat_openai_client: ChatOpenAI | None = None,
-) -> PrizeExtractResp:
+) -> PrizeExtractResp[PrizeExtractResult]:
     """
     面向 biliopusdb (普通抽奖动态) 的抽奖信息提取。
 
@@ -231,6 +239,7 @@ async def extract_prize_info_for_biliopusdb(
         dyn_content=dyn_content,
         dyn_publish_time=dyn_publish_time,
         chat_openai_client=chat_openai_client,
+        result_model=PrizeExtractResult,
     )
 
 
@@ -238,7 +247,7 @@ async def extract_prize_info_for_lotdata(
     *,
     dyn_content: str,
     chat_openai_client: ChatOpenAI | None = None,
-) -> PrizeExtractResp:
+) -> PrizeExtractResp[OfficialPrizeExtractResult]:
     """
     面向 dyndetail (官方/充电抽奖) 的抽奖信息提取。
 

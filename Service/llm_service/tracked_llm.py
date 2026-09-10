@@ -27,26 +27,7 @@ RATE_WINDOW_SECONDS = 60.0
 
 # 全局共享的 LLM 调用锁：所有 TrackedChatOpenAI 实例共用同一把锁，
 # 保证任意时刻只有一个 LLM 请求真正打到上游，消除账户级并发超限（429/1302）。
-_LLM_GLOBAL_LOCK: "asyncio.Lock | None" = None
-
-
-def _get_llm_global_lock() -> "asyncio.Lock | None":
-    """获取全局 LLM 锁。
-
-    仅在事件循环已运行时返回锁；无运行中 loop 时返回 None，
-    避免同步 invoke 路径在 throttling 场景触发
-    RuntimeError: no running event loop。
-    """
-    global _LLM_GLOBAL_LOCK
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        return None
-    if not loop.is_running():
-        return None
-    if _LLM_GLOBAL_LOCK is None:
-        _LLM_GLOBAL_LOCK = asyncio.Lock()
-    return _LLM_GLOBAL_LOCK
+_LLM_GLOBAL_LOCK = asyncio.Lock()
 
 
 class LLMUsageStats(BaseModel):
@@ -61,7 +42,9 @@ class LLMUsageStats(BaseModel):
     success_count: int = Field(default=0, description="成功次数")
     failure_count: int = Field(default=0, description="失败次数")
     consecutive_failures: int = Field(default=0, description="连续失败次数")
-    total_elapsed_seconds: float = Field(default=0.0, description="成功调用累计耗时（秒）")
+    total_elapsed_seconds: float = Field(
+        default=0.0, description="成功调用累计耗时（秒）"
+    )
     last_used_at: float | None = Field(
         default=None, description="最后一次发起调用的 unix 时间戳"
     )
@@ -70,9 +53,7 @@ class LLMUsageStats(BaseModel):
     output_tokens: int = Field(default=0, description="累计输出（completion）token 数")
     total_tokens: int = Field(default=0, description="累计消耗 token 总数")
 
-    _recent_calls: deque[float] = PrivateAttr(
-        default_factory=lambda: deque(maxlen=512)
-    )
+    _recent_calls: deque[float] = PrivateAttr(default_factory=lambda: deque(maxlen=512))
 
     @computed_field(description="是否可用：连续失败未达到阈值即视为可用")  # type: ignore[prop-decorator]
     @property
@@ -194,24 +175,22 @@ class TrackedChatOpenAI(ChatOpenAI):
         *,
         stop: list[str] | None = None,
         **kwargs: Any,
-    ) -> Any:
+    ) -> AIMessage:
         self._stats.record_start()
         start = time.monotonic()
         # 所有 LLM 共享一把全局锁：持有期间串行化上游请求，消除账户级并发超限。
-        lock = _get_llm_global_lock()
         try:
-            if lock is not None:
-                async with lock:
-                    result = await super().ainvoke(input, config, stop=stop, **kwargs)
-            else:
-                result = await super().ainvoke(input, config, stop=stop, **kwargs)
+            async with _LLM_GLOBAL_LOCK:
+                result: AIMessage = await super().ainvoke(
+                    input, config, stop=stop, **kwargs
+                )
         except BaseException as e:
             self._stats.record_failure(e)
-            logger.warning(
-                "LLM 调用失败 model={} base_url={} stats={}",
-                self.model_name,
-                self.openai_api_base,
-                self._stats.model_dump(),
+            logger.error(
+                f"LLM 调用失败\n{e}" 
+                f"model={ self.model_name}"
+                f"base_url={self.openai_api_base}"
+                f"stats={self._stats.model_dump()}",
             )
             raise
         self._stats.record_success(

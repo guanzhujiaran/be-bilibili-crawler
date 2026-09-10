@@ -34,6 +34,8 @@ from controller.v1.mq import mq_controller as MQController
 from controller.v1.mq.rpc_info_controller import router as RpcInfoRouter
 from controller.v1.samsClub import samsClubController
 from controller.v1.captcha import captchaController
+from bili_common.exceptions import register_http_exception_handlers
+from bili_common.middlewares import add_error_status_middleware
 from bili_common.models.response import StandardResponse as CommonResponseModel
 from controller.v1.lotttery_database.bili.zhuanlan import zhuanlanController
 
@@ -58,6 +60,12 @@ app.include_router(captchaController.router)
 app.include_router(samsClubController.router)
 app.include_router(zhuanlanController.router)
 FastAPICache.init(InMemoryBackend(), prefix="fastapi-cache")
+
+# 统一错误响应：HTTP 异常（404/405…）与参数校验失败统一为 {code, msg, data} + 非 200 状态码
+# （Exception 兜底仍在下方 base_error_handler，保留告警推送）。
+register_http_exception_handlers(app)
+# 兜底：业务代码里「HTTP 200 + 非 0 业务码」的响应统一改写成非 200 状态码。
+add_error_status_middleware(app)
 
 
 @app.middleware("http")

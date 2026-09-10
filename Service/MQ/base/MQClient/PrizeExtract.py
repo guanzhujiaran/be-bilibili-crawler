@@ -30,7 +30,7 @@ from Models.MQ.PrizeExtractResult import (
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     extract_prize_info_for_biliopusdb,
-    extract_prize_info_for_lotdata,
+    extract_prize_info_for_lotdata, PrizeExtractResp,
 )
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
@@ -178,7 +178,7 @@ async def _do_extract_and_store(
         if lottery_id is None:
             MQ_logger.warning(f"【dyndetail】缺少 lottery_id，跳过提取: {params}")
             return PrizeExtractResult()
-        result = await extract_prize_info_for_lotdata(dyn_content=params.lottery_text)
+        result: PrizeExtractResp[OfficialPrizeExtractResult] = await extract_prize_info_for_lotdata(dyn_content=params.lottery_text)
         await grpc_sql_helper.save_extra_info(
             lottery_id=lottery_id,
             is_grand_prize=int(result.result.is_grand_prize),

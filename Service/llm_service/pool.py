@@ -11,6 +11,9 @@
 若未配置任何云端 API，get_all_free_llms() 会抛出 RuntimeError，由调用方捕获。
 """
 
+from Service.llm_service import SamplingPreset
+from Service.llm_service.tracked_llm import TrackedChatOpenAI
+
 from typing import Any
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
@@ -18,10 +21,6 @@ from pydantic import SecretStr
 
 from CONFIG import settings
 
-from .tracked_llm import TrackedChatOpenAI
-
-# 使用模块级缓存：仅当 llm_apis 配置发生变化时才重建实例，避免重复建连、
-# 同时保证统计信息（TrackedChatOpenAI.stats）跨调用累积。
 _free_llm_cache: list[TrackedChatOpenAI] = []
 _free_llm_cache_key: str = ""
 
@@ -101,7 +100,7 @@ def _map_kwargs_for_openai(kwargs: dict[str, Any]) -> dict[str, Any]:
     return mapped
 
 
-def get_all_free_llms(**kwargs: Any) -> list[Any]:
+def get_all_free_llms() -> list[TrackedChatOpenAI]:
     """返回当前所有云端(免费) LLM 实例（已按轮询顺序旋转，并应用采样参数）。
 
     可用的实例（stats.available 为 True）排在前面；不可用实例不剔除，
@@ -122,9 +121,7 @@ def get_all_free_llms(**kwargs: Any) -> list[Any]:
     ordered = [llm for llm in rotated if llm.available] + [
         llm for llm in rotated if not llm.available
     ]
-    openai_kwargs = _map_kwargs_for_openai(kwargs)
-    if openai_kwargs:
-        return [llm.bind(**openai_kwargs) for llm in ordered]
+
     return list(ordered)
 
 
@@ -138,3 +135,16 @@ def get_llm_stats() -> list[dict[str, Any]]:
         }
         for llm in _get_free_llms()
     ]
+
+
+if __name__ == "__main__":
+
+    async def _test():
+
+        llms = get_all_free_llms()
+        llm = llms[0]
+        llm.bind(**SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256))
+        res = await llm.ainvoke("1+1=?")
+        print(res)
+    import asyncio
+    asyncio.run(_test())
