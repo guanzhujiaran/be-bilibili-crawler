@@ -9,6 +9,9 @@
 全部失败时再决定回退到正则判断（由调用方控制）。
 
 若未配置任何云端 API，get_all_free_llms() 会抛出 RuntimeError，由调用方捕获。
+
+支持运行时热更新：set_llm_apis() 可在线替换 settings.llm_apis 并立即重建实例池
+（get_llm_configs() 读取当前配置，token 已脱敏），对应内部接口 GET/POST /llm/config。
 """
 
 from Service.llm_service import SamplingPreset
@@ -19,7 +22,7 @@ from typing import Any
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from pydantic import SecretStr
 
-from CONFIG import settings
+from CONFIG import LLMApiConfig, LLMApiConfigPatch, settings
 
 _free_llm_cache: list[TrackedChatOpenAI] = []
 _free_llm_cache_key: str = ""
@@ -50,15 +53,20 @@ def _build_free_llms() -> list[TrackedChatOpenAI]:
     return llms
 
 
-def _get_free_llms() -> list[TrackedChatOpenAI]:
-    """获取云端 LLM 实例列表（带缓存，配置变化自动失效）"""
-    global _free_llm_cache, _free_llm_cache_key
-    key = str(
+def _config_key() -> str:
+    """当前 llm_apis 的指纹：配置变化时用于自动失效实例缓存"""
+    return str(
         [
             (c.base_url, c.model_name, c.token, c.requests_per_second)
             for c in settings.llm_apis
         ]
     )
+
+
+def _get_free_llms() -> list[TrackedChatOpenAI]:
+    """获取云端 LLM 实例列表（带缓存，配置变化自动失效）"""
+    global _free_llm_cache, _free_llm_cache_key
+    key = _config_key()
     if _free_llm_cache_key != key:
         _free_llm_cache = _build_free_llms()
         _free_llm_cache_key = key
@@ -135,6 +143,113 @@ def get_llm_stats() -> list[dict[str, Any]]:
         }
         for llm in _get_free_llms()
     ]
+
+
+def _mask_token(token: str) -> str:
+    """token 脱敏：仅保留首尾少量字符，避免接口直接回显明文密钥"""
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "****"
+    return f"{token[:4]}****{token[-4:]}"
+
+
+def get_llm_configs() -> list[dict[str, Any]]:
+    """导出当前云端 LLM 配置（token 已脱敏），供内部配置接口读取"""
+    return [
+        {
+            "base_url": cfg.base_url,
+            "model_name": cfg.model_name,
+            "token": _mask_token(cfg.token),
+            "requests_per_second": cfg.requests_per_second,
+        }
+        for cfg in settings.llm_apis
+    ]
+
+
+def set_llm_apis(apis: list[LLMApiConfig]) -> list[dict[str, Any]]:
+    """在线替换云端 LLM 配置并立即生效（无需重启服务）。
+
+    - 仅修改运行时内存中的 settings.llm_apis，不写回 .env 文件，重启后回退为环境变量配置。
+    - 立即重建实例池（不等待下一次调用），使新配置即时生效；
+      若重建失败则回滚到原配置并抛出异常，避免留下「改一半」的坏状态。
+    - 校验：每个配置项必须同时提供 base_url 与 model_name。
+
+    返回：更新后的配置（token 已脱敏）。
+    """
+    invalid = [
+        f"[{i}]"
+        for i, cfg in enumerate(apis)
+        if not cfg.base_url or not cfg.model_name
+    ]
+    if invalid:
+        raise ValueError(
+            f"llm_apis 配置非法：第 {', '.join(invalid)} 项缺少 base_url 或 model_name"
+        )
+
+    global _free_llm_cache, _free_llm_cache_key
+    old_apis = settings.llm_apis
+    old_cache, old_key = _free_llm_cache, _free_llm_cache_key
+    settings.llm_apis = list(apis)
+    try:
+        _free_llm_cache = _build_free_llms()
+        _free_llm_cache_key = _config_key()
+    except Exception:
+        # 回滚，保证「改一半失败」不会污染当前运行配置
+        settings.llm_apis = old_apis
+        _free_llm_cache, _free_llm_cache_key = old_cache, old_key
+        raise
+    return get_llm_configs()
+
+
+def _validate_index(index: int) -> None:
+    """校验索引合法；越界抛 IndexError（由控制器转 404）"""
+    total = len(settings.llm_apis)
+    if not 0 <= index < total:
+        raise IndexError(f"索引越界：当前共 {total} 条配置，index={index}")
+
+
+def get_llm_config(index: int) -> dict[str, Any]:
+    """读取指定索引的单条云端 LLM 配置（token 已脱敏）"""
+    _validate_index(index)
+    return get_llm_configs()[index]
+
+
+def create_llm_api(cfg: LLMApiConfig) -> list[dict[str, Any]]:
+    """新增一条云端 LLM 配置（追加到列表末尾），返回更新后的完整配置列表"""
+    return set_llm_apis([*settings.llm_apis, cfg])
+
+
+def update_llm_api(index: int, cfg: LLMApiConfig) -> list[dict[str, Any]]:
+    """整体更新指定索引的单条配置，返回更新后的完整配置列表"""
+    _validate_index(index)
+    apis = list(settings.llm_apis)
+    apis[index] = cfg
+    return set_llm_apis(apis)
+
+
+def patch_llm_api(index: int, patch: LLMApiConfigPatch) -> list[dict[str, Any]]:
+    """部分更新指定索引的单条配置（未传字段保持原值），返回更新后的完整配置列表"""
+    _validate_index(index)
+    apis = list(settings.llm_apis)
+    merged = apis[index].model_dump()
+    merged.update(
+        {
+            k: v
+            for k, v in patch.model_dump(exclude_unset=True).items()
+            if v is not None
+        }
+    )
+    apis[index] = LLMApiConfig(**merged)
+    return set_llm_apis(apis)
+
+
+def delete_llm_api(index: int) -> list[dict[str, Any]]:
+    """删除指定索引的单条配置，返回剩余配置列表（空列表表示已清空全部）"""
+    _validate_index(index)
+    apis = list(settings.llm_apis)
+    del apis[index]
+    return set_llm_apis(apis)
 
 
 if __name__ == "__main__":

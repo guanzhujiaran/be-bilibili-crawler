@@ -3175,7 +3175,9 @@ class GetProxyMethods(UnlimitedCrawler[ProxyParams]):
             else:
                 self.get_proxy_timestamp = time.time()
                 self.GetProxy_Flag = True
-        self.log.critical(
+        # 常规的周期性获取代理，属正常流程，用 debug 记录即可，
+        # 避免污染 CRITICAL 级别（只应保留真正的严重故障）。
+        self.log.debug(
             f'开始获取代理\t上次获取代理时间：{datetime.fromtimestamp(self.get_proxy_timestamp)}\t{datetime.now()}')
         proxy_list = []
         funcs = inspect.getmembers(get_proxy_methods, predicate=inspect.iscoroutinefunction)

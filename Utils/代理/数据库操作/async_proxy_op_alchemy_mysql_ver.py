@@ -29,29 +29,29 @@ from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
 MIN_REFRESH_SUCCESS_TIME = -3  # 最低允许刷新状态的代理获取请求成功次数
 MIN_REFRESH_SCORE = 0  # 最低允许刷新状态的代理分数
 DEFAULT_CHUNK_SIZE = 1000  # Adjust as needed
+# zset 与 MySQL 短暂不一致时，最多换几个候选代理（每次都把自己剔除）
+ZSET_ZOMBIE_MAX_RETRY = 3
+# 整点重建 zset 的最低条数门槛：低于它宁可不动，避免把代理池清空
+ZSET_MIN_REBUILD_SIZE = 300
 
 database = CONFIG.database
 
 
 class SubRedisStore(RedisManagerBase):
+    """代理相关的 Redis 缓存（方案 C：只保留 zset + 变更缓冲）。
+
+    Redis 只保存「代理串 → 分数」的 zset 作为唯一的代理索引，代理明细一律回
+    MySQL 按 ``proxy_tab.computed_proxy_str``（带索引的持久化生成列）等值查。
+    原先的 ``bili_proxy_available_hm`` / ``bili_proxy_black_hm`` 各存一份 160 万条
+    整行 JSON，约占 600MB 内存，已废弃；上线后需手动 ``DEL`` 掉这两把 key。
+    """
+
     class RedisMap(StrEnumAutoDoc):
-        bili_proxy_available_hm = (
-            "bili_proxy_available_hm"  # 存放可用代理的hash表（虽说是可用，但是还没确认
-        )
-        bili_proxy_black_hm = "bili_proxy_black_hm"  # 存放黑名单的hash表
-        bili_proxy_changed_hm = "bili_proxy_changed_hm"  # 存放代理发生变化的hash表
+        bili_proxy_changed_hm = "bili_proxy_changed_hm"  # 待回写 MySQL 的代理变更
         bili_proxy_sync_ts = f"sync_ts:bili_proxy"
         bili_proxy_zset = (
-            "zset_bili_proxy"  # 有序集合类型数据的字符前缀，里面只存放可用的代理
+            "zset_bili_proxy"  # 有序集合，member=代理串，score=分数（唯一代理索引）
         )
-
-    async def get_bili_proxy_all_num(self):
-        return await self.get_bili_proxy_black_num() + await self._hlen(
-            self.RedisMap.bili_proxy_available_hm.value
-        )
-
-    async def get_bili_proxy_black_num(self):
-        return await self._hlen(self.RedisMap.bili_proxy_black_hm.value)
 
     def __init__(self):
         super().__init__(db=database.proxySubRedis.db)
@@ -70,63 +70,151 @@ class SubRedisStore(RedisManagerBase):
                 break
         return count
 
-    def dict_2_model(self, d: dict) -> ProxyTab:
-        return ProxyTab(**d)
+    @staticmethod
+    def to_proxy_key(proxy_info_dict: dict | str) -> str | None:
+        """代理字典 / JSON 串 → 代理串。
 
-    def _gen_proxy_key(
-        self,
-        proxy_info_dict: dict | str,
-        is_black: bool = False,
-        is_changed: bool = False,
-    ):
-        """
-
-        :param proxy_info_dict:{http:xxx,https:xxx,socks5:xxx,sock5:xxx}
-        :return:
+        口径必须与 ``proxy_tab.computed_proxy_str`` 生成列一致（即代理 JSON 对象
+        第一个 key 的 value），否则按串等值查不到任何行。
         """
         try:
             if isinstance(proxy_info_dict, str):
                 proxy_info_dict = json.loads(proxy_info_dict)
-            inner_key = get_scheme_ip_port_form_proxy_dict(proxy_info_dict)
-        except Exception as e:
-            inner_key = str(proxy_info_dict)
-        if is_black:
-            # return f'{self.RedisMap.bili_proxy_black.value}:{inner_key}'
-            return self.RedisMap.bili_proxy_black_hm.value, inner_key
-        if is_changed:
-            # return f'{self.RedisMap.bili_proxy_changed.value}:{inner_key}'
-            return self.RedisMap.bili_proxy_changed_hm.value, inner_key
-        # return f'{self.RedisMap.bili_proxy.value}:{inner_key}'
-        return self.RedisMap.bili_proxy_available_hm.value, inner_key
+            return get_scheme_ip_port_form_proxy_dict(proxy_info_dict)
+        except Exception:
+            return str(proxy_info_dict)
 
-    @log_sql_retry_wrapper()
-    async def sync_2_redis(self, proxy_infos: List[ProxyTab]):
+    # ---------------- 变更缓冲（待回写 MySQL） ----------------
+
+    async def redis_get_all_changed_proxy(self) -> List[ProxyTab]:
+        all_changed_proxy_dict = await self._hgetall(
+            self.RedisMap.bili_proxy_changed_hm.value
+        )
+        ret_list = []
+        for k, v in all_changed_proxy_dict.items():
+            ret_list.append(ProxyTab(**json.loads(v)))
+        del all_changed_proxy_dict
+        return ret_list
+
+    async def redis_get_changed_proxy(
+        self, proxy_info_dict: dict | str
+    ) -> ProxyTab | None:
+        """读取「本同步周期内已变更过」的代理，可作为增量累加的基础值"""
+        proxy_key = self.to_proxy_key(proxy_info_dict)
+        if not proxy_key:
+            return None
+        value = await self._hmget(
+            self.RedisMap.bili_proxy_changed_hm.value, proxy_key
+        )
+        if value:
+            return ProxyTab(**json.loads(value))
+        return None
+
+    # ---------------- zset（唯一代理索引） ----------------
+
+    async def redis_bili_proxy_zset_count(self) -> int:
+        total_count = await self._zcard(key=self.RedisMap.bili_proxy_zset.value)
+        return int(total_count) if total_count else 0
+
+    async def redis_select_one_proxy_key(self) -> str | None:
+        """从 zset 随机取一个代理串（可能已不在 MySQL，由调用方校验并剔除）"""
+        if await self.redis_bili_proxy_zset_count() <= 300:
+            return None
+        rand_members = await self._zrand_member(
+            key=self.RedisMap.bili_proxy_zset.value, count=1
+        )
+        if rand_members and isinstance(rand_members, list) and len(rand_members) > 0:
+            return rand_members[0]
+        return None
+
+    async def redis_select_top_proxy_key(self) -> str | None:
+        """取分数最高一档的代理串（最高分前 20 名内随机，做负载均衡）"""
+        return await self._zget_top_score(
+            key=self.RedisMap.bili_proxy_zset.value, rand=True
+        )
+
+    async def redis_zadd_proxy_key(self, proxy_key: str, score: int | float) -> int:
+        if not proxy_key:
+            return 0
+        return await self._zadd(
+            self.RedisMap.bili_proxy_zset.value, {proxy_key: score}
+        )
+
+    async def redis_zrem_proxy_key(self, proxy_key: str) -> int:
+        """把代理从 zset 移除（僵尸清理 / 标记不可用）"""
+        if not proxy_key:
+            return 0
+        return await self._zdel_elements(self.RedisMap.bili_proxy_zset.value, proxy_key)
+
+    async def sync_2_redis(
+        self,
+        proxy_key_score_pairs: list[tuple[str, int | float]],
+        key: str | None = None,
+    ):
+        """把 MySQL 中「可用」的代理（代理串 + 分数）写入 zset。
+
+        方案 C 下只写 zset，不再写代理明细 hash（那正是 600MB 的来源）。
+        默认写线上 zset；整点重建时传临时 key，写完再原子 RENAME 顶替线上 zset。
+        分批写入，避免一次性构造 160 万项的 dict。
         """
-        同步代理到redis
-        :param proxy_infos:
-        :return:
-        """
-        if proxy_infos:
-            await self._hmset_bulk_batch(
-                hm_name=self.RedisMap.bili_proxy_available_hm.value,
-                hm_k_v_List=[
-                    {
-                        self._gen_proxy_key(x.proxy)[1]: json.dumps(
-                            sqlalchemy_model_2_dict(x)
-                        )
-                    }
-                    for x in proxy_infos
-                ],
-            )
+        if not proxy_key_score_pairs:
+            return
+        zset_key = key or self.RedisMap.bili_proxy_zset.value
+        for i in range(0, len(proxy_key_score_pairs), DEFAULT_CHUNK_SIZE):
+            chunk = proxy_key_score_pairs[i : i + DEFAULT_CHUNK_SIZE]
             await self._zadd(
-                self.RedisMap.bili_proxy_zset.value,
+                zset_key,
                 {
-                    get_scheme_ip_port_form_proxy_dict(proxy_info_dict=x.proxy): (
-                        x.score if x.score is None else 0
-                    )
-                    for x in proxy_infos
+                    proxy_key: (0 if score is None else score)
+                    for proxy_key, score in chunk
+                    if proxy_key
                 },
             )
+
+    async def redis_replace_zset(self, tmp_key: str) -> bool:
+        """用临时 zset 原子顶替线上 zset。
+
+        临时 key 不存在时直接返回，避免把线上代理池清空。
+        """
+        if not await self.exists(tmp_key):
+            sql_log.warning(f"临时 zset {tmp_key} 不存在，跳过替换")
+            return False
+        return bool(await self._rename(tmp_key, self.RedisMap.bili_proxy_zset.value))
+
+    async def redis_update_proxy(
+        self, proxy_tab: ProxyTab, score_change_num: int, base: ProxyTab
+    ) -> bool:
+        """在变更缓冲里累加分数/状态，并维护 zset。
+
+        :param proxy_tab: 事件值（其 status 为期望的新状态）
+        :param base: 基础值，由调用方提供（优先取变更缓冲，否则回 MySQL 读当前行）。
+                     方案 C 下已无 available_hm 可读，基础值必须由调用方给出。
+
+        修复点：原实现只在 available_hm 里找基础值，找不到就返回 False，
+        调用方随即跳过 MySQL 更新，导致分数/状态变更被静默丢弃。
+        """
+        succ_times_num = 1 if score_change_num >= 0 else -1
+        base.status = proxy_tab.status
+        base.score = (base.score or 0) + score_change_num
+        if base.score > 10000:
+            base.score = 10000
+        elif base.score < -10000:
+            base.score = -10000
+        base.success_times = (base.success_times or 0) + succ_times_num
+        proxy_key = self.to_proxy_key(base.proxy)
+        if not proxy_key:
+            sql_log.warning(f"代理串解析为空，跳过变更缓冲写入：{base.proxy}")
+            return False
+        await self._hmset(
+            name=self.RedisMap.bili_proxy_changed_hm.value,
+            field_values={proxy_key: json.dumps(sqlalchemy_model_2_dict(base))},
+        )
+        if base.status != 0:
+            # 不可用：从 zset 摘掉，避免再次被选中
+            await self.redis_zrem_proxy_key(proxy_key)
+        else:
+            await self.redis_zadd_proxy_key(proxy_key, base.score)
+        return True
 
     @log_sql_retry_wrapper()
     async def set_sync_ts(self):
@@ -140,150 +228,10 @@ class SubRedisStore(RedisManagerBase):
         _ = await self._get(self.RedisMap.bili_proxy_sync_ts.value)
         return int(_) if _ else 0
 
-    async def redis_get_all_changed_proxy(self) -> List[ProxyTab]:
-        all_changed_proxy_dict = await self._hgetall(
-            self.RedisMap.bili_proxy_changed_hm.value
-        )
-        ret_list = []
-        for k, v in all_changed_proxy_dict.items():
-            ret_list.append(ProxyTab(**json.loads(v)))
-        del all_changed_proxy_dict
-        return ret_list
-
-    async def redis_get_proxy_by_ip(
-        self, ip_dict: dict, from_changed=False
-    ) -> ProxyTab | None:
-        """
-        根据代理IP字典获取代理对象。
-
-        :param ip_dict: 代理IP字典，取自 ProxyTab.proxy 字段。
-                        结构示例: {'http': 'ip_str', 'https': 'ip_str'}
-        :param from_changed: 是否来自变更事件
-        :return: 匹配到的 ProxyTab 对象，未找到则返回 None
-        """
-        redis_data = await self._hmget(
-            *self._gen_proxy_key(proxy_info_dict=ip_dict, is_changed=from_changed)
-        )
-        if redis_data:
-            redis_dict = json.loads(redis_data)
-            return ProxyTab(**redis_dict)
-        return None
-
-    async def redis_bili_proxy_zset_count(self) -> int:
-        total_count = await self._zcard(key=self.RedisMap.bili_proxy_zset.value)
-        if total_count:
-            return int(total_count)
-        else:
-            return 0
-
-    async def redis_select_one_proxy(self) -> ProxyTab | None:
-        """
-        随机获取一个可用的代理
-        :return:
-        """
-        while 1:
-            total_count = await self.redis_bili_proxy_zset_count()
-            if total_count <= 300:
-                return None
-            rand_redis_proxy = await self._zrand_member(
-                key=self.RedisMap.bili_proxy_zset.value, count=1
-            )
-            p = (
-                rand_redis_proxy[0]
-                if rand_redis_proxy
-                and type(rand_redis_proxy) is list
-                and len(rand_redis_proxy) > 0
-                else None
-            )
-            if p:
-                if proxy_tab_dict := await self._hmget(
-                    *self._gen_proxy_key(proxy_info_dict=p)
-                ):
-                    return self.dict_2_model(json.loads(proxy_tab_dict))
-
-    async def redis_select_score_top_proxy(self) -> ProxyTab | None:
-        if top_score_ip_dict := await self._zget_top_score(
-            key=self.RedisMap.bili_proxy_zset.value, rand=True
-        ):
-            if proxy_tab_dict := await self._hmget(
-                *self._gen_proxy_key(proxy_info_dict=top_score_ip_dict)
-            ):
-                return self.dict_2_model(json.loads(proxy_tab_dict))
-            return None
-
-    async def redis_update_proxy(
-        self, proxy_tab: ProxyTab, score_change_num: int
-    ) -> bool | None:
-        """
-
-        :param proxy_tab:
-        :param score_change_num:
-        :return:
-        """
-        redis_data = await self.redis_get_proxy_by_ip(
-            proxy_tab.proxy, from_changed=True
-        )
-        if not redis_data:
-            redis_data = await self.redis_get_proxy_by_ip(
-                proxy_tab.proxy, from_changed=False
-            )
-            if not redis_data:
-                return False
-        succ_times_num = 1 if score_change_num >= 0 else -1
-        redis_data.status = proxy_tab.status
-        redis_data.score += score_change_num
-        if redis_data.score > 10000:
-            redis_data.score = 10000
-        redis_data.success_times = (redis_data.success_times or 0) + succ_times_num
-        await self._hmset(
-            name=self.RedisMap.bili_proxy_changed_hm.value,
-            field_values={
-                self._gen_proxy_key(redis_data.proxy, is_changed=True)[1]: json.dumps(
-                    sqlalchemy_model_2_dict(redis_data)
-                )
-            },
-        )
-        if proxy_tab.status != 0:
-            await self._hmset(
-                name=self.RedisMap.bili_proxy_black_hm.value,
-                field_values={
-                    self._gen_proxy_key(redis_data.proxy, is_black=True)[1]: json.dumps(
-                        sqlalchemy_model_2_dict(redis_data)
-                    )
-                },
-            )  # 黑名单的key
-            await self._hdel(*self._gen_proxy_key(redis_data.proxy))
-            await self._zdel_elements(  # 这样就不会把不能用的代理再次取出来了
-                self.RedisMap.bili_proxy_zset.value,
-                get_scheme_ip_port_form_proxy_dict(proxy_info_dict=redis_data.proxy),
-            )
-        else:
-            await self._hmset(
-                name=self.RedisMap.bili_proxy_available_hm,
-                field_values={
-                    self._gen_proxy_key(redis_data.proxy)[1]: json.dumps(
-                        sqlalchemy_model_2_dict(redis_data)
-                    )
-                },
-            )  # 全局的key
-            await self._zadd(
-                self.RedisMap.bili_proxy_zset.value,
-                {
-                    get_scheme_ip_port_form_proxy_dict(
-                        proxy_info_dict=redis_data.proxy
-                    ): redis_data.score
-                },
-            )
-
     @log_sql_retry_wrapper()
     async def redis_clear_all_proxy(self):
-        # await self._zdel_range(self.RedisMap.bili_proxy_zset.value, 0, -1)
-        # await self._del_keys_with_prefix(self.RedisMap.bili_proxy.value)
-        await self.redis_clear_black_proxy()
+        """只清变更缓冲；zset 作为热缓存保留，由整点刷新重建。"""
         await self.redis_clear_changed_proxy()
-
-    async def redis_clear_black_proxy(self):
-        return await self._delete(self.RedisMap.bili_proxy_black_hm.value)
 
     async def redis_clear_changed_proxy(self):
         return await self._delete(self.RedisMap.bili_proxy_changed_hm.value)
@@ -409,14 +357,12 @@ class SQLHelperClass(SqlHelperBase):
                                 or force
                             ):
                                 await self.sync_2_database()
-                                await self.sub_redis_store.redis_clear_all_proxy()  # 不清除还没使用的代理
+                                # 只清变更缓冲；zset 作为热缓存保留，由下面重建
+                                await self.sub_redis_store.redis_clear_all_proxy()
                                 await self.clear_unusable_proxy()
-                                all_available_proxy_infos = await self.select_proxy(
-                                    mode="all"
-                                )
-                                await self.sub_redis_store.sync_2_redis(
-                                    all_available_proxy_infos
-                                )
+                                # 用 MySQL 的「可用代理」重建 zset（临时 key + 原子
+                                # RENAME），使 zset 不再像旧版 available_hm 那样只增不减
+                                await self.refresh_proxy_zset()
                                 await self.sub_redis_store.set_sync_ts()
                         except Exception as e:
                             sql_log.exception(f"同步redis和mysql数据库失败！{e}")
@@ -463,9 +409,101 @@ class SQLHelperClass(SqlHelperBase):
             await session.commit()
             return res.rowcount
 
+    # ---------------- 方案 C：代理明细统一回 MySQL ----------------
+
+    async def get_proxy_by_key(self, proxy_key: str) -> ProxyTab | None:
+        """按代理串取整行。
+
+        ``proxy_tab.computed_proxy_str`` 是持久化生成列且带索引，等值查走索引，
+        单行毫秒级；这是方案 C 下读取代理明细的唯一入口。
+        """
+        if not proxy_key:
+            return None
+        sql = (
+            select(ProxyTab).where(ProxyTab.computed_proxy_str == proxy_key).limit(1)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        return res.scalars().first()
+
+    async def _select_proxy_via_zset(self, *, top: bool) -> ProxyTab | None:
+        """zset 取代理串 → MySQL 取整行。
+
+        zset 与 MySQL 可能短暂不一致（MySQL 已删除的代理仍留在 zset），
+        取到这类「僵尸」时直接从 zset 摘掉并换下一个，避免反复被选中。
+        """
+        for _ in range(ZSET_ZOMBIE_MAX_RETRY):
+            proxy_key = (
+                await self.sub_redis_store.redis_select_top_proxy_key()
+                if top
+                else await self.sub_redis_store.redis_select_one_proxy_key()
+            )
+            if not proxy_key:
+                return None
+            proxy_tab = await self.get_proxy_by_key(proxy_key)
+            if proxy_tab:
+                return proxy_tab
+            sql_log.warning(
+                f"zset 中的代理在 MySQL 已不存在，已从 zset 移除：{proxy_key}"
+            )
+            await self.sub_redis_store.redis_zrem_proxy_key(proxy_key)
+        return None
+
+    async def select_available_proxy_key_pairs(self) -> list[tuple[str, int]]:
+        """取「可用」代理的 (代理串, 分数) 列表，供整点重建 zset。
+
+        筛选条件与 ``select_proxy(mode="all")`` 一致，但只取两列，
+        不再把 165 万行整行 ORM 对象拉进内存。
+        """
+        available_status = 0
+        available_score = 0
+        _412_status = -412
+        sql = select(ProxyTab.computed_proxy_str, ProxyTab.score).where(
+            or_(
+                and_(
+                    ProxyTab.status == available_status,
+                    ProxyTab.score >= available_score,
+                ),
+                and_(
+                    ProxyTab.status == _412_status,
+                    ProxyTab.score >= available_score,
+                    int(time.time()) - ProxyTab.update_ts >= self._412_sep_time,
+                ),
+                and_(
+                    ProxyTab.score < available_score,
+                    int(time.time()) - ProxyTab.update_ts >= self._underscore_spe_time,
+                ),
+            )
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+            rows = res.all()
+        return [(row[0], row[1] or 0) for row in rows if row[0]]
+
+    async def refresh_proxy_zset(self):
+        """整点用 MySQL 的「可用代理」重建 zset（临时 key + 原子 RENAME）。
+
+        这样 zset 每轮与 MySQL 精确对齐，不会像旧版 available_hm 那样只增不减、
+        把 MySQL 已删除的代理永远留在里面。
+        重建期间代理事件对 zset 的增量会被随后覆盖，但变更本身已写入 changed_hm，
+        下一轮即恢复一致；该窗口内最多多选到一次已失效的代理，取到时会被校验剔除。
+        """
+        pairs = await self.select_available_proxy_key_pairs()
+        if len(pairs) < ZSET_MIN_REBUILD_SIZE:
+            sql_log.warning(
+                f"本轮可用代理仅 {len(pairs)} 条，低于 {ZSET_MIN_REBUILD_SIZE} 条，"
+                f"跳过 zset 重建，避免把代理池清空"
+            )
+            return
+        tmp_key = f"{self.sub_redis_store.RedisMap.bili_proxy_zset.value}:rebuild"
+        await self.sub_redis_store._delete(tmp_key)
+        await self.sub_redis_store.sync_2_redis(pairs, key=tmp_key)
+        if await self.sub_redis_store.redis_replace_zset(tmp_key):
+            sql_log.info(f"代理 zset 已重建，共 {len(pairs)} 条")
+
     @log_sql_retry_wrapper()
     async def select_score_top_proxy(self) -> ProxyTab:
-        if redis_data := await self.sub_redis_store.redis_select_score_top_proxy():
+        if redis_data := await self._select_proxy_via_zset(top=True):
             return redis_data
         sql = select(ProxyTab).order_by(ProxyTab.score.desc()).limit(1)
         async with self.async_session() as session:
@@ -485,9 +523,9 @@ class SQLHelperClass(SqlHelperBase):
         """
         if mode != "all":
             if mode == "single":
-                return await self.sub_redis_store.redis_select_score_top_proxy()
+                return await self._select_proxy_via_zset(top=True)
             if mode == "rand":
-                return await self.sub_redis_store.redis_select_one_proxy()
+                return await self._select_proxy_via_zset(top=False)
         available_status = 0
         available_score = 0
         _412_status = -412
@@ -587,12 +625,28 @@ class SQLHelperClass(SqlHelperBase):
         :return:
         """
         try:
-            is_update = await self.sub_redis_store.redis_update_proxy(
-                proxy_tab, change_score_num
+            # 基础值：优先用本同步周期内已变更过的缓冲值（避免同小时内反复回库），
+            # 否则回 MySQL 读当前行。方案 C 下已无 available_hm 可读，基础值必须显式取。
+            proxy_key = self.sub_redis_store.to_proxy_key(proxy_tab.proxy)
+            if not proxy_key:
+                sql_log.warning(f"代理串解析为空，跳过分数更新：{proxy_tab.proxy}")
+                return False
+            base = await self.sub_redis_store.redis_get_changed_proxy(proxy_key)
+            if base is None:
+                base = await self.get_proxy_by_key(proxy_key)
+            if base is None:
+                # MySQL 里也没有这条代理（已被清理）：无法更新，但要留下痕迹，
+                # 原实现在这里直接 return False，静默丢弃了变更。
+                sql_log.warning(f"代理在 MySQL 与 Redis 均不存在，跳过分数更新：{proxy_key}")
+                return False
+            return bool(
+                await self.sub_redis_store.redis_update_proxy(
+                    proxy_tab, change_score_num, base
+                )
             )
-            return bool(is_update)
         except Exception as e:
             sql_log.exception(e)
+        # Redis 异常时回退为直接更新 MySQL
         succ_times_num = 1 if change_score_num >= 0 else -1
         sql = (
             update(ProxyTab)
@@ -763,26 +817,23 @@ class SQLHelperClass(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def get_proxy_by_ip(self, ip: str) -> ProxyTab | None:
-        """
+        """按 'scheme://ip:port' 取代理。
 
-        :param ip: 像这种格式的ip地址加端口加scheme的str 'https://127.0.0.1:1234'
-        :return:
+        方案 C 下不再走 Redis 明细 hash，直接按代理串等值查（computed_proxy_str 带索引）。
         """
-        ip_dict = {"http": ip, "https": ip}
-        redis_data: ProxyTab | None = await self.sub_redis_store.redis_get_proxy_by_ip(
-            ip_dict=ip_dict
-        )
-        if redis_data:
-            return redis_data
-        sql = select(ProxyTab).where(ProxyTab.proxy.like(ip)).limit(1)
+        return await self.get_proxy_by_key(ip)
+
+    @log_sql_retry_wrapper()
+    async def get_black_proxy_num(self) -> int:
+        """黑名单（status != 0）代理数量。
+
+        方案 C 下 Redis 不再保存黑名单 hash，改由 MySQL 统计；
+        `(status, score, success_times, update_ts)` 索引可覆盖该计数。
+        """
+        sql = select(func.count(ProxyTab.proxy_id)).where(ProxyTab.status != 0)
         async with self.async_session() as session:
-            # async with self.async_lock:
             res = await session.execute(sql)
-            result: ProxyTab | None = res.scalars().first()
-        if result:
-            return result
-        else:
-            return None
+        return res.scalars().first() or 0
 
     async def get_proxy_database_redis(self) -> ProxyStatusResp:
         # 使用asyncio_gather并行获取MySQL和Redis中的代理状态
@@ -794,7 +845,7 @@ class SQLHelperClass(SqlHelperBase):
             proxy_usable_count,
         ) = await asyncio_gather(
             self.sub_redis_store.get_sync_ts(),
-            self.sub_redis_store.get_bili_proxy_black_num(),
+            self.get_black_proxy_num(),
             self.sub_redis_store.redis_bili_proxy_zset_count(),
             SQLHelper.get_latest_add_ts(),
             sql_helper.get_num(True),  # 获取可用代理的数量
@@ -817,17 +868,13 @@ SQLHelper = SQLHelperClass()
 
 if __name__ == "__main__":
 
-    async def _test_redis_select_one_proxy():
-        print(await SQLHelper.sub_redis_store.redis_select_one_proxy())
+    async def _test_select_one_proxy():
+        print(await SQLHelper.select_proxy("rand"))
 
-    async def _test_redis_get_proxy_by_ip():
-        print(
-            await SQLHelper.sub_redis_store.redis_get_proxy_by_ip(
-                ip_dict={
-                    "http": "http://116.203.206.103:8080",
-                    "https": "http://116.203.206.103:8080",
-                }
-            )
-        )
+    async def _test_get_proxy_by_ip():
+        print(await SQLHelper.get_proxy_by_ip("http://116.203.206.103:8080"))
 
-    asyncio.run(_test_redis_get_proxy_by_ip())
+    async def _test_refresh_zset():
+        await SQLHelper.refresh_proxy_zset()
+
+    asyncio.run(_test_get_proxy_by_ip())

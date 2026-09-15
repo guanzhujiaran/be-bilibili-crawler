@@ -59,10 +59,14 @@ async def handle_exception(module_name: str, e: Exception, params, msg: RabbitMe
 
 # ============ 并发/去重相关常量（两队列共享同一把全局信号量）============
 LOCK_TTL = 600  # 秒：去重锁兜底过期
-MAX_CONCURRENCY: int = len(settings.llm_apis)  # 全局大模型并发上限
 SEM_TTL = 600  # 秒：信号量 key 过期（崩溃自愈）
 SEM_ACQUIRE_TIMEOUT = 60.0  # 秒：阻塞等待信号量超时
 SEM_KEY = "global"  # 全局唯一 key，所有提取共享同一把并发闸
+
+
+def _max_concurrency() -> int:
+    """全局大模型并发上限：实时读取当前 LLM 配置数量（支持在线热更新），至少为 1。"""
+    return max(1, len(settings.llm_apis))
 
 
 # ============ redis 锁 + 信号量 ============
@@ -248,16 +252,17 @@ async def process_prize_extract(
         # 3) 全局信号量：限制大模型提取并发数
         #    并发已满则重新入队到队尾，稍后（信号量释放后）再处理，
         #    避免 RabbitMQ 持续投递导致瞬时并发压垮 LLM。
+        max_concurrency = _max_concurrency()
         sem_acquired = await prize_extract_redis.acquire_semaphore_blocking(
             key=SEM_KEY,
-            max_concurrency=MAX_CONCURRENCY,
+            max_concurrency=max_concurrency,
             ttl=SEM_TTL,
             timeout=SEM_ACQUIRE_TIMEOUT,
         )
         if not sem_acquired:
             MQ_logger.warning(
                 f"【{module_name}】{lock_key} 大模型提取并发已满"
-                f"({MAX_CONCURRENCY})，重新入队稍后处理"
+                f"({max_concurrency})，重新入队稍后处理"
             )
             await BiliLotDataPublisher.pub_prize_extract(params, mq_props=mq_props)
             await msg.ack()

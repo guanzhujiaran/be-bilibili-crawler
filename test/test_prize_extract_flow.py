@@ -412,3 +412,52 @@ async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
 
     mock_msg.ack.assert_called_once()
     assert result is None
+
+
+# ========================================================================
+# 测试 6: 消费任务被取消时仍释放 redis 去重锁与信号量（取消安全）
+# ========================================================================
+
+@pytest.mark.asyncio
+async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper):
+    """取消恰好落在「释放资源」过程中时（真实日志里的典型形态：连接拆除导致
+    在途任务被批量 cancel，CancelledError 被投递到 release_lock 的 await 上），
+    释放动作必须仍然跑完，不能留下泄漏的去重锁/信号量。"""
+    case = BILIOPUS_CASES[0]
+    ref_id = TEST_REF_ID_BASE + len(_CASES) * 5
+    req = _case_to_req(case, ref_id)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    release_semaphore_started = asyncio.Event()
+
+    async def _slow_release_semaphore(*args, **kwargs):
+        # 模拟 redis 往返：取消会在这个 await 上被投递
+        release_semaphore_started.set()
+        await asyncio.sleep(0.2)
+
+    release_lock = AsyncMock()
+
+    async with AsyncExitStack() as stack:
+        await _enter_patches(stack, case, extra=True)
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_semaphore",
+            new=_slow_release_semaphore))
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
+            new=release_lock))
+
+        task = asyncio.create_task(process_prize_extract(mq_props, req, mock_msg))
+        await asyncio.wait_for(release_semaphore_started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # 释放动作由 shield 托管为独立任务，给它跑完的时间
+        await asyncio.sleep(0.4)
+
+    release_lock.assert_awaited_once()
+    mock_msg.ack.assert_called_once()  # 处理已完成并 ack，只是清理阶段被取消
+    mock_msg.nack.assert_not_called()

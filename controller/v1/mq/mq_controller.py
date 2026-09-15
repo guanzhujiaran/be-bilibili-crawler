@@ -150,7 +150,7 @@ async def handle_prize_extract_dyndetail(
 
 @router.subscriber(**rabbit_mq_test.sub_params)
 async def _test_msg_consumer(data: RabbitMQTestMsgModel, msg: RabbitMessage):
-    MQ_logger.critical(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{data}")
+    MQ_logger.debug(f"【{msg.raw_message.routing_key}】队列 消费消息内容：{data}")
     return await rabbit_mq_test.consume(data, msg)
 
 

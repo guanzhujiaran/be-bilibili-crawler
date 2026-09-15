@@ -460,12 +460,20 @@ class RedisManagerBase:
 
     @retry
     async def _zget_top_score(self, key, rand=False) -> str | None:
-        end = 0 if not rand else 20
+        """取分数最高的一档成员。
+
+        rand=True：在「分数最高的前 _TOP_RAND_BAND 名」里随机取一个，用于在最高档内做负载均衡；
+        rand=False：严格取分数最高的那一个。
+
+        修复点：原实现里 `end` 算了却没用，永远只取 `zrevrange(key, 0, 0)` 的唯一最高分，
+        导致 rand 形同虚设（配合 zset 分数写反的 bug，「按分数选最优」直接退化成随机）。
+        """
+        top_n = 19 if rand else 0
         async with redis_client_factory(pool=self.pool) as r:
-            if members := await r.zrevrange(key, 0, 0):
-                return random.choice(members)
-            else:
-                return None
+            members = await r.zrevrange(key, 0, top_n)
+        if not members:
+            return None
+        return random.choice(members) if rand else members[0]
 
     @retry
     async def _zget_bottom_score(self, key):
@@ -596,6 +604,12 @@ class RedisManagerBase:
             return await r.delete(name)
 
     @retry
+    async def _rename(self, key: str, new_key: str):
+        """原子重命名（用于整点用临时 zset 替换线上 zset）"""
+        async with redis_client_factory(pool=self.pool) as r:
+            return await r.rename(key, new_key)
+
+    @retry
     async def _scan(self, cursor: int = 0, match_str: str = ""):
         """
         记得确保match_str 里面带个*，如果要获取多个的话
@@ -656,11 +670,6 @@ class RedisManagerBase:
     async def _hgetall(self, name: str):
         async with redis_client_factory(pool=self.pool) as r:
             return await r.hgetall(name)
-
-    @retry
-    async def _hdel(self, name, key):
-        async with redis_client_factory(pool=self.pool) as r:
-            return await r.hdel(name, key)
 
     @retry
     async def _zrem(self, key, *elements_to_remove):

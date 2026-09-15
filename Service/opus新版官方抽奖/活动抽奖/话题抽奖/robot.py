@@ -142,7 +142,9 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             functional_card = da.get('functional_card')
             if functional_card:
                 allowed_keys = TFunctionalCard.__table__.columns.keys()
-                allowed_keys.extend(['traffic_card', 'capsules'])
+                # game_card 等 B 站新增卡片类型没有独立表列，统一进 json_data 保存，
+                # 因此这里必须同步加入白名单，否则每次遇到都会误报“字段不匹配”。
+                allowed_keys.extend(['traffic_card', 'capsules', 'game_card'])
                 if extra_info := set(allowed_keys) & set(functional_card.keys()) ^ set(functional_card.keys()):
                     self.log.error(
                         f'functional_card字段不匹配，topic_id:{topic_id}\nfunctional_card:{functional_card}\n不匹配字段：{extra_info}')

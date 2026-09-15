@@ -136,16 +136,21 @@ class RequestWithProxy:
                 proxy = my_ipv6_proxy
         req_dict = False
         req_text = ""
+        request_timeout = (
+            self.timeout if not used_available_proxy else self.available_proxy_timeout
+        )
         try:
-            req = await my_async_httpx.request(
-                **kwargs,
-                timeout=(
-                    self.timeout
-                    if not used_available_proxy
-                    else self.available_proxy_timeout
-                ),
-                proxies=proxy.proxy,
-            )
+            # 双保险：既把超时透传给 curl_cffi，又在外层用 asyncio.timeout 兜底，
+            # 保证单次请求不会超出 request_timeout（+2s 宽限）而长期挂死。
+            # 之前只有 curl 自身的超时生效，一旦它没生效，请求会一直占着 worker
+            # 直到 worker_max_timeout（300s）才被取消，期间代理也无法及时标记失败；
+            # 这里超时抛出 TimeoutError 会走下面的网络错误分支，标记坏代理后抛出。
+            async with asyncio.timeout(request_timeout + 2):
+                req = await my_async_httpx.request(
+                    **kwargs,
+                    timeout=request_timeout,
+                    proxies=proxy.proxy,
+                )
             req_text = req.text
             if "code" not in req_text and "bili" in str(
                 req.url

@@ -168,6 +168,8 @@ class RouterPaths(StrEnumAutoDoc):
     ZHIHU_GET_OTHERS_LOT_PINS = "/zhihu/get_others_lot_pins"  # 获取知乎抽奖
     TOUTIAO_GET_OTHERS_LOT_IDS = "/toutiao/get_others_lot_ids"  # 获取头条抽奖
     GET_LLM_STATS = "/llm/stats"  # 获取云端LLM实例使用统计
+    LLM_CONFIG = "/llm/config"  # 云端LLM配置列表/新增/整体替换（内部接口，网关白名单不转发）
+    LLM_CONFIG_ITEM = "/llm/config/{index}"  # 云端LLM配置单条：按索引读取/更新/删除
 
 
 class RouterNames(StrEnumAutoDoc):
@@ -263,6 +265,13 @@ class RouterNames(StrEnumAutoDoc):
     ZHIHU_GET_OTHERS_LOT_PINS = "zhihu_get_others_lot_pins"  # 获取知乎抽奖
     TOUTIAO_GET_OTHERS_LOT_IDS = "toutiao_get_others_lot_ids"  # 获取头条抽奖
     GET_LLM_STATS = "get_llm_stats"  # 获取云端LLM实例使用统计
+    GET_LLM_CONFIG = "get_llm_config"  # 读取云端LLM配置列表
+    GET_LLM_CONFIG_ITEM = "get_llm_config_item"  # 读取单条云端LLM配置
+    CREATE_LLM_CONFIG = "create_llm_config"  # 新增一条云端LLM配置
+    REPLACE_LLM_CONFIG = "replace_llm_config"  # 整体替换云端LLM配置
+    UPDATE_LLM_CONFIG = "update_llm_config"  # 整体更新单条云端LLM配置
+    PATCH_LLM_CONFIG = "patch_llm_config"  # 部分更新单条云端LLM配置
+    DELETE_LLM_CONFIG = "delete_llm_config"  # 删除单条云端LLM配置
 
 
 class RouterModule(StrEnumAutoDoc):

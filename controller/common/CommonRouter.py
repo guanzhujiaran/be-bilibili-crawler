@@ -3,20 +3,29 @@ import gc
 import traceback
 from datetime import datetime
 
-from fastapi import Body
+from fastapi import Body, HTTPException, Path
 from ApiRoutes import RouterPaths, RouterNames, RouterTags
 from controller.common.base import new_router
 from log.base_log import myfastapi_logger
 from Models.lottery_database.bili.LotteryDataModels import reserveInfo
 from Service.GetOthersLotDyn import get_others_lot_dyn
-from Service.llm_service import get_llm_stats
+from Service.llm_service import (
+    create_llm_api,
+    delete_llm_api,
+    get_llm_config,
+    get_llm_configs,
+    get_llm_stats,
+    patch_llm_api,
+    set_llm_apis,
+    update_llm_api,
+)
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.GrpcModule.GrpcSrc.获取取关对象.GetRmFollowingListV2 import gmflv2
 from Service.MQ.message.message_pub import publish_message
 from Service.toutiao.src.FastApiReturns.SpaceFeedLotService.ToutiaoSpaceFeedLot import \
     toutiaoSpaceFeedLotService
 from Service.zhihu.获取知乎抽奖想法.根据用户空间获取想法.GetMomentsByUser import zhihu_lotScrapy
-from CONFIG import settings
+from CONFIG import LLMApiConfig, LLMApiConfigPatch, settings
 from Utils.推送.PushMe import a_pushme, server_label
 
 router = new_router()
@@ -52,6 +61,105 @@ async def app_avaliable_api():
 )
 async def api_get_llm_stats():
     return get_llm_stats()
+
+
+# region 云端 LLM 配置 CRUD（内部接口：路径不在网关白名单内，故不对外公开）
+_LLM_CONFIG_DESC = (
+    '【内部接口】云端 LLM 配置在线 CRUD，修改立即生效、无需重启服务；'
+    '仅运行时内存生效，不写回 .env，服务重启后回退为环境变量中的 llm_apis；'
+    'token 一律脱敏返回，路径不在网关转发白名单内，不对外公开。'
+)
+
+
+def _run_llm_config_op(op):
+    """统一把服务层的 IndexError/ValueError 转成 404/400 响应"""
+    try:
+        return op()
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get(
+    RouterPaths.LLM_CONFIG,
+    name=RouterNames.GET_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 读取全部配置（列表）。',
+)
+async def api_list_llm_config():
+    return _run_llm_config_op(get_llm_configs)
+
+
+@router.get(
+    RouterPaths.LLM_CONFIG_ITEM,
+    name=RouterNames.GET_LLM_CONFIG_ITEM,
+    response_model=dict,
+    description=f'{_LLM_CONFIG_DESC} 按索引读取单条配置。',
+)
+async def api_get_llm_config(
+    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+):
+    return _run_llm_config_op(lambda: get_llm_config(index))
+
+
+@router.post(
+    RouterPaths.LLM_CONFIG,
+    name=RouterNames.CREATE_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 新增一条配置（追加到列表末尾）。',
+)
+async def api_create_llm_config(cfg: LLMApiConfig = Body(...)):
+    return _run_llm_config_op(lambda: create_llm_api(cfg))
+
+
+@router.put(
+    RouterPaths.LLM_CONFIG,
+    name=RouterNames.REPLACE_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 整体替换全部配置（传空列表 [] 表示清空）。',
+)
+async def api_replace_llm_config(apis: list[LLMApiConfig] = Body(...)):
+    return _run_llm_config_op(lambda: set_llm_apis(apis))
+
+
+@router.put(
+    RouterPaths.LLM_CONFIG_ITEM,
+    name=RouterNames.UPDATE_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 整体更新指定索引的单条配置（需提供完整字段）。',
+)
+async def api_update_llm_config(
+    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    cfg: LLMApiConfig = Body(...),
+):
+    return _run_llm_config_op(lambda: update_llm_api(index, cfg))
+
+
+@router.patch(
+    RouterPaths.LLM_CONFIG_ITEM,
+    name=RouterNames.PATCH_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 部分更新指定索引的单条配置（仅传需要修改的字段）。',
+)
+async def api_patch_llm_config(
+    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    patch: LLMApiConfigPatch = Body(...),
+):
+    return _run_llm_config_op(lambda: patch_llm_api(index, patch))
+
+
+@router.delete(
+    RouterPaths.LLM_CONFIG_ITEM,
+    name=RouterNames.DELETE_LLM_CONFIG,
+    response_model=list[dict],
+    description=f'{_LLM_CONFIG_DESC} 删除指定索引的单条配置。',
+)
+async def api_delete_llm_config(
+    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+):
+    return _run_llm_config_op(lambda: delete_llm_api(index))
+# endregion
 
 
 @router.get(

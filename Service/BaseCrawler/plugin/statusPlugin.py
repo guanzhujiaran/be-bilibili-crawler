@@ -1,5 +1,5 @@
 from bili_common.models import StrEnumAutoDoc
-from pydantic import Field, computed_field
+from pydantic import Field, PrivateAttr, computed_field
 import datetime
 import inspect
 import time
@@ -31,29 +31,28 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         default=False, description="爬虫运行结束(on_run_end)时是否推送统计结果摘要"
     )
 
-    def __init__(self, **data):
-        super().__init__(**data)
-        self._init_params: WorkerModel | None = None
-        self._end_params: WorkerModel | None = None
-        self._end_success_params: WorkerModel | None = None
-        self._end_null_params: WorkerModel | None = None
-        self._is_running: bool = False
-        self._start_time: float = time.time()  # Stores the monotonic start time
-        self._last_update_time: float = (
-            0.0  # Stores the wall clock time of last worker finish
-        )
-        self._processed_items_count: int = 0  # Fundamental counter
-        self._null_count: int = 0
-        self._succ_count: int = 0
-        # 本次尝试失败但已重新入队的次数（非最终失败）
-        self._requeued_count: int = 0
-        # 最终失败（不再重试）的任务次数
-        self._final_fail_count: int = 0
-        # 已重排、但还没走到 on_worker_end 的 seqId，用于把「待重试」与「最终失败」区分开
-        self._pending_requeue_seq_ids: set[int] = set()
-        self._running_params_set: set[WorkerModel] = (
-            set()
-        )  # 把参数转换成字符串,避免unhashable的参数
+    # 运行时统计状态必须声明为 PrivateAttr：
+    # CrawlerPlugin 的 model_config 带 extra="allow"，此前在 __init__ 里直接给
+    # _init_params 等赋值会被写进模型 __dict__，序列化（接口返回）时变成
+    # “Unexpected field `_init_params`” 之类的 PydanticSerializationUnexpectedValue 告警。
+    _init_params: WorkerModel | None = PrivateAttr(default=None)
+    _end_params: WorkerModel | None = PrivateAttr(default=None)
+    _end_success_params: WorkerModel | None = PrivateAttr(default=None)
+    _end_null_params: WorkerModel | None = PrivateAttr(default=None)
+    _is_running: bool = PrivateAttr(default=False)
+    _start_time: float = PrivateAttr(default_factory=time.time)
+    _last_update_time: float = PrivateAttr(default=0.0)
+    _processed_items_count: int = PrivateAttr(default=0)
+    _null_count: int = PrivateAttr(default=0)
+    _succ_count: int = PrivateAttr(default=0)
+    # 本次尝试失败但已重新入队的次数（非最终失败）
+    _requeued_count: int = PrivateAttr(default=0)
+    # 最终失败（不再重试）的任务次数
+    _final_fail_count: int = PrivateAttr(default=0)
+    # 已重排、但还没走到 on_worker_end 的 seqId，用于把「待重试」与「最终失败」区分开
+    _pending_requeue_seq_ids: set[int] = PrivateAttr(default_factory=set)
+    # 运行中的参数集合
+    _running_params_set: set[WorkerModel] = PrivateAttr(default_factory=set)
 
     async def on_run_start(self, init_worker_model: WorkerModel):
         """

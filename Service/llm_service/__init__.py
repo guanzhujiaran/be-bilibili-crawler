@@ -11,7 +11,17 @@
 
 from .presets import SamplingPreset
 from .tracked_llm import LLMUsageStats, TrackedChatOpenAI
-from .pool import get_all_free_llms, get_llm_stats
+from .pool import (
+    create_llm_api,
+    delete_llm_api,
+    get_all_free_llms,
+    get_llm_config,
+    get_llm_configs,
+    get_llm_stats,
+    patch_llm_api,
+    set_llm_apis,
+    update_llm_api,
+)
 
 __all__ = [
     "SamplingPreset",
@@ -19,4 +29,11 @@ __all__ = [
     "TrackedChatOpenAI",
     "get_all_free_llms",
     "get_llm_stats",
+    "get_llm_configs",
+    "get_llm_config",
+    "set_llm_apis",
+    "create_llm_api",
+    "update_llm_api",
+    "patch_llm_api",
+    "delete_llm_api",
 ]

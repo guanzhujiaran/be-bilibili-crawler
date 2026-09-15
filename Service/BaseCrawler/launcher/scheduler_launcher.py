@@ -137,7 +137,9 @@ class BaseScheduler:
 
     @async_pushme_try_catch_decorator
     async def run(self):
-        self.logger.critical(
+        # 定时任务每次触发都会走到这里，属于正常调度流程，用 debug 记录即可，
+        # 避免污染 CRITICAL 级别（只应保留真正的严重故障）。
+        self.logger.debug(
             f"[{self.exec_info.info.crawler_name}] 定时任务被触发，正在检查是否需要执行..."
         )
 

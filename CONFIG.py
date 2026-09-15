@@ -222,6 +222,19 @@ class LLMApiConfig(BaseModel):
     requests_per_second: float = 0.5
 
 
+class LLMApiConfigPatch(BaseModel):
+    """LLMApiConfig 的部分更新模型：仅传入需要修改的字段，未传字段保持原值。
+
+    用于内部接口 PATCH /llm/config/{index}：因读取接口返回的 token 已脱敏，
+    局部更新时可只提交需要变更的字段（如仅换 token / 仅调速率），无需回传明文 token。
+    """
+
+    base_url: str | None = None
+    model_name: str | None = None
+    token: str | None = None
+    requests_per_second: float | None = None
+
+
 class Settings(BaseSettings):
     MYSQL_HOST: str
     MYSQL_PORT: str
