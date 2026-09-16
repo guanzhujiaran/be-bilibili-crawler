@@ -595,8 +595,10 @@ class RedisManagerBase:
 
     @retry
     async def _hdel(self, name: str, *keys: str):
+        if not keys:
+            return 0
         async with redis_client_factory(pool=self.pool) as r:
-            return await r.hdel(name=name, *keys)
+            return await r.hdel(name, *keys)
 
     @retry
     async def _delete(self, name):
