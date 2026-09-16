@@ -59,19 +59,40 @@ def retry_async_generator(func):
     return wrapper_generator
 
 
+def _brief(obj: Any, limit: int = 500) -> str:
+    """日志里打印调用参数用的简短 repr。
+
+    直接 repr(args) 会把整个消息体（如 CachedMessage、RedisObj）刷进日志，
+    这里截断到固定长度，保证一条错误日志仍然是几行而不是几十行。
+    """
+    text = repr(obj)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}...<+{len(text) - limit} chars>"
+
+
 def retry(func):
     async def wrapper(*args, **kwargs):
         while 1:
             try:
                 return await func(*args, **kwargs)
             except BusyLoadingError as e:
+                redis_logger.opt(exception=e).warning(
+                    f"Redis 正在加载数据集，30s 后重试...{func.__name__}"
+                )
                 await asyncio.sleep(30)
             except ConnectionError as e:
                 redis_logger.exception(f"Redis连接错误，重试中...{e}")
                 await asyncio.sleep(30)
             except Exception as e:
-                redis_logger.critical(
-                    f"\nRedis操作错误\n{func.__name__}\n{args}\n{kwargs}\n{e}"
+                # 必须带完整堆栈：只打 `str(e)` 无法定位到出错的那一行 redis 命令
+                # （典型如 `hdel() got multiple values for argument 'name'`，
+                # 只有堆栈才能看出是 _hdel 内部的 r.hdel(...) 调用）。
+                # 同时补上异常类型名，并截断过长的参数（含整个消息体）。
+                redis_logger.opt(exception=e).critical(
+                    f"\nRedis操作错误\n{func.__name__}\n"
+                    f"args={_brief(args)}\nkwargs={_brief(kwargs)}\n"
+                    f"{type(e).__name__}: {e}"
                 )
                 await asyncio.sleep(30)
 
