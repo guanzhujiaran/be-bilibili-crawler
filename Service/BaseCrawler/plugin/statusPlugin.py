@@ -358,8 +358,12 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
             )
         self._max_consecutive_nulls: int = max_consecutive_nulls
         # --- 核心状态变量 ---
-        # 向量化存储所有任务的状态。使用 WorkerStatus Enum。
-        self._status_vector = np.array([])
+        # 向量化存储所有任务的状态，**只存 WorkerStatus 的整数值**，dtype 固定 int8。
+        # 注意：不能存 Enum 成员本身——`np.array([])` 默认是 float64，
+        # `np.append(空 float 数组, [WorkerStatus.pending, ...])` 会把枚举降级存成 float64，
+        # 取出来的元素是 numpy.float64，没有 `.value` 属性，
+        # 统计最长连续 null 时会报 `AttributeError: 'numpy.float64' object has no attribute 'value'`。
+        self._status_vector = np.array([], dtype=np.int8)
         self._sequential_null_count: int = 0
 
     async def on_run_start(self, init_worker_model: WorkerModel):
@@ -371,23 +375,27 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
                 f"插件启动，连续 {self._max_consecutive_nulls} 个 null 将触发停止。"
             )
         )
-        self._status_vector = np.array([])
+        self._status_vector = np.array([], dtype=np.int8)
         self._sequential_null_count = 0
         await super().on_run_start(init_worker_model)
 
     async def on_worker_end(self, worker_model: WorkerModel) -> Any:
         task_id = worker_model.seqId
         status = worker_model.fetchStatus
+        # 统一转成整数值再入数组：WorkerStatus 是 IntEnum，取 .value；
+        # 若外部直接塞了 int / numpy 标量，则用 int() 兜底。
+        status_value = int(getattr(status, "value", status))
 
         # 如果任务ID超出了当前向量的范围，就用 pending 状态扩展它
         current_len = len(self._status_vector)
         if task_id >= current_len:
             needed_extension = task_id - current_len + 1
             self._status_vector = np.append(
-                self._status_vector, [WorkerStatus.pending] * needed_extension
+                self._status_vector,
+                np.full(needed_extension, WorkerStatus.pending.value, dtype=np.int8),
             )
         # 直接在相应位置记录状态
-        self._status_vector[task_id] = status
+        self._status_vector[task_id] = status_value
 
         return await super().on_worker_end(worker_model)
 
@@ -399,9 +407,9 @@ class SequentialNullStopPlugin(CrawlerPlugin[ParamsType]):
         if self._status_vector.size == 0:
             return 0
 
-        # 1. 将 Python list 临时转换为 NumPy 数组进行计算
-        #    并提取枚举的整数值
-        all_values = np.array([s.value for s in self._status_vector], dtype=np.int8)
+        # 1. _status_vector 本身就是 int8 的「枚举整数值」数组（见 on_worker_end），
+        #    无需再做 `.value` 提取
+        all_values = self._status_vector
 
         # 2. 直接创建 0/1 的整数数组
         binary_arr = np.where(all_values == WorkerStatus.nullData.value, 1, 0)
