@@ -24,11 +24,11 @@ def get_scrapy_status(
 ) -> TypeScrapyStatus:
     match scrapy_type:
         case "dyn":
-            return dyn_detail_scrapy.status_plugin or None
+            return dyn_detail_scrapy.status_plugin or ProgressStatusResp()
         case "topic":
-            return topic_robot.stats_plugin or None
+            return topic_robot.stats_plugin or ProgressStatusResp()
         case "reserve":
-            return reserve_robot.stats_plugin or None
+            return reserve_robot.stats_plugin or ProgressStatusResp()
         case "other_space":
             if other_lot_class and other_lot_class.robot:
                 return ProgressStatusResp(
@@ -54,7 +54,8 @@ def get_scrapy_status(
                     running_params=other_lot_class.robot.dyn_succ_counter.running_params,
                 )
             else:
-                return None
+                # 状态对象缺失时返回默认状态，避免 data 为 None 被 response_model_exclude_none 剔除
+                return ProgressStatusResp()
         case "refresh_bili_official":
             if (
                 refresh_bili_lot_database_crawler.extract_official_lottery
@@ -70,7 +71,9 @@ def get_scrapy_status(
                     update_ts=_progress.update_ts,
                 )
             else:
-                return None
+                # refresh_official_lot_progress 仅在 get_all_lots(is_api_update=True) 中才被创建，
+                # 爬虫尚未跑过时为 None；此处返回默认状态，避免 data 为 None 被 response_model_exclude_none 剔除
+                return ProgressStatusResp()
         case "refresh_bili_reserve":
             if (
                 refresh_bili_lot_database_crawler.reserve_robot
@@ -88,4 +91,5 @@ def get_scrapy_status(
                     update_ts=_progress.update_ts,
                 )
             else:
-                return None
+                # 同上：进度计数器未初始化时返回默认状态，保证 data 字段存在
+                return ProgressStatusResp()
