@@ -21,7 +21,7 @@ BilibiliExplosion 的**核心爬虫后端**。基于 FastAPI，负责 B 站抽�
 | 数据库 | MySQL 8（aiomysql）+ Redis + Milvus（向量库） |
 | ORM / 迁移 | SQLAlchemy 2.x + Alembic（6 库多 target） |
 | 消息队列 | RabbitMQ（FastStream / aio-pika） |
-| 爬虫 | Playwright / Patchright、curl_cffi、cloudscraper、grpc（极验） |
+| 爬虫 | Patchright（Chromium）、curl_cffi、cloudscraper、grpc（极验） |
 | LLM | LangChain + Ollama / OpenAI 兼容 API |
 | 签名 | 通过 HTTP 调用 `unidbgSpringBoot` |
 | 依赖管理 | uv（Python 3.13+） |

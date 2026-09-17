@@ -99,8 +99,6 @@ dev = [
     # 仅用于重新生成 gRPC stub（`*_pb2.py` / `*_pb2_grpc.py`）：
     # 运行期只需要 grpcio，Docker 构建有 UV_NO_DEV=1，不会进镜像。
     "grpcio-tools==1.82.0rc2",
-    # 浏览器也归类到 dev：运行代码只用 patchright.async_api，playwright 包不再入镜像。
-    "playwright>=1.55.0",
 ]
 
 [[tool.uv.index]]
