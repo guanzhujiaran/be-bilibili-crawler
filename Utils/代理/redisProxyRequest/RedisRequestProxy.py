@@ -33,6 +33,7 @@ from CONFIG import CONFIG
 from Service.GrpcModule.Models.CustomRequestErrorModel import (
     Request412Error,
     Request352Error,
+    RequestKnownError,
     RequestProxyResponseError,
     RequestUnknownError,
 )
@@ -239,6 +240,16 @@ class RequestWithProxy:
                             proxy_tab=proxy,
                         )
             raise _err
+        except curl_cffi.requests.exceptions.ImpersonateError as _err:
+            # 客户端指纹（impersonate）问题：异常在 set_curl_options 阶段抛出，
+            # 此时请求还未发出，代理根本没有参与，因此不能惩罚代理。
+            # 同时按“已知可忽略错误”上抛，使其走重试而不是计入上层 3 次硬失败上限，
+            # 避免因为一次随机指纹取错而让整个业务任务被跳过。
+            self.log.warning(
+                f"\n代理：{str(proxy)}\n请求时发生客户端指纹错误（与代理无关，不惩罚代理，直接重试）："
+                f"\n{type(_err)}\n{_err}"
+            )
+            raise RequestKnownError(_err)
         except (
             TooManyRedirects,
             SSLError,

@@ -26,9 +26,14 @@ import traceback
 from datetime import datetime
 import opencc
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from Models.MQ.PrizeExtractResult import PrizeExtractResult, OfficialPrizeExtractResult
-from Service.llm_service import get_all_free_llms, SamplingPreset
+from Service.llm_service import (
+    AllLLMsDisabledError,
+    SamplingPreset,
+    get_all_free_llms,
+    get_llm_stats,
+)
 from Utils.推送.PushMe import a_push_error
 
 T = TypeVar("T")
@@ -92,6 +97,138 @@ def _preprocess_text(dyn_content: str) -> str:
 
 
 # ================================================================
+# 结构化输出容错解析
+# ================================================================
+# 背景：模型（尤其是不支持 json_schema/tool-calling 的免费上游）经常返回
+# 「非标准 JSON」，被 langchain 反序列化后由 pydantic 抛 ValidationError，
+# 导致一次本可挽救的调用被整体判失败。生产日志中出现过的形态：
+#   1. ```json {...} ``` 代码围栏包裹的合法 JSON
+#   2. 直接返回裸布尔（false / **false**），而不是对象
+#   3. thinking 模型的 <think>...</think> 思考过程与 JSON 混排
+#   4. 纯自然语言（无法修复，仍交由上层切换下一个 LLM）
+# 这里只做「本地文本修复」，不额外消耗 token，也不改变原有调用方式。
+
+# 完整的思考块（含 closing tag）
+_THINK_BLOCK_RE = re.compile(r"<think(?:ing)?>.*?</think(?:ing)?>", re.S | re.I)
+# 只有 closing tag 的截断形态（开头的思考内容整体丢弃）
+_OPEN_THINK_RE = re.compile(r"^.*?</think(?:ing)?>", re.S | re.I)
+# Markdown 代码围栏
+_CODE_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.S | re.I)
+# 强调形态的布尔（如 **false** / `true` / *false*）
+_EMPH_BOOL_RE = re.compile(r"(?:\*\*|__|`)\s*(true|false)\s*(?:\*\*|__|`)", re.I)
+# 整段就是一个布尔（允许前后有引号/标点等装饰）
+_STRICT_BOOL_RE = re.compile(
+    r'^[\s"`*_.。，,!！?？]*(true|false)[\s"`*_.。，,!！?？]*$', re.I
+)
+
+
+def _extract_json_object(text: str) -> str | None:
+    """截取文本中第一个花括号配对的 JSON 对象片段（跳过字符串内的花括号）"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_str = False
+    escaped = False
+    for idx in range(start, len(text)):
+        char = text[idx]
+        if in_str:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_str = False
+            continue
+        if char == '"':
+            in_str = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
+def _build_model_from_scalar_bool(value: bool, result_model: type[_TResult]):
+    """把裸布尔映射到模型的唯一布尔字段。
+
+    仅当模型只有一个字段且该字段是 bool 时才认为可安全映射
+    （如 OfficialPrizeExtractResult 只有 is_grand_prize），
+    多字段模型（如 PrizeExtractResult）直接放弃，避免猜错语义。
+    """
+    fields = result_model.model_fields
+    if len(fields) != 1:
+        return None
+    (name, field_info), = fields.items()
+    if field_info.annotation is not bool:
+        return None
+    try:
+        return result_model.model_validate({name: value})
+    except ValidationError:
+        return None
+
+
+def _repair_structured_output(
+    exc: BaseException, result_model: type[_TResult]
+) -> _TResult | None:
+    """尽力把模型返回的非标准输出修复成 result_model 实例；无法修复返回 None。
+
+    仅处理 ValidationError，且只处理作用在模型根上的校验错误（loc 为空），
+    因为这类错误才携带「模型原始返回」本身。
+    """
+    if not isinstance(exc, ValidationError):
+        return None
+    errors = exc.errors()
+    if not errors or errors[0].get("loc"):
+        return None
+    raw = errors[0].get("input")
+
+    # 形态 2：模型直接把单布尔字段的结果返回成 true/false
+    if isinstance(raw, bool):
+        return _build_model_from_scalar_bool(raw, result_model)
+    if not isinstance(raw, str):
+        return None
+
+    # 形态 3：剥离思考块
+    text = _THINK_BLOCK_RE.sub(" ", raw)
+    if "</think" in text.lower():
+        text = _OPEN_THINK_RE.sub(" ", text)
+
+    # 形态 1：剥离代码围栏
+    fenced = _CODE_FENCE_RE.search(text)
+    if fenced:
+        text = fenced.group(1)
+
+    for candidate in (text, _extract_json_object(text)):
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(payload, bool):
+            return _build_model_from_scalar_bool(payload, result_model)
+        if isinstance(payload, dict):
+            try:
+                return result_model.model_validate(payload)
+            except ValidationError:
+                continue
+
+    # 形态 2 的变体：模型以强调/独立成句的方式给出布尔（如 **false**）。
+    # 这里刻意不做「全文扫描 true/false」的宽松兜底：自然语言/代码里出现的
+    # true/false 未必是判定结论，宽松匹配可能悄悄写入错误结论。
+    for pattern in (_EMPH_BOOL_RE, _STRICT_BOOL_RE):
+        bool_match = pattern.search(text)
+        if bool_match:
+            return _build_model_from_scalar_bool(
+                bool_match.group(1).lower() == "true", result_model
+            )
+    return None
+
+
+# ================================================================
 # 核心提取逻辑（共享）
 # ================================================================
 
@@ -111,6 +248,44 @@ async def _push_cloud_unavailable_error(exc: Exception) -> None:
         )
     except Exception as push_err:
         logger.exception(f"推送云端不可用告警失败: {push_err}")
+
+
+def _describe_disabled_llms() -> str:
+    """列出当前已熔断的模型清单（模型名 + 熔断原因），用于告警内容"""
+    try:
+        stats = get_llm_stats()
+    except Exception as e:  # 统计不可用不应影响告警本身
+        return f"（获取熔断明细失败：{type(e).__name__}: {e}）"
+    disabled = [item for item in stats if item.get("disabled")]
+    if not disabled:
+        return "（当前未记录到熔断实例）"
+    lines = [
+        f"- {item.get('model')} @ {item.get('base_url')}：{item.get('disabled_reason')}"
+        for item in disabled
+    ]
+    return "已熔断模型：\n" + "\n".join(lines)
+
+
+async def _push_all_llms_disabled_error(exc: Exception) -> None:
+    """全部云端 LLM 均已熔断时推送告警（经 message-service 推到 pushplus）。
+
+    与「本轮全部失败、仍在等比退避重试」不同：熔断是不可恢复状态
+    （模型下线 / 鉴权失败等 HTTP 400/401/403/404），本次不会再重试，
+    只能等服务重启或热更新 llm_apis 配置后恢复，因此单独告警。
+    """
+    try:
+        await a_push_error(
+            subject="云端LLM全部熔断（抽奖判断已中断）",
+            content=(
+                "所有云端 LLM 均已因不可恢复错误（模型下线 / 鉴权失败等 400/401/403/404）"
+                "被熔断，抽奖判断（含大奖判断）本次不再重试，"
+                "需重启服务或热更新 llm_apis 配置后才能恢复。\n"
+                f"{_describe_disabled_llms()}\n"
+                f"错误信息：{exc}"
+            ),
+        )
+    except Exception as push_err:
+        logger.exception(f"推送云端 LLM 全部熔断告警失败: {push_err}")
 
 
 async def _do_extract(
@@ -146,16 +321,6 @@ async def _do_extract(
             consume_time=time.time() - start_ts,
             result=result_model(),
         )
-    if chat_openai_client:
-        all_llms = [chat_openai_client]
-    else:
-        try:
-            all_llms = get_all_free_llms()
-        except RuntimeError as e:
-            # 未配置任何云端 LLM：不再回退，直接抛错
-            await _push_cloud_unavailable_error(e)
-            raise
-
     # 全部 LLM 均失败时采用等比退避持续重试：等待时间按等比数列递增，
     # 到 _RETRY_MAX_DELAY 后维持上限，直至某一次调用成功为止，不“放弃并跳过保存”。
     # （示例序列：10s → 20s → 40s → ... → 300s → 300s → ...）
@@ -163,6 +328,21 @@ async def _do_extract(
     retry_delay = _RETRY_BASE_DELAY
     alerted = False
     while True:
+        if chat_openai_client:
+            all_llms = [chat_openai_client]
+        else:
+            try:
+                # 每轮都重新取实例列表：被熔断（不可恢复错误）的模型会立即被剔除，
+                # 全部熔断时立刻告警并抛出，而不是拿着旧快照无限退避重试。
+                all_llms = get_all_free_llms()
+            except AllLLMsDisabledError as e:
+                # 全部模型熔断：不可恢复，发送告警（pushplus）后直接抛出
+                await _push_all_llms_disabled_error(e)
+                raise
+            except RuntimeError as e:
+                # 未配置任何云端 LLM：不再回退，直接抛错
+                await _push_cloud_unavailable_error(e)
+                raise
         for idx, llm in enumerate(all_llms):
             llm = llm.bind(
                 **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256)
@@ -190,6 +370,19 @@ async def _do_extract(
                     result=result,
                 )
             except Exception as e:
+                # 结构化解析失败时先尝试本地修复（围栏 / 裸布尔 / 思考块等），
+                # 修复成功则直接采用，避免一次本可挽救的调用被整体判失败
+                repaired = _repair_structured_output(e, result_model)
+                if repaired is not None:
+                    logger.warning(
+                        f"免费 LLM [{idx + 1}/{len(all_llms)}] 输出格式不合规"
+                        f"（{type(e).__name__}），已本地修复后采用: {repaired}"
+                    )
+                    return PrizeExtractResp(
+                        dyn_content=text,
+                        consume_time=time.time() - start_ts,
+                        result=repaired,
+                    )
                 logger.error(
                     f"免费 LLM [{idx + 1}/{len(all_llms)}] 抽奖判断失败"
                     f"（{type(e).__name__}: {e}），尝试下一个"

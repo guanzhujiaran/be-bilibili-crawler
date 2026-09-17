@@ -28,6 +28,15 @@ _free_llm_cache: list[TrackedChatOpenAI] = []
 _free_llm_cache_key: str = ""
 
 
+class AllLLMsDisabledError(RuntimeError):
+    """所有云端 LLM 均已熔断（模型下线 / 鉴权失败等不可恢复错误）。
+
+    继承 RuntimeError，兼容调用方既有的 ``except RuntimeError`` 处理；
+    调用方可据此单独发送告警：这不是「暂时失败、仍在重试」，
+    而是不可恢复状态，只能等重启或热更新 llm_apis 配置后恢复。
+    """
+
+
 def _build_free_llms() -> list[TrackedChatOpenAI]:
     """从当前 settings.llm_apis 构建云端 LLM 实例列表"""
     llms: list[TrackedChatOpenAI] = []
@@ -111,11 +120,12 @@ def _map_kwargs_for_openai(kwargs: dict[str, Any]) -> dict[str, Any]:
 def get_all_free_llms() -> list[TrackedChatOpenAI]:
     """返回当前所有云端(免费) LLM 实例（已按轮询顺序旋转，并应用采样参数）。
 
-    可用的实例（stats.available 为 True）排在前面；不可用实例不剔除，
-    仅后置，给其恢复机会。调用方应逐个尝试，只有当【所有】实例都调用
-    失败时，才认为云端不可用（进而决定是否回退到正则判断等）。
+    - 已熔断的实例（disabled：模型下线/鉴权失败等不可恢复错误）会被剔除，不再尝试；
+    - 其余可用实例（stats.available 为 True）排在前面，暂时不可用实例仅后置，
+      给其恢复机会。调用方应逐个尝试，只有当【所有】实例都调用失败时，
+      才认为云端不可用（进而决定是否回退到正则判断等）。
 
-    若未配置任何云端 API（llm_apis 为空），抛出 RuntimeError。
+    若未配置任何云端 API（llm_apis 为空），或全部实例均已熔断，抛出 RuntimeError。
 
     用法：
         for llm in get_all_free_llms(num_predict=256):
@@ -125,9 +135,17 @@ def get_all_free_llms() -> list[TrackedChatOpenAI]:
     rotated, _ = _next_rotated_llms()
     if not rotated:
         raise RuntimeError("未配置任何云端 LLM（llm_apis 为空），无法进行云端判断")
-    # 可用实例优先，不可用实例后置（保持各自相对顺序）
-    ordered = [llm for llm in rotated if llm.available] + [
-        llm for llm in rotated if not llm.available
+    alive = [llm for llm in rotated if not llm.disabled]
+    if not alive:
+        detail = "; ".join(
+            f"{llm.model_name}（{llm.stats.disabled_reason}）" for llm in rotated
+        )
+        raise AllLLMsDisabledError(
+            f"全部云端 LLM 均已熔断（不可恢复错误），无法进行云端判断：{detail}"
+        )
+    # 可用实例优先，暂时不可用实例后置（保持各自相对顺序）
+    ordered = [llm for llm in alive if llm.available] + [
+        llm for llm in alive if not llm.available
     ]
 
     return list(ordered)

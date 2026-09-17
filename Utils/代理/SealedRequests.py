@@ -3,10 +3,10 @@ import random
 import ssl
 import typing
 from typing import Union
-
-from curl_cffi import Response, CurlHttpVersion, BrowserTypeLiteral, requests
-
-# from httpx import AsyncClient
+from curl_cffi import Curl, Response, CurlHttpVersion, BrowserTypeLiteral, requests
+from curl_cffi.fingerprints import FingerprintManager
+from curl_cffi.requests.utils import _is_native_impersonate_target
+from curl_cffi.requests.impersonate import resolve_latest_browser_type
 from httpx._types import (
     RequestContent,
     RequestFiles,
@@ -17,6 +17,60 @@ from httpx._types import (
 )
 
 from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
+
+# curl_cffi 内部实现变动导致探测失败时的兜底目标（别名，会被解析成最新版本）
+_FALLBACK_IMPERSONATE_TARGETS = ("chrome", "edge", "safari", "firefox")
+
+
+def _probe_impersonate_target(target: str, named_fingerprints: set[str]) -> bool:
+    """实测单个 impersonate 目标是否真的可用。
+
+    必须复刻 curl_cffi 在 set_curl_options 里的分支口径，只看任何一边都会误判：
+
+    - 原生分支：库会先 resolve_latest_browser_type() 再调 Curl.impersonate()，
+      返回非 0 表示底层 .so 确实不支持。注意不能用裸名去调 Curl.impersonate，
+      例如 "chrome" 裸调返回 43，但库先解析成 chrome150 之后是成功的。
+    - 扩展分支：名字不在原生名单里时，库改查指纹库（内置 + impersonate.pro 下发），
+      查不到就直接抛 ImpersonateError。典型例子正是 safari18_4 / safari18_4_ios：
+      底层 .so 其实支持（Curl.impersonate 返回 0），但 Python 侧名单没登记、
+      指纹库也没有，库永远进不了原生分支 → 实际仍然不可用。
+    """
+
+    if _is_native_impersonate_target(target):
+        curl = Curl()
+        try:
+            if curl.impersonate(resolve_latest_browser_type(target)) == 0:
+                return True
+        finally:
+            try:
+                curl.close()
+            except Exception:  # noqa: BLE001 句柄关闭失败不影响判定结果
+                pass
+    return target in named_fingerprints
+
+
+def _build_supported_impersonate_targets() -> list[str]:
+    """对候选目标逐个实测，构建 curl_cffi 当前构建真正支持的 impersonate 白名单。
+
+    ``BrowserTypeLiteral.__args__`` 只是给类型检查器看的字面量清单：它既可能残留
+    底层已移除的 deprecated 别名，也可能漏掉底层其实支持的名字，因此不能当作支持
+    清单使用。这里对全部候选逐个实测（每个目标走一遍库的真实分支口径），只保留
+    真正能用的，避免依赖任何硬编码的黑白名单。
+    """
+    try:
+        named_fingerprints = set(FingerprintManager.load_fingerprints())
+        targets = [
+            target
+            for target in BrowserTypeLiteral.__args__
+            if _probe_impersonate_target(target, named_fingerprints)
+        ]
+    except Exception:  # curl_cffi 内部实现变动时静默退回兜底白名单
+        targets = []
+    return targets or list(_FALLBACK_IMPERSONATE_TARGETS)
+
+
+# 进程启动时确定一次即可，请求路径上只做随机取值，不再重复探测
+SUPPORTED_IMPERSONATE_TARGETS = _build_supported_impersonate_targets()
 
 
 class SSLFactory:
@@ -245,7 +299,7 @@ class MYASYNCHTTPX:
         format_proxy_str = format_httpx_proxy(proxies)
         if type(headers) is tuple:
             headers = list(headers)
-        impersonate = random.choice(list(BrowserTypeLiteral.__args__))
+        impersonate = random.choice(SUPPORTED_IMPERSONATE_TARGETS)
         async with requests.AsyncSession(
             max_clients=1000,
             allow_redirects=True,
@@ -282,7 +336,7 @@ class MYASYNCHTTPX:
         format_proxy_str = format_httpx_proxy(proxies)
         if type(headers) is tuple:
             headers = list(headers)
-        impersonate = random.choice(list(BrowserTypeLiteral.__args__))
+        impersonate = random.choice(SUPPORTED_IMPERSONATE_TARGETS)
         async with requests.AsyncSession(
             max_clients=1000,
             allow_redirects=True,
@@ -351,7 +405,7 @@ class MYASYNCHTTPX:
             format_proxy_str = format_httpx_proxy(proxies)
         if type(headers) is tuple:
             headers = list(headers)
-        impersonate = random.choice(list(BrowserTypeLiteral.__args__))
+        impersonate = random.choice(SUPPORTED_IMPERSONATE_TARGETS)
         async with requests.AsyncSession(
             max_clients=1000,
             allow_redirects=True,
@@ -385,7 +439,7 @@ if __name__ == "__main__":
     loop = asyncio.get_event_loop()
     task = loop.create_task(
         MyAsyncReq.request(
-            method="get",
+            method="GET",
             url="https://test.ipw.cn",
             headers=(
                 ("Referer", "https://www.bilibili.com/"),

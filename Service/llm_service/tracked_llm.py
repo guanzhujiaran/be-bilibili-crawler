@@ -22,8 +22,25 @@ from pydantic import BaseModel, Field, PrivateAttr, computed_field
 # 连续失败达到该次数后判定为不可用
 MAX_CONSECUTIVE_FAILURES = 3
 
+# 这些 HTTP 状态码代表「模型/配置层面已不可用」（模型下线、模型不存在、
+# 鉴权失败等），重试没有任何意义，直接熔断该实例，避免每轮抽奖判断都白跑一次。
+# 注意：429（限流）与 5xx / 超时属于可恢复错误，不在其列。
+NON_RETRYABLE_STATUS_CODES = frozenset({400, 401, 403, 404})
+
 # 速率统计窗口（秒）
 RATE_WINDOW_SECONDS = 60.0
+
+
+def _extract_status_code(error: BaseException) -> int | None:
+    """从异常中提取 HTTP 状态码（openai 的 APIStatusError 及其子类均有该属性）"""
+    status_code = getattr(error, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code
+    response = getattr(error, "response", None)
+    response_status = getattr(response, "status_code", None)
+    if isinstance(response_status, int):
+        return response_status
+    return None
 
 # 全局共享的 LLM 调用锁：所有 TrackedChatOpenAI 实例共用同一把锁，
 # 保证任意时刻只有一个 LLM 请求真正打到上游，消除账户级并发超限（429/1302）。
@@ -52,13 +69,20 @@ class LLMUsageStats(BaseModel):
     input_tokens: int = Field(default=0, description="累计输入（prompt）token 数")
     output_tokens: int = Field(default=0, description="累计输出（completion）token 数")
     total_tokens: int = Field(default=0, description="累计消耗 token 总数")
+    disabled: bool = Field(
+        default=False, description="是否已熔断：遇到不可恢复错误（模型下线/鉴权失败等）"
+    )
+    disabled_reason: str | None = Field(default=None, description="熔断原因")
 
     _recent_calls: deque[float] = PrivateAttr(default_factory=lambda: deque(maxlen=512))
 
-    @computed_field(description="是否可用：连续失败未达到阈值即视为可用")  # type: ignore[prop-decorator]
+    @computed_field(description="是否可用：未熔断且连续失败未达到阈值")  # type: ignore[prop-decorator]
     @property
     def available(self) -> bool:
-        return self.consecutive_failures < MAX_CONSECUTIVE_FAILURES
+        return (
+            not self.disabled
+            and self.consecutive_failures < MAX_CONSECUTIVE_FAILURES
+        )
 
     @computed_field(description="最近 60 秒内的调用次数")  # type: ignore[prop-decorator]
     @property
@@ -106,6 +130,11 @@ class LLMUsageStats(BaseModel):
         self.failure_count += 1
         self.consecutive_failures += 1
         self.last_error = repr(error)
+        status_code = _extract_status_code(error)
+        if status_code in NON_RETRYABLE_STATUS_CODES and not self.disabled:
+            # 模型下线 / 鉴权失败等：重试无意义，直接熔断（重启或热更新配置后恢复）
+            self.disabled = True
+            self.disabled_reason = f"HTTP {status_code}（不可恢复错误）：{error}"
 
 
 def _extract_token_usage(result: Any) -> dict[str, int]:
@@ -140,6 +169,20 @@ class TrackedChatOpenAI(ChatOpenAI):
     def available(self) -> bool:
         return self._stats.available
 
+    @property
+    def disabled(self) -> bool:
+        return self._stats.disabled
+
+    def _log_if_disabled(self) -> None:
+        """熔断时打印一次明确告警，便于定位到具体是哪条模型配置出了问题"""
+        if self._stats.disabled:
+            logger.warning(
+                "LLM 已熔断，本次运行不再调用该模型：model={} base_url={} 原因={}",
+                self.model_name,
+                self.openai_api_base,
+                self._stats.disabled_reason,
+            )
+
     def invoke(
         self,
         input: Any,
@@ -155,7 +198,10 @@ class TrackedChatOpenAI(ChatOpenAI):
             # 故同步路径直接发起请求（全局锁仅作用于异步 ainvoke）。
             result = super().invoke(input, config, stop=stop, **kwargs)
         except BaseException as e:
+            was_disabled = self._stats.disabled
             self._stats.record_failure(e)
+            if not was_disabled and self._stats.disabled:
+                self._log_if_disabled()
             logger.warning(
                 "LLM 调用失败 model={} base_url={} stats={}",
                 self.model_name,
@@ -185,7 +231,10 @@ class TrackedChatOpenAI(ChatOpenAI):
                     input, config, stop=stop, **kwargs
                 )
         except BaseException as e:
+            was_disabled = self._stats.disabled
             self._stats.record_failure(e)
+            if not was_disabled and self._stats.disabled:
+                self._log_if_disabled()
             logger.error(
                 f"LLM 调用失败\n{e}" 
                 f"model={ self.model_name}"
