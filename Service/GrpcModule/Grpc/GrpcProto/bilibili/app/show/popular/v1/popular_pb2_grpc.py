@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.app.show.popular.v1 import popular_pb2 as bilibili_dot_app_dot_show_dot_popular_dot_v1_dot_popular__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

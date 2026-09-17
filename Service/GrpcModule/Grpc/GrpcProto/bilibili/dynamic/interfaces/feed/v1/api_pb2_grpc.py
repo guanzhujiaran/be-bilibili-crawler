@@ -6,7 +6,7 @@ import warnings
 from bilibili.dynamic.common import dynamic_pb2 as bilibili_dot_dynamic_dot_common_dot_dynamic__pb2
 from bilibili.dynamic.interfaces.feed.v1 import api_pb2 as bilibili_dot_dynamic_dot_interfaces_dot_feed_dot_v1_dot_api__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

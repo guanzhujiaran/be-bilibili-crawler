@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.app.viewunite.v1 import viewunite_pb2 as bilibili_dot_app_dot_viewunite_dot_v1_dot_viewunite__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

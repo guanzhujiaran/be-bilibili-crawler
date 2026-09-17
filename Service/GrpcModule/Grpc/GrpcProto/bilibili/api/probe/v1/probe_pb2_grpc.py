@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.api.probe.v1 import probe_pb2 as bilibili_dot_api_dot_probe_dot_v1_dot_probe__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

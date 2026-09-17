@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.app.interfaces.v1 import search_pb2 as bilibili_dot_app_dot_interfaces_dot_v1_dot_search__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

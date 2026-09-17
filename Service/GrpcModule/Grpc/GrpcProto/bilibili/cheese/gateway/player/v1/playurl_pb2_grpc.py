@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.cheese.gateway.player.v1 import playurl_pb2 as bilibili_dot_cheese_dot_gateway_dot_player_dot_v1_dot_playurl__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

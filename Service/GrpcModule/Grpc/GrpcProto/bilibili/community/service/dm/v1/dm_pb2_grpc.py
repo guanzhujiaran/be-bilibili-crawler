@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.community.service.dm.v1 import dm_pb2 as bilibili_dot_community_dot_service_dot_dm_dot_v1_dot_dm__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

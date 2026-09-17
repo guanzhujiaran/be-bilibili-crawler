@@ -5,7 +5,7 @@ import warnings
 
 from bilibili.main.community.reply.v1 import reply_pb2 as bilibili_dot_main_dot_community_dot_reply_dot_v1_dot_reply__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

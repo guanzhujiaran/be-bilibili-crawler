@@ -6,7 +6,7 @@ import warnings
 from bilibili.im.interfaces.v1 import im_pb2 as bilibili_dot_im_dot_interfaces_dot_v1_dot_im__pb2
 from bilibili.im.type import im_pb2 as bilibili_dot_im_dot_type_dot_im__pb2
 
-GRPC_GENERATED_VERSION = '1.82.0rc2'
+GRPC_GENERATED_VERSION = '1.84.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
