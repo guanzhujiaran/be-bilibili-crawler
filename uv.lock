@@ -901,7 +901,7 @@ all = [
     { name = "itsdangerous" },
     { name = "jinja2" },
     { name = "pydantic-extra-types", version = "2.11.1", source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }, marker = "python_full_version < '3.14' or sys_platform != 'win32'" },
-    { name = "pydantic-extra-types", version = "2.11.2", source = { registry = "https://mirrors.huaweicloud.com/repository/pypi/simple/" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
+    { name = "pydantic-extra-types", version = "2.11.2", source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "pyyaml" },
@@ -914,7 +914,7 @@ standard = [
     { name = "httpx" },
     { name = "jinja2" },
     { name = "pydantic-extra-types", version = "2.11.1", source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }, marker = "python_full_version < '3.14' or sys_platform != 'win32'" },
-    { name = "pydantic-extra-types", version = "2.11.2", source = { registry = "https://mirrors.huaweicloud.com/repository/pypi/simple/" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
+    { name = "pydantic-extra-types", version = "2.11.2", source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }, marker = "python_full_version >= '3.14' and sys_platform == 'win32'" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
@@ -1139,7 +1139,7 @@ requires-dist = [
     { name = "sqlacodegen-v2", specifier = ">=0.1.4" },
     { name = "sqlmodel", specifier = ">=0.0.27" },
     { name = "strawberry-graphql", extras = ["fastapi"], specifier = ">=0.284.1" },
-    { name = "strawberry-sqlalchemy-mapper", specifier = ">=0.8.0" },
+    { name = "strawberry-sqlalchemy-mapper", specifier = "==0.8.0" },
     { name = "tqdm", specifier = ">=4.68.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.38.0" },
 ]
@@ -2916,7 +2916,7 @@ wheels = [
 [[package]]
 name = "pydantic-extra-types"
 version = "2.11.2"
-source = { registry = "https://mirrors.huaweicloud.com/repository/pypi/simple/" }
+source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
 ]
@@ -2924,9 +2924,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://mirrors.huaweicloud.com/repository/pypi/packages/41/d3/3be31542180c0300b6860129ff1e3a428f3ef580727616ce22462626129b/pydantic_extra_types-2.11.2.tar.gz", hash = "sha256:3a2b83b61fe920925688e7838b59caa90a45637d1dbba2b1364b8d1f7ff72a0a" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/41/d3/3be31542180c0300b6860129ff1e3a428f3ef580727616ce22462626129b/pydantic_extra_types-2.11.2.tar.gz", hash = "sha256:3a2b83b61fe920925688e7838b59caa90a45637d1dbba2b1364b8d1f7ff72a0a" }
 wheels = [
-    { url = "https://mirrors.huaweicloud.com/repository/pypi/packages/92/a4/7b6ab05c18d6c6e682382a0f0235301684452c4131a869f45961d1d032c9/pydantic_extra_types-2.11.2-py3-none-any.whl", hash = "sha256:683b8943252543e49760f89733b1519bc62f31d1a287ebbdc5a7b7959fb4acfd" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/92/a4/7b6ab05c18d6c6e682382a0f0235301684452c4131a869f45961d1d032c9/pydantic_extra_types-2.11.2-py3-none-any.whl", hash = "sha256:683b8943252543e49760f89733b1519bc62f31d1a287ebbdc5a7b7959fb4acfd" },
 ]
 
 [[package]]
@@ -3650,7 +3650,7 @@ fastapi = [
 
 [[package]]
 name = "strawberry-sqlalchemy-mapper"
-version = "0.9.0"
+version = "0.8.0"
 source = { registry = "https://mirrors.cloud.tencent.com/pypi/simple/" }
 dependencies = [
     { name = "greenlet" },
@@ -3658,11 +3658,10 @@ dependencies = [
     { name = "sqlakeyset" },
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "strawberry-graphql" },
-    { name = "typing-extensions" },
 ]
-sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/9e/25/98c81c84197cdc1b1c83367cd14fc290ae91853c6c910ec35719454413ec/strawberry_sqlalchemy_mapper-0.9.0.tar.gz", hash = "sha256:334838d274ae987a2afa4104899d3f5b2cb082e4a9ae4c64043a9f9822549e1c" }
+sdist = { url = "https://mirrors.cloud.tencent.com/pypi/packages/86/ff/ccdc54830a357ca898aae2368807f6522f5a1bc2cefe24255f2d6c5ad026/strawberry_sqlalchemy_mapper-0.8.0.tar.gz", hash = "sha256:8de01e616d0afe8a325736ea5483a1d9f439b5febb0c43449fe68e157735da70" }
 wheels = [
-    { url = "https://mirrors.cloud.tencent.com/pypi/packages/e4/db/58955820f932c128072e28a404730715c1a67467ca351a02070d5f8e1c27/strawberry_sqlalchemy_mapper-0.9.0-py3-none-any.whl", hash = "sha256:7879e0fad3c4fa97ff6f273857b0bfb339e1bd9af8944ae08e5c3dc11dd2f970" },
+    { url = "https://mirrors.cloud.tencent.com/pypi/packages/f2/1f/cae88ec6f0b45f983972801c0ba093f7332e4b099ff3b48bbc1c6bb937f8/strawberry_sqlalchemy_mapper-0.8.0-py3-none-any.whl", hash = "sha256:7341327c31898547ccbc3e50c01f8c1dc009af0fb90a5c71aeda857016fb870c" },
 ]
 
 [[package]]
