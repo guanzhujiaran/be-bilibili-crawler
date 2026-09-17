@@ -36,10 +36,51 @@ class BaseFastStreamMQ:
         }
 
 
-# log_level 控制 FastStream 框架自身的日志级别（settings.faststream_log_level）
+# FastStream 的 log_level 是「复用」的：它既是日志门槛，又是框架自身通知
+# （Received / Processed / `xxx waiting for messages`）的记录级别——见 faststream 的
+# LoggerState.log：`log_level or self.log_level`。所以若直接把门槛设成 WARNING，
+# 这些本质是 debug 的通知会伪装成 WARNING 刷屏
+# （如 `... WARNING - bili_data | PrizeExtractDynDetailQueue | xxx - Processed`）。
+#
+# 按官方文档建议「lower the level of logs that the broker publishes itself」，
+# 这里把 broker 的 log_level 固定为 DEBUG，让这些通知回归真实的 debug 语义；
+# 再由下面的过滤器按 settings.faststream_log_level 统一控制输出门槛
+# （生产 WARNING → 只打印 warning 及以上），真实的 WARNING / ERROR / CRITICAL 不受影响。
+_faststream_output_level = getattr(
+    logging, settings.faststream_log_level.upper(), logging.WARNING
+)
+
+
+class _FastStreamMinLevelFilter(logging.Filter):
+    """按配置门槛过滤 FastStream access 日志（生产下只放行 warning 及以上）。
+
+    FastStream 的 access logger 自身 handler 不设级别，门槛统一由本过滤器承担；
+    这样与 broker 的 log_level（固定 DEBUG，仅用于给通知标级别）解耦。
+    """
+
+    def __init__(self, min_level: int) -> None:
+        super().__init__()
+        self._min_level = min_level
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno >= self._min_level
+
+
+# FastStream 的 access logger 固定名为 faststream.access.rabbit；此处提前挂上过滤器，
+# 后续框架惰性创建 handler 时不会清除 logger 上已注册的 filter。
+_faststream_access_logger = logging.getLogger("faststream.access.rabbit")
+if not any(
+    isinstance(f, _FastStreamMinLevelFilter) for f in _faststream_access_logger.filters
+):
+    _faststream_access_logger.addFilter(
+        _FastStreamMinLevelFilter(_faststream_output_level)
+    )
+
+
 router = RabbitRouter(
     url=CONFIG.RabbitMQConfig.broker_url,
-    log_level=getattr(logging, settings.faststream_log_level.upper(), logging.INFO),
+    # 固定 DEBUG：让框架通知回到真实的 debug 语义；输出门槛由上面的过滤器控制
+    log_level=logging.DEBUG,
 )
 
 
