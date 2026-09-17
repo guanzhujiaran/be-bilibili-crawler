@@ -59,7 +59,11 @@ dependencies = [
     "sqlacodegen-v2>=0.1.4",
     "sqlmodel>=0.0.27",
     "strawberry-graphql[fastapi]>=0.284.1",
-    "strawberry-sqlalchemy-mapper>=0.7.0",
+    # 必须锁 0.8.x：0.9.0 起 BigInt 以 NewType 暴露，strawberry 不再把它解析成标量，
+    # 导致 Service/samsclub/Sql/SdlHelper.py 构建 schema 时抛
+    # `TypeError: SpuPriceInfoType fields cannot be resolved. Unexpected type
+    #  'strawberry_sqlalchemy_mapper.scalars.BigInt'`（main.py 导入即崩、容器起不来）。
+    "strawberry-sqlalchemy-mapper==0.8.0",
     "tqdm>=4.68.3",
     "uvicorn[standard]>=0.38.0",
 ]
