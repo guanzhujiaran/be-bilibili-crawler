@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator
 from pydantic import computed_field
 
 from Models.base.custom_pydantic import CustomBaseModel
+from Models.base.str_int import StrInt
 
 # 排序/时间筛选枚举已统一迁移至 bili_common.models，此处 re-export 供存量引用兼容
 from bili_common.models import (
@@ -242,6 +243,20 @@ class GetLotteryDetailReq(BaseModel):
     """按 lottery_id 获取单个抽奖卡片详情的请求体。"""
 
     lottery_id: int = Field(description="lotdata 主键 lottery_id（对外互动资源 ID）")
+
+
+class GetOthersLotDynDetailReq(BaseModel):
+    """按 dynId 获取单个第三方抽奖动态详情的请求体（2.61.0）。
+
+    第三方抽奖动态没有 `lottery_id`，互动 / 详情一律以 `dynId` 定位
+    （对应 be-message 的 `others_lot_dyn` 资源类型，bizType=15）。
+
+    `dyn_id` 是 19 位雪花 ID，超过 JS `Number` 安全整数范围：前端 / 网关一旦
+    经过 JS Number 就会丢精度（`...52360` → `...52400`）导致查询 404，
+    故入参用 `StrInt` 接受字符串，由后端归一为 int（前端统一以字符串传）。
+    """
+
+    dyn_id: StrInt = Field(description="第三方抽奖动态 dynId（biliopusdb.t_lotdyninfo.dynId；雪花 ID，支持字符串传参避免 JS 精度丢失）")
 
 
 class CommonLotExtraInfoResp(BaseModel):

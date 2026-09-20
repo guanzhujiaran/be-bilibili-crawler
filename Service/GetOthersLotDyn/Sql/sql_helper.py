@@ -1094,6 +1094,14 @@ class __SqlHelper(SqlHelperBase):
             return {row.ref_id: row for row in rows}
 
     @log_sql_retry_wrapper()
+    async def get_dyn_info_by_dyn_id(self, dyn_id: int | str) -> TLotdyninfo | None:
+        """按 dynId 取单条第三方抽奖动态（2.61.0：供卡片详情页 / 存在性校验使用）。"""
+        async with self.async_session() as session:
+            stmt = select(TLotdyninfo).filter(TLotdyninfo.dynId == int(dyn_id)).limit(1)
+            res = await session.execute(stmt)
+            return res.scalars().first()
+
+    @log_sql_retry_wrapper()
     async def is_extra_info_exists(self, ref_id: int, lot_type: str) -> bool:
         """检查 biliopusdb 是否已存在该 (ref_id, lot_type) 的提取信息。
 

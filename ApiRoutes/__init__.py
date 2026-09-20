@@ -105,6 +105,7 @@ class RouterPaths(StrEnumAutoDoc):
     GET_OTHERS_LOT_DYN_LIST = "/GetOthersLotDynList"  # 获取第三方抽奖动态列表（分页+排序）
     GET_LOTTERY_FILTER_PARAMS = "/GetLotteryFilterParams"  # 获取抽奖查询筛选参数元数据
     GET_LOTTERY_DETAIL = "/GetLotteryDetail"  # 按 lottery_id 获取单个抽奖卡片详情
+    GET_OTHERS_LOT_DYN_DETAIL = "/GetOthersLotDynDetail"  # 按 dynId 获取单个第三方抽奖动态详情
     
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "/AddDynamicLottery"  # 提交抽奖动态
@@ -203,6 +204,7 @@ class RouterNames(StrEnumAutoDoc):
     GET_OTHERS_LOT_DYN_LIST = "get_others_lot_dyn_list"  # 获取第三方抽奖动态列表
     GET_LOTTERY_FILTER_PARAMS = "get_lottery_filter_params"  # 获取抽奖查询筛选参数元数据
     GET_LOTTERY_DETAIL = "get_lottery_detail"  # 按 lottery_id 获取单个抽奖卡片详情
+    GET_OTHERS_LOT_DYN_DETAIL = "get_others_lot_dyn_detail"  # 按 dynId 获取单个第三方抽奖动态详情
     
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "add_dynamic_lottery"  # 提交抽奖动态

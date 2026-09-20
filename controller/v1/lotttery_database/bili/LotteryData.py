@@ -45,6 +45,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
     LotteryDetailResp,
     GetLotteryDetailReq,
+    GetOthersLotDynDetailReq,
 )
 from Models.v1.background_service.background_service_model import (
     AllLotScrapyStatusResp,
@@ -668,3 +669,37 @@ async def api_GetLotteryDetail(params: GetLotteryDetailReq):
             ),
         )
     )
+
+
+@router.post(
+    RouterPaths.GET_OTHERS_LOT_DYN_DETAIL,
+    name=RouterNames.GET_OTHERS_LOT_DYN_DETAIL,
+    summary="按 dynId 获取单个第三方抽奖动态详情",
+    response_model=CommonResponseModel[OthersLotDynItem],
+    response_model_exclude_none=True,
+    description="""供前端第三方抽奖动态详情页按 dynId 拉取单条数据，形态与 GetOthersLotDynList
+列表项完全一致（含 t_lot_extra_info 附加信息），可直接 normalizeLotteryData 渲染。
+第三方抽奖动态没有 lottery_id，**不能**走 GetLotteryDetail（那按 lotdata 主键查）。""",
+)
+@cache(expire=60)
+async def api_GetOthersLotDynDetail(params: GetOthersLotDynDetailReq):
+    row = await SqlHelper.get_dyn_info_by_dyn_id(params.dyn_id)
+    if row is None:
+        return CommonResponseModel(code=404, msg="第三方抽奖动态不存在", data=None)
+    obj = OthersLotDynItem.model_validate(row)
+    cached = (await SqlHelper.get_extra_info_map_by_ref_ids([int(row.dynId)], "common")).get(
+        int(row.dynId)
+    )
+    if cached:
+        obj.extra_info = CommonLotExtraInfoResp(
+            is_lot=bool(cached.is_lot),
+            is_grand_prize=bool(cached.is_grand_prize),
+            need_comment=bool(cached.need_comment),
+            need_repost=bool(cached.need_repost),
+            required_topic_text=cached.required_topic_text,
+            prize_names=cached.prize_names or [],
+            lottery_time=cached.lottery_time,
+            lot_type=cached.lot_type,
+            predicted_at=cached.predicted_at,
+        )
+    return CommonResponseModel(data=obj)

@@ -70,6 +70,7 @@ from Service.lottery_database.bili_lotterty import (
     process_others_lot_dyn,
 )
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
+from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 
 from Utils.推送.PushMe import a_pushme
 from bili_common.models import RpcMethodName
@@ -83,9 +84,13 @@ from bili_common.models import (
     CheckLotteryExistRpcParams,
     CheckLotteryExistRpcResult,
     LotteryDetailItem,
+    CheckOthersLotDynExistRpcParams,
+    CheckOthersLotDynExistRpcResult,
+    OthersLotDynDetailItem,
 )
 from controller.v1.mq.rpc_server import rpc_subscriber
-from sqlalchemy import or_, select
+from loguru import logger
+from sqlalchemy import func, or_, select, text
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 
@@ -358,3 +363,141 @@ async def _handle_check_lottery_exist_batch(params: CheckLotteryExistRpcParams) 
         # 弱依赖：查询失败返回空 items（be-message 侧降级保留原节点）
         items = []
     return CommonResponseModel(data=CheckLotteryExistRpcResult(items=items))
+
+
+# ==================== 第三方抽奖动态存在性校验（2.61.0）====================
+# 第三方抽奖动态（biliopusdb.t_lotdyninfo）没有 lotdata.lottery_id，
+# 若拿 dynId 走 check_lottery_exist 必然判不存在；be-message 的
+# `others_lot_dyn`（bizType=15）资源类型改走本 RPC 校验，两个命名空间互不干扰。
+
+
+def _others_lot_dyn_title(author_name: str | None, dyn_id: int) -> str:
+    """第三方抽奖动态卡片标题（与前端 lotteryNormalization 的 THIRD_PARTY 口径一致）。"""
+    return f"{author_name} 的抽奖动态" if author_name else f"第三方抽奖 #{dyn_id}"
+
+
+async def _log_others_lot_dyn_miss(dyn_ids: list[int]) -> None:
+    """全部未命中时的诊断日志（排查用，仅未命中才触发一次轻量查询）。
+
+    打印**当前连接的实际库名** + 表内 dynId 的行数与取值范围，用于区分两种根因：
+    - 表内行数 > 0 且范围与传入值同量级 → 同库但这些行确实不存在（数据被删 / id 来源不同）；
+    - 表内为空或量级完全不同 / 库名与列表接口不同 → 查的库不是列表接口那个（配置 / 环境不一致）。
+    """
+    try:
+        async with SqlHelper.async_session() as session:
+            row = (
+                await session.execute(
+                    select(
+                        func.min(TLotdyninfo.dynId),
+                        func.max(TLotdyninfo.dynId),
+                        func.count(),
+                    )
+                )
+            ).first()
+            db_name = (await session.execute(text("SELECT DATABASE()"))).scalar()
+        logger.warning(
+            f"[check_others_lot_dyn_exist] 全部未命中: 传入 {len(dyn_ids)} 个 "
+            f"dyn_ids={dyn_ids[:3]}...; 当前库={db_name} t_lotdyninfo 行数="
+            f"{row[2] if row else '?'} dynId 范围=({row[0] if row else '?'}, {row[1] if row else '?'})"
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[check_others_lot_dyn_exist] 未命中诊断查询失败: {e}")
+
+
+@rpc_subscriber(RpcMethodName.CHECK_OTHERS_LOT_DYN_EXIST, CheckOthersLotDynExistRpcParams)
+async def handle_check_others_lot_dyn_exist(
+    params: CheckOthersLotDynExistRpcParams,
+) -> CommonResponseModel[CheckOthersLotDynExistRpcResult]:
+    """校验第三方抽奖动态是否存在并回传基础详情（供 be-message 互动/跳转校验，2.61.0）。
+
+    `params.dyn_ids` 非空时批量查询（一次 SQL `IN (...)`），否则按 `params.dyn_id` 单查。
+    弱依赖：查询失败按不存在处理（be-message 侧会降级放行或 400，见调用方）。
+    """
+    if params.dyn_ids:
+        return await _handle_check_others_lot_dyn_exist_batch(params)
+    return await _handle_check_others_lot_dyn_exist_one(params)
+
+
+async def _handle_check_others_lot_dyn_exist_one(
+    params: CheckOthersLotDynExistRpcParams,
+) -> CommonResponseModel[CheckOthersLotDynExistRpcResult]:
+    exists = False
+    title = cover = jump_url = None
+    author_mid = author_name = None
+    try:
+        async with SqlHelper.async_session() as session:
+            stmt = (
+                select(
+                    TLotdyninfo.dynId,
+                    TLotdyninfo.authorName,
+                    TLotdyninfo.up_uid,
+                    TLotdyninfo.dynamicUrl,
+                )
+                .where(TLotdyninfo.dynId == params.dyn_id)
+                .limit(1)
+            )
+            row = (await session.execute(stmt)).first()
+            if row is not None:
+                exists = True
+                author_name = row.authorName or None
+                author_mid = int(row.up_uid) if row.up_uid else None
+                title = _others_lot_dyn_title(author_name, int(row.dynId))
+                jump_url = row.dynamicUrl or None
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[check_others_lot_dyn_exist] 单查失败 dyn_id={params.dyn_id}: {e}")
+        exists = False
+    if not exists and params.dyn_id is not None:
+        await _log_others_lot_dyn_miss([int(params.dyn_id)])
+    return CommonResponseModel(
+        data=CheckOthersLotDynExistRpcResult(
+            exists=exists,
+            dyn_id=params.dyn_id,
+            title=title,
+            cover=cover,
+            jumpUrl=jump_url,
+            authorMid=author_mid,
+            authorName=author_name,
+        )
+    )
+
+
+async def _handle_check_others_lot_dyn_exist_batch(
+    params: CheckOthersLotDynExistRpcParams,
+) -> CommonResponseModel[CheckOthersLotDynExistRpcResult]:
+    items: list[OthersLotDynDetailItem] = []
+    try:
+        ids = list(dict.fromkeys(params.dyn_ids))
+        async with SqlHelper.async_session() as session:
+            stmt = select(
+                TLotdyninfo.dynId,
+                TLotdyninfo.authorName,
+                TLotdyninfo.up_uid,
+                TLotdyninfo.dynamicUrl,
+            ).where(TLotdyninfo.dynId.in_(ids))
+            found: dict[int, tuple[str | None, int | None, str | None]] = {}
+            for row in (await session.execute(stmt)):
+                found[int(row.dynId)] = (
+                    row.authorName or None,
+                    int(row.up_uid) if row.up_uid else None,
+                    row.dynamicUrl or None,
+                )
+            for dyn_id in ids:
+                detail = found.get(dyn_id)
+                author_name = detail[0] if detail else None
+                items.append(
+                    OthersLotDynDetailItem(
+                        dyn_id=dyn_id,
+                        exists=detail is not None,
+                        title=_others_lot_dyn_title(author_name, dyn_id) if detail else None,
+                        cover=None,
+                        jumpUrl=(detail[2] if detail else None) or None,
+                        authorMid=(detail[1] if detail else None),
+                        authorName=author_name,
+                    )
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(f"[check_others_lot_dyn_exist] 批量查询失败: {e}")
+        items = []
+    if items and not any(item.exists for item in items):
+        await _log_others_lot_dyn_miss([item.dyn_id for item in items])
+    return CommonResponseModel(data=CheckOthersLotDynExistRpcResult(items=items))
