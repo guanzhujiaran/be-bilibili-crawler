@@ -60,6 +60,14 @@ class CrawlerConfig(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    # 爬虫名称（用于日志前缀 / 异常推送 / 统计推送的标识）。
+    # 一个爬虫类可能有多个实例（如 LotteryApiRobot 的 business_type=2 与 10），
+    # 此时必须由实例声明各自的名字，不能退化成类名，否则日志与告警无法区分。
+    # 留空表示回退为类名；实际由调度器创建时统一回填为 BackgroundServiceName 的值。
+    crawler_name: str = Field(
+        default="", description="爬虫实例名称（留空则回退为类名）"
+    )
+
     # 最大并发数（同时运行的 worker 数量）
     max_sem: int = Field(default=10, description="最大并发数")
     # 任务失败时是否重新入队

@@ -53,31 +53,37 @@ class BackgroundService:
             crawler=get_proxy_methods,
             cron_expr="0 */5 * * *",
             default_interval_seconds=12 * 3600,
+            crawler_name=BackgroundServiceName.GET_PROXY_METHODS_SCHEDULER.value,
         )
         self.SAMSCCLUB_SCHEDULER = GenericCrawlerScheduler(
             crawler=sams_club_crawler,
             cron_expr="0 3 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.SAMSCCLUB_SCHEDULER.value,
         )
         self.SAMSCCLUB_SPU_DETAIL_SCHEDULER = GenericCrawlerScheduler(
             crawler=sams_club_SPU_detail_crawler,
             cron_expr="0 4 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.SAMSCCLUB_SPU_DETAIL_SCHEDULER.value,
         )
         self.GET_RESERVE_INFO = GenericCrawlerScheduler(
             crawler=reserve_robot,
             cron_expr="0 1 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.GET_RESERVE_INFO.value,
         )
         self.GET_DYN = GenericCrawlerScheduler(
             crawler=dyn_detail_scrapy,
             cron_expr="0 2 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.GET_DYN.value,
         )
         self.GET_TOPIC = GenericCrawlerScheduler(
             crawler=topic_robot,
             cron_expr="0 3 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.GET_TOPIC.value,
         )
         self.GET_OTHERS_LOT_DYN = GenericCrawlerScheduler(
             crawler=get_others_lot_dyn_robot,
@@ -89,6 +95,7 @@ class BackgroundService:
             crawler=refresh_bili_lot_database_crawler,
             cron_expr="0 4 * * *",
             default_interval_seconds=15 * 3600,
+            crawler_name=BackgroundServiceName.REFRESH_BILI_LOTDATA_DATABASE.value,
         )
         self.LOTTERY_API_ROBOT_DYN_SCHEDULER = GenericCrawlerScheduler(
             crawler=LotteryApiRobot(

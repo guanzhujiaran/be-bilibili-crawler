@@ -96,6 +96,11 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         super().__init__(max_sem=self.config.max_sem, _logger=self.config.logger)
 
+        # 实例名优先取 Config 声明的 crawler_name（支持同类多实例各自命名），
+        # 留空则保持基类的类名；调度器创建时还会进一步回填为 BackgroundServiceName 的值。
+        if self.config.crawler_name:
+            self.crawler_name = self.config.crawler_name
+
         # 本轮在跑的 worker task 集合：用于「杀旧开新」时回收残留 worker
         self._worker_tasks: set[asyncio.Task] = set()
 
@@ -430,7 +435,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 self.log.exception(self.format_log(f"爬取异常：{e}"))
                 await a_push_error(
                     subject="运行异常",
-                    content=f"爬取任务[{self.__class__.__name__}]异常\n{worker_model}\n{e}",
+                    content=f"爬取任务[{self.crawler_name}]异常\n{worker_model}\n{e}",
                 )
             await asyncio.sleep(self.worker_error_delay)
             return WorkerStatus.fail

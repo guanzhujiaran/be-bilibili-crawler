@@ -146,7 +146,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
         )
         summary = (
             f"StatsPlugin 运行结束统计:\n"
-            f"  爬虫类型: {self.crawler.__class__.__name__}\n"
+            f"  爬虫名称: {self.crawler.crawler_name}\n"
             f"  开始时间: {self.start_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  结束时间: {self.last_update_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  总运行时长: {self.total_run_duration:.2f} 秒\n"
@@ -169,7 +169,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
                 from Utils.推送.PushMe import a_pushme, server_label
 
                 await a_pushme(
-                    f"{server_label()} {self.crawler.__class__.__name__} 爬虫运行结束",
+                    f"{server_label()} {self.crawler.crawler_name} 爬虫运行结束",
                     summary,
                 )
             except Exception as e:

@@ -258,11 +258,21 @@ class GenericCrawlerScheduler(BaseScheduler):
         crawler_name: Optional[str] = None,
     ):
         self.crawler = crawler
+        # 统一「调度器名 == 爬虫实例名 == 卡住监控名」：
+        # 未显式指定时依次回退「爬虫自身声明的名字 → 类名」，
+        # 并把最终名字回填到爬虫实例，使其日志前缀与告警推送也能区分同类多实例
+        # （例如 LotteryApiRobot 的 DYN / RESERVE 两个实例）。
+        resolved_name = (
+            crawler_name
+            or getattr(crawler, "crawler_name", "")
+            or crawler.__class__.__name__
+        )
+        crawler.crawler_name = resolved_name
         super().__init__(
             func=self.crawler.main,
             cron_expr=cron_expr,
             default_interval_seconds=default_interval_seconds,
-            crawler_name=crawler_name or self.crawler.__class__.__name__,
+            crawler_name=resolved_name,
             logger=self.crawler.log,
         )
 

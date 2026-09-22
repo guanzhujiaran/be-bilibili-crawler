@@ -58,7 +58,9 @@ def async_pushme_try_catch_decorator(func):
             await a_push_error(
                 subject="服务异常",
                 content=(
-                    f"服务/方法：{func.__class__.__name__}.{func.__name__}\n"
+                    # func 是被装饰的方法，用 __qualname__ 才能拿到「类.方法」；
+                    # 绑定方法的 __class__.__name__ 只会是 "method"，没有信息量。
+                    f"服务/方法：{getattr(func, '__qualname__', func.__name__)}\n"
                     f"错误信息：{e}\n"
                     f"错误堆栈：\n{traceback.format_exc()}"
                 ),
