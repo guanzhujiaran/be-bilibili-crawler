@@ -37,6 +37,18 @@ ZSET_MIN_REBUILD_SIZE = 300
 database = CONFIG.database
 
 
+def _is_local_ipv6_proxy(proxy_key: str) -> bool:
+    """判断代理串是否为「本地 IPv6 代理」（配置项 PROXY_SERVER / CONFIG.my_ipv6_addr）。
+
+    它是配置项而不是代理池成员：既不参与打分，也不该往 proxy_db 写。
+    原先这层判断只写在 ``RedisRequestProxy.update_to_proxy_dict`` 里，
+    ProxyEvent / grpc_api 等直接调用 ``update_to_proxy_list`` 的路径会绕过它，
+    于是本地代理每次被加减分都会走到「MySQL 与 Redis 均不存在」分支刷屏。
+    """
+    local = (CONFIG.my_ipv6_addr or "").strip().rstrip("/")
+    return bool(local) and proxy_key.strip().rstrip("/") == local
+
+
 class SubRedisStore(RedisManagerBase):
     """代理相关的 Redis 缓存（方案 C：只保留 zset + 变更缓冲）。
 
@@ -631,13 +643,18 @@ class SQLHelperClass(SqlHelperBase):
             if not proxy_key:
                 sql_log.warning(f"代理串解析为空，跳过分数更新：{proxy_tab.proxy}")
                 return False
+            if _is_local_ipv6_proxy(proxy_key):
+                # 本地 IPv6 代理（PROXY_SERVER）不是代理池成员：不参与分数更新，
+                # 否则每次请求都会走到下面的「不存在」分支并刷屏。
+                sql_log.debug(f"本地 IPv6 代理不参与分数更新，已跳过：{proxy_key}")
+                return False
             base = await self.sub_redis_store.redis_get_changed_proxy(proxy_key)
             if base is None:
                 base = await self.get_proxy_by_key(proxy_key)
             if base is None:
-                # MySQL 里也没有这条代理（已被清理）：无法更新，但要留下痕迹，
-                # 原实现在这里直接 return False，静默丢弃了变更。
-                sql_log.warning(f"代理在 MySQL 与 Redis 均不存在，跳过分数更新：{proxy_key}")
+                # MySQL 里也没有这条代理（已被清理）：无法更新。
+                # 旧任务 / 缓存会反复触发到这里，属可预期噪音，只留 DEBUG 明细。
+                sql_log.debug(f"代理在 MySQL 与 Redis 均不存在，跳过分数更新：{proxy_key}")
                 return False
             return bool(
                 await self.sub_redis_store.redis_update_proxy(
