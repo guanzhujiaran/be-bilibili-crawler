@@ -24,6 +24,7 @@ import time
 from CONFIG import settings
 from log.base_log import myfastapi_logger
 from Utils.推送.PushMe import a_push_error
+from Utils.通用.Common import mask_settings_for_log
 from Utils.FastAPI.FastapiLifespan import life_span
 from controller.v1.lotttery_database.bili import LotteryData
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
@@ -40,11 +41,23 @@ from bili_common.models.response import StandardResponse as CommonResponseModel
 from controller.v1.lotttery_database.bili.zhuanlan import zhuanlanController
 
 
-logger.info(f"运行 settings:{settings}")
+logger.info("运行 settings:{}", mask_settings_for_log(settings))
 if not settings.SHOW_LOG:
-    logger.info("关闭日志输出")
-    logger.remove()
-    logger.add(sink=sys.stdout, level="ERROR", colorize=True)
+    # 只移除 loguru 默认的 stderr sink（id=0，loguru 在 import 时注册），
+    # 保留 log.base_log 注册的业务文件 sink。
+    # 原先的 logger.remove() 会把文件 sink 一并删掉，等于把 WARNING 以上的业务日志静默丢弃。
+    logger.remove(0)
+    # backtrace/diagnose 关闭：堆栈只保留「调用链 + 异常本身」，
+    # 不再打印每一帧的局部变量值（loguru 默认开启会产生大量冗余信息）。
+    logger.add(
+        sink=sys.stdout,
+        level=settings.LOG_LEVEL,
+        colorize=True,
+        backtrace=False,
+        diagnose=False,
+    )
+    # 用 print 而非 logger：该自述信息需要在任何 LOG_LEVEL 下都可见（与 dev_env_main.py 一致）
+    print(f"日志输出：stdout sink 级别={settings.LOG_LEVEL}（本地文件 sink 保持不变）")
 
 
 app = FastAPI(lifespan=life_span)

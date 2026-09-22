@@ -172,7 +172,7 @@ class RequestWithProxy:
                         )
                     return req_dict
                 if type(req_dict) is not dict:
-                    self.log.critical(f"请求获取的req_dict类型出错！{req_dict}")
+                    self.log.warning(f"请求获取的req_dict类型出错！{req_dict}")
                 if (
                     (
                         req_dict.get("code") is None
@@ -229,7 +229,7 @@ class RequestWithProxy:
                             proxy_tab=proxy,
                         )
                     case -352:
-                        Voucher352_logger.critical(
+                        Voucher352_logger.warning(
                             f"代理{proxy.proxy} 报错-352 被封禁\n{kwargs}"
                         )
                         await handle_proxy_352(

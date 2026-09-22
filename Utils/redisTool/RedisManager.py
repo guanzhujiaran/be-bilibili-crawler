@@ -89,7 +89,7 @@ def retry(func):
                 # （典型如 `hdel() got multiple values for argument 'name'`，
                 # 只有堆栈才能看出是 _hdel 内部的 r.hdel(...) 调用）。
                 # 同时补上异常类型名，并截断过长的参数（含整个消息体）。
-                redis_logger.opt(exception=e).critical(
+                redis_logger.opt(exception=e).error(
                     f"\nRedis操作错误\n{func.__name__}\n"
                     f"args={_brief(args)}\nkwargs={_brief(kwargs)}\n"
                     f"{type(e).__name__}: {e}"
@@ -425,7 +425,7 @@ class RedisManagerBase:
                 ]:
                     insert_map[k] = v
                 else:
-                    redis_logger.critical(f"zadd name:{key} key:{k} value:{v} error")
+                    redis_logger.error(f"zadd name:{key} key:{k} value:{v} error")
             async with redis_client_factory(pool=self.pool) as r:
                 return await r.zadd(
                     key,

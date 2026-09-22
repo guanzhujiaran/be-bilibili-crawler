@@ -49,7 +49,8 @@ async def _test_publish(pub_msg: str):
         c={1: pub_msg},
         d=[pub_msg]
     )
-    MQ_logger.critical(f"【{rabbit_mq_test.mq_props.queue_name}】发布测试消息！{test_msg}")
+    # 启动连通性自检属正常流程，用 info 记录即可
+    MQ_logger.info(f"【{rabbit_mq_test.mq_props.queue_name}】发布测试消息！{test_msg}")
     return await do_pubish(
         message=test_msg,
         extra_routing_key="test"
@@ -74,7 +75,7 @@ class RabbitMQTest(BaseFastStreamMQ):
                       msg: RabbitMessage,
                       ):
         try:
-            MQ_logger.critical(f"【{self.mq_props.queue_name}】收到消息：{_body}")
+            MQ_logger.info(f"【{self.mq_props.queue_name}】收到消息：{_body}")
             return await msg.ack()
         except Exception as e:
             await handle_exception(self.mq_props.queue_name, e, _body, msg)

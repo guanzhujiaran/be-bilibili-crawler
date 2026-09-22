@@ -265,6 +265,12 @@ class Settings(BaseSettings):
     MESSAGE_SERVICE_HOST: str = "be-message-service"
     MESSAGE_SERVICE_PORT: str = "18739"
     SHOW_LOG: int = 0
+    # SHOW_LOG=0 时 stdout sink 的日志级别（DEBUG/INFO/WARNING/ERROR/CRITICAL），
+    # 语义与 be-message-service 的 LOG_LEVEL 一致，可用同名环境变量覆盖。
+    # 默认 WARNING：只保留告警与错误，压住日志量；
+    # 需要看轮次 / 阶段等业务节点时，临时设 LOG_LEVEL=INFO 即可
+    # （这些节点已在代码中按语义定级，不再需要用 CRITICAL 假扮）。
+    LOG_LEVEL: str = "WARNING"
     IS_DEV: int = 1  # 默认开发环境
 
     # ===== 第三方抽奖动态获取 =====
@@ -392,11 +398,29 @@ class DataBaseConfig:
 
 
 class SqlAlchemyConfig:
-    # 业务连接池配置 - 供 router/service 等业务使用，保留足够的连接处理外部请求
+    """业务连接池配置 - 供 router/service 等业务使用。
+
+    连接预算（务必与 MySQL 的 max_connections 对齐，否则会打满服务端连接数并报
+    ``(1040, 'Too many connections')``）：
+      本服务按 (dburl, is_crawler) 维度各建一个池，当前 6 个库 × 2 类池 = 12 个池，
+      单池连接上限 = pool_size + max_overflow。
+      业务池 6 × (10 + 5) = 90，爬虫池 6 × (20 + 10) = 180，
+      合计上限 270，小于 MySQL 侧 max_connections=500
+      （见 docker_vol/mysql_data/conf.d/custom_mysql.cnf），
+      余量留给 alembic 迁移、其它服务与人工排查。
+      原配置为单池 100 + 40，12 个池理论上限 1680，远超服务端上限，
+      并发一上来必然触发 1040。
+    核对方式：MySQL 侧执行 ``SHOW STATUS LIKE 'Threads_connected';``
+      （稳态不应贴近 max_connections），必要时再按上面的公式等比调整。
+    """
+
     engine_config = dict(
         echo=settings.sqlalchemy_logging,
-        pool_size=100,
-        max_overflow=40,
+        pool_size=10,
+        max_overflow=5,
+        # 池被占满时的最长等待时间（秒），超时抛 TimeoutError 交由重试包装处理，
+        # 避免请求无限期挂起把上层并发槽位也拖住
+        pool_timeout=30,
         pool_use_lifo=True,
         # 取出连接前先 ping 一下，避免拿到 MySQL 已关闭的陈旧连接（错误码 2013）
         pool_pre_ping=True,
@@ -413,13 +437,18 @@ class CrawlerSqlAlchemyConfig:
     """
     爬虫专用连接池配置 - 与业务连接池完全隔离
     即使爬虫并发高占用大量连接，也不会影响业务请求
-    池子大小与业务池相同，但使用独立的连接池实例
+
+    单池上限 = pool_size + max_overflow。爬虫侧各爬虫 max_sem 多为 1~20
+    （见 Service/BaseCrawler/config.py），单库 30 连接足够覆盖峰值，
+    同时把「12 个池的总连接数」压在 MySQL max_connections 之内（见 SqlAlchemyConfig 说明）。
     """
 
     engine_config = dict(
         echo=settings.sqlalchemy_logging,
-        pool_size=100,  # 与业务池大小相同，独立使用
-        max_overflow=40,
+        pool_size=20,
+        max_overflow=10,
+        # 池被占满时的最长等待时间（秒），超时抛 TimeoutError 交由重试包装处理
+        pool_timeout=30,
         pool_use_lifo=True,
         # 取出连接前先 ping 一下，避免拿到 MySQL 已关闭的陈旧连接（错误码 2013）
         pool_pre_ping=True,

@@ -137,10 +137,10 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         """
         退出时必定执行
         """
-        self.log.critical(f"开始将日志写入文件")
+        self.log.info(f"开始将日志写入文件")
         await self.write_in_file()
-        self.log.critical(f"日志写入文件完成")
-        self.log.critical(f"开始获取本轮统计信息")
+        self.log.info(f"日志写入文件完成")
+        self.log.info(f"开始获取本轮统计信息")
         latest_reserve_lots = await self.generate_update_reserve_lotterys_by_round_id(
             self.now_round_id
         )
@@ -154,10 +154,10 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             round_lot_num=len(latest_reserve_lots),
         )
         await self.sqlHelper.add_reserve_round_info(new_round_info)
-        reserve_lot_logger.critical(f"本轮统计信息获取结束")
-        reserve_lot_logger.critical(f"开始刷新未开奖的预约抽奖")
+        reserve_lot_logger.info(f"本轮统计信息获取结束")
+        reserve_lot_logger.info(f"开始刷新未开奖的预约抽奖")
         await self.refresh_not_drawn_lottery()
-        reserve_lot_logger.critical(f"刷新未开奖的预约抽奖结束")
+        reserve_lot_logger.info(f"刷新未开奖的预约抽奖结束")
         if os.path.exists(self.unknown):
             await self.file_remove_repeat_contents(self.unknown)
         if os.path.exists(self.getfail):
@@ -337,7 +337,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             sid_str = str(sid)
             list_data = dydata.get("list", {})
             if sid_str not in [str(x) for x in list_data.keys()]:
-                reserve_lot_logger.critical(
+                reserve_lot_logger.error(
                     f"\n第{self.stats_plugin.processed_items_count}次获取直播预约\t"
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')}\trid:{sid}\n"
                     f"直播预约[{sid}]获取失败，响应不匹配！{req1_dict}"
@@ -420,13 +420,13 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             - self.rollback_num
             - self.none_num
         )
-        reserve_lot_logger.critical(
+        reserve_lot_logger.info(
             f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
             f"{self.dynamic_timestamp.get_time_str_until_now()}\n"
             f"最终成功的ids：http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_success_params}\n"
             f"最终ids: http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_params}\n"
         )
-        reserve_lot_logger.critical(
+        reserve_lot_logger.info(
             f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
             f"{self.dynamic_timestamp.get_time_str_until_now()}秒，"
             f"ids：{self.dynamic_timestamp.ids}，退出！"
@@ -437,7 +437,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             comm_storage_redis_obj.RedisMap.reserve_scrapy_bot_rid_ls,
             finnal_rid,
         )
-        reserve_lot_logger.critical(f"结束rid设置完成\t{finnal_rid}")
+        reserve_lot_logger.info(f"结束rid设置完成\t{finnal_rid}")
 
     async def generate_update_reserve_lotterys_by_round_id(
         self, round_id

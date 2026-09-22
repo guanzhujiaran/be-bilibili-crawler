@@ -167,7 +167,7 @@ async def get_lot_notice(
         if resp.get("code") != 0:
             if resp.get("code") == -9999:
                 return resp  # 只允许code为-9999的或者是0的响应返回！其余的都是有可能代理服务器的响应而非b站自己的响应
-            bapi_log.critical(
+            bapi_log.error(
                 f"get_lot_notice响应代码错误:\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}"
             )
             await a_push_error(

@@ -645,7 +645,14 @@ class SQLHelperClass(SqlHelperBase):
                 )
             )
         except Exception as e:
-            sql_log.exception(e)
+            # 这里只捕获 Redis 写入路径的异常（下面会回退成直接更新 MySQL），
+            # 日志必须带上「哪条代理 / 原本想改多少分 / 什么错」，否则只剩一个裸异常无法排查。
+            sql_log.exception(
+                f"代理分数更新走 Redis 失败，回退为直接更新 MySQL："
+                f"proxy_id={proxy_tab.proxy_id} proxy={proxy_tab.proxy} "
+                f"change_score_num={change_score_num} "
+                f"错误={type(e).__name__}: {e}"
+            )
         # Redis 异常时回退为直接更新 MySQL
         succ_times_num = 1 if change_score_num >= 0 else -1
         sql = (

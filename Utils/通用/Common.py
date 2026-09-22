@@ -170,6 +170,11 @@ def _log_db_connection_info(log, err: OperationalError) -> None:
     log.error("\n".join(lines))
 
 
+def describe_callable(func: Any) -> str:
+    """把被重试的函数对象描述成可检索的名字，避免打印 <function ... at 0x...>。"""
+    return getattr(func, "__qualname__", None) or repr(func)
+
+
 async def handle_sql_operational_error(func, log, err: OperationalError) -> bool:
     """
     返回是否需要继续重试
@@ -177,15 +182,20 @@ async def handle_sql_operational_error(func, log, err: OperationalError) -> bool
     # err.args[0] 形如 "(pymysql.err.OperationalError) (2013, '...')" 的字符串，
     # 无法直接用 match 匹配整数错误码，先统一取出字符串备用。
     err_str = str(err.args[0]) if err.args else str(err)
+    func_name = describe_callable(func)
 
     if "(pymysql.err.OperationalError) (1054," in err_str:  # 数据操作错了
         return False
-    # 1040: 连接数过多，并发太高，等待 MySQL 释放连接后重试
+    # 1040: 连接数过多，并发太高，等待 MySQL 释放连接后重试。
+    # 这是「已知可恢复」的等待类错误，只保留错误码 + 处理动作，
+    # 不再附上 SQLAlchemy 连接池的整串堆栈（堆栈里没有额外的业务信息）。
     if "(pymysql.err.OperationalError) (1040," in err_str:
-        log.exception(
-            f"{func} \t连接数过多(Too many connections)，并发太高，等待后重试: {err}\n"
+        wait_seconds = random.uniform(5, 120)
+        log.error(
+            f"{func_name} \tMySQL 连接数已满(1040 Too many connections)，"
+            f"{wait_seconds:.1f} 秒后重试: {err}"
         )
-        await asyncio.sleep(random.uniform(5, 120))
+        await asyncio.sleep(wait_seconds)
         return True
 
     # 从原始异常中解析出整数错误码：优先用 err.orig（pymysql 原始异常），
@@ -203,21 +213,21 @@ async def handle_sql_operational_error(func, log, err: OperationalError) -> bool
 
     match code:
         case 1129:
-            log.error(f"{func} \t{err}")
+            log.error(f"{func_name} \tMySQL 报错(1129)：{err}")
             await asyncio.sleep(120)
         case 1213:  # 死锁错误，随机等待后重试
             sleep_time = random.uniform(1, 5)  # 随机等待1-5秒
-            log.error(f"{func} \t死锁错误: {err}, 将在{sleep_time:.2f}秒后重试")
+            log.error(f"{func_name} \t死锁错误(1213): {err}, 将在{sleep_time:.2f}秒后重试")
             await asyncio.sleep(sleep_time)
         case 2013:  # mysql连接丢失(2013)，等待一段时间再重试
-            log.error(f"{func} \tMySQL 连接丢失(2013)，等待后重试: {err}")
+            log.error(f"{func_name} \tMySQL 连接丢失(2013)，等待后重试: {err}")
             await asyncio.sleep(random.uniform(5, 120))
         case 2003:  # mysql配置不正确或者mysql暂时挂了，在重启
-            log.error(f"{func} \t{err}")
+            log.error(f"{func_name} \tMySQL 无法连接(2003)，等待后重试: {err}")
             _log_db_connection_info(log, err)
             await asyncio.sleep(120)
         case _:  # 未知代码（含 1049 Unknown database 等配置/库错误）
-            log.error(f"未知mysql错误代码：{func} \t{err}")
+            log.error(f"未知mysql错误代码({code})：{func_name} \t{err}")
             _log_db_connection_info(log, err)
             # 未知代码多为配置/库不存在等不可恢复错误，停止无限重试并抛出
             return False
@@ -281,8 +291,11 @@ def log_sql_retry_wrapper(log: "Logger" = myfastapi_logger):
                         )
                         await asyncio.sleep(5)  # 短暂等待后继续重试
                         continue
-                    # 其他异常保持原有逻辑
-                    log.exception(f"{args}\n{kwargs}\n{e}")
+                    # 其他异常保持原有逻辑（补上函数名，便于定位是哪条 SQL 操作）
+                    log.exception(
+                        f"函数：【{describe_callable(_func)}】执行异常："
+                        f"{type(e).__name__}: {e}\nargs={args} kwargs={kwargs}"
+                    )
                     await asyncio.sleep(60)
                     continue
 
@@ -296,7 +309,13 @@ async def asyncio_gather(*coros_or_futures, log: Optional["Logger"] = myfastapi_
         try:
             return await coro
         except Exception as e:
-            log and log.exception(f"协程 [{coro.cr_code}] 执行失败.")
+            # 打印协程本身的限定名（cr_code 只有 <code object ...> 这种无用信息），
+            # 并把异常类型与内容带上，否则日志里只剩一句「执行失败」。
+            code = getattr(coro, "cr_code", None)
+            coro_name = getattr(code, "co_qualname", None) or repr(coro)
+            log and log.exception(
+                f"协程 [{coro_name}] 执行失败：{type(e).__name__}: {e}"
+            )
 
     coros_or_futures_wrapped = map(_handle_coroutine, coros_or_futures)
     results = await asyncio.gather(*coros_or_futures_wrapped, return_exceptions=True)
@@ -343,3 +362,56 @@ def log_max_count_retry_wrapper(
         return wrapper
 
     return decorator
+
+
+# ===== 日志用配置脱敏 =====
+# 字段名（大小写不敏感）命中任一关键字即视为敏感值
+_SENSITIVE_KEYWORDS = (
+    "password",
+    "passwd",
+    "pwd",
+    "token",
+    "secret",
+    "key",
+    "cookie",
+    "authorization",
+    "email",
+    "phone",
+)
+_MASK = "****"
+# 形如 scheme://user:pass@host 的凭据部分
+_URI_CREDENTIAL_RE = re.compile(r"(://[^:/@\s]+:)[^@/\s]+@")
+
+
+def _mask_scalar_string(value: str) -> str:
+    """先抹掉 URI 内嵌凭据，再按需整体打码。"""
+    return _URI_CREDENTIAL_RE.sub(rf"\g<1>{_MASK}@", value)
+
+
+def mask_sensitive(value: Any, _field_name: str = "") -> Any:
+    """递归脱敏配置对象，只保留「非敏感字段原值 + 敏感字段打码」。
+
+    用于日志打印 settings / 配置对象：既保留排查所需的配置全貌，
+    又不把密码、token、cookie 等凭据写进日志文件。
+    """
+    if isinstance(value, dict):
+        return {k: mask_sensitive(v, str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [mask_sensitive(v, _field_name) for v in value]
+    if hasattr(value, "model_dump"):
+        return mask_sensitive(value.model_dump(), _field_name)
+    if isinstance(value, str):
+        masked = _mask_scalar_string(value)
+        key = _field_name.lower()
+        if masked and any(word in key for word in _SENSITIVE_KEYWORDS):
+            # 不保留任何明文字符，只区分「有没有配」
+            return _MASK
+        return masked
+    return value
+
+
+def mask_settings_for_log(settings_obj: Any) -> str:
+    """把配置对象转成可安全落盘的字符串（推荐在启动日志里使用）。"""
+    if hasattr(settings_obj, "model_dump"):
+        return repr(mask_sensitive(settings_obj.model_dump()))
+    return repr(mask_sensitive(settings_obj))

@@ -38,27 +38,27 @@ async def life_span(app: FastAPI):
 
     # 检查 milvus 数据库集合
     await asyncio.sleep(3)
-    myfastapi_logger.critical("检查 milvus 数据库集合")
+    myfastapi_logger.info("检查 milvus 数据库集合")
     await milvus_sql_helper.ensure_collection_exists()
-    myfastapi_logger.critical("重试未处理的消息")
+    myfastapi_logger.info("重试未处理的消息")
     await BiliLotDataPublisher.retry_pending_messages()
     # RPC handler 由 mq_controller.py 末尾导入 lottery_data 模块触发 @rpc_subscriber 注册
     # broker 连接由 FastAPI 通过 app.include_router(MqController.router) 自动管理
-    myfastapi_logger.critical("开启其他服务")
+    myfastapi_logger.info("开启其他服务")
     back_ground_tasks = []
     if settings.IS_DEV:
-        myfastapi_logger.critical("开发环境不启动定时任务喵~")
+        myfastapi_logger.info("开发环境不启动定时任务喵~")
     else:
         show_log = False
         GLOBAL_SCHEDULER.start()
         back_ground_tasks = BackgroundServiceController.start_monitor_tasks(
             show_log=show_log)
-        myfastapi_logger.critical("其他服务已开启！可以开启服务了喵~")
+        myfastapi_logger.info("其他服务已开启！可以开启服务了喵~")
     yield
-    myfastapi_logger.critical("正在取消其他服务")
+    myfastapi_logger.info("正在取消其他服务")
     [x.cancel() for x in back_ground_tasks]
     await asyncio_gather(*back_ground_tasks, log=myfastapi_logger)
-    myfastapi_logger.critical("其他服务已取消")
+    myfastapi_logger.info("其他服务已取消")
 
 
 async def test_database_connections():
@@ -189,7 +189,7 @@ async def test_service_ports_and_hosts():
     critical=True 的服务若连接失败，将直接终止启动（SystemExit），
     其它非关键服务仅记录警告，不阻断启动。
     """
-    myfastapi_logger.critical("开始测试各服务端口和 host 连通性...")
+    myfastapi_logger.info("开始测试各服务端口和 host 连通性...")
 
     failed_services = []
     failed_critical_services = []
@@ -231,13 +231,15 @@ async def test_service_ports_and_hosts():
         myfastapi_logger.warning("未配置 PROXY_SERVER，跳过 3128 IPv6 代理检测")
 
     if failed_services:
-        myfastapi_logger.critical("=" * 60)
-        myfastapi_logger.critical("以下服务连接失败:")
+        # 这里可能包含「非关键服务」（V2Ray / 3128 代理等）探测失败，不构成致命故障，
+        # 只有下面的 failed_critical_services 才是 critical。
+        myfastapi_logger.error("=" * 60)
+        myfastapi_logger.error("以下服务连接失败:")
         for failed_service in failed_services:
-            myfastapi_logger.critical(f"  ❌ {failed_service}")
-        myfastapi_logger.critical("=" * 60)
+            myfastapi_logger.error(f"  ❌ {failed_service}")
+        myfastapi_logger.error("=" * 60)
     else:
-        myfastapi_logger.critical("✅ 所有服务端口和 host 连通性测试通过!")
+        myfastapi_logger.info("✅ 所有服务端口和 host 连通性测试通过!")
 
     # 关键服务未启动 -> 直接报错并拒绝启动
     if failed_critical_services:

@@ -127,7 +127,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 )
                 self.isPreviousRoundFinished = True
             self.nowRound = latest_round
-            get_others_lot_log.critical(
+            get_others_lot_log.info(
                 f"当前抽奖获取轮次信息：{sqlalchemy_model_2_dict(latest_round)}"
             )
             await SqlHelper.addLotMainInfo(latest_round)
@@ -143,7 +143,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                     ]
                 )
             else:
-                get_others_lot_log.critical(
+                get_others_lot_log.warning(
                     "从Redis获取抽奖用户列表失败，使用内置默认用户列表"
                 )
                 default_list = [
@@ -226,7 +226,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         pub_lot_uid_set: Set[BiliSpaceUserItem] = set()
         for x in self.bili_space_user_items_set:
             pub_lot_uid_set.update(x.pub_lot_users)
-        get_others_lot_log.critical(
+        get_others_lot_log.info(
             f"第一阶段完成，开始获取{len(pub_lot_uid_set)}个发起抽奖用户的空间动态"
         )
 
@@ -243,7 +243,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         total_lot_uid_set: Set[BiliSpaceUserItem] = set()
         total_lot_uid_set.update(self.bili_space_user_items_set)
         total_lot_uid_set.update(pub_lot_uid_set)
-        get_others_lot_log.critical(
+        get_others_lot_log.info(
             f"第二阶段完成，共获取了{len(pub_lot_uid_set)}个发起抽奖用户的空间动态"
         )
         self.goto_check_dynamic_item_set = set()
@@ -252,7 +252,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
             for y in x.pub_lot_users:
                 self.goto_check_dynamic_item_set.update(y.dynamic_infos)
 
-        get_others_lot_log.critical(
+        get_others_lot_log.info(
             f"共{len(self.goto_check_dynamic_item_set)}条动态待判断是否为抽奖"
         )
         # ---- 第三阶段：判断每条动态是否为抽奖 ----

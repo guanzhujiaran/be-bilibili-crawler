@@ -188,19 +188,19 @@ class BiliSpaceUserItem:
                 code = dyreq_dict.get('code')
                 msg = dyreq_dict.get('message')
                 if code != 0:
-                    get_others_lot_log.critical(
+                    get_others_lot_log.error(
                         f'获取用户uid={self.uid}空间动态失败，offset={cur_offset}，code={code}，msg={msg}')
                     await a_push_error(
                         subject="运行异常",
                         content=f'GetOthersLotDyn\n获取用户uid={self.uid}空间动态失败，offset={cur_offset}，code={code}，msg={msg}',
                     )
                     if code == 4101128:
-                        get_others_lot_log.critical(
+                        get_others_lot_log.error(
                             f'用户uid={self.uid}空间动态异常（可能账号被封禁或隐私设置），等待30秒后重试，msg={msg}')
                         await asyncio.sleep(30)
                         continue
                     if code == 4101129:
-                        get_others_lot_log.critical(
+                        get_others_lot_log.error(
                             f'用户uid={self.uid}空间动态请求被拒绝（code=4101129），停止获取，msg={msg}')
                         break
                 get_others_lot_log.info(
@@ -222,7 +222,7 @@ class BiliSpaceUserItem:
                     isPubLotUser
                 )  # 脚本们转发生成的动态id 同时将需要获取的抽奖发布者的uid记录下来
             except Exception as e:
-                get_others_lot_log.critical(
+                get_others_lot_log.error(
                     f'解析空间动态失败，uid={self.uid}，offset={cur_offset}，error={e}')
                 get_others_lot_log.exception(e)
                 break
@@ -236,7 +236,7 @@ class BiliSpaceUserItem:
                 offset_str = dyreq_data.get('offset')
                 cur_offset = int(offset_str if offset_str else "0")
             else:
-                get_others_lot_log.critical(
+                get_others_lot_log.error(
                     f'获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}')
                 await a_push_error(
                     subject="运行异常",
@@ -279,7 +279,7 @@ class BiliSpaceUserItem:
                         f'用户uid={self.uid}空间动态已全部获取完毕（has_more=false）')
                     break
             except Exception as e:
-                get_others_lot_log.critical(
+                get_others_lot_log.error(
                     f'解析has_more字段失败，uid={self.uid}，offset={cur_offset}\nresp={dyreq_dict}\nerror={e}')
                 get_others_lot_log.exception(e)
         get_others_lot_log.debug(f'更新lot_user_info')
@@ -303,7 +303,7 @@ class BiliSpaceUserItem:
                 succ_counter=succ_counter
             ))
         if n <= 50 and time.time() - time_list[-1] >= SpareTime and secondRound == False and not isPubLotUser:
-            get_others_lot_log.critical(
+            get_others_lot_log.warning(
                 f'用户uid={self.uid}获取到的动态数量过少({n}条)，可能存在异常，请前往主页查看：https://space.bilibili.com/{self.uid}')
         get_others_lot_log.debug(f'用户uid={self.uid}空间动态获取完毕')
 
@@ -331,7 +331,7 @@ class BiliSpaceUserItem:
                 ret_list.append(space_resp_card_dynamic_id)
             return ret_list
         except Exception as _e:
-            get_others_lot_log.critical(
+            get_others_lot_log.error(
                 f'保存空间动态响应到数据库失败，uid={self.uid}，error={_e}')
             get_others_lot_log.exception(_e)
 
@@ -400,7 +400,7 @@ class BiliSpaceUserItem:
                             self.dynamic_infos.add(orig_bili_dynamic_item)
                         else:
                             if orig_dynamic_item and orig_dynamic_item.get('type') != 'DYNAMIC_TYPE_NONE':
-                                get_others_lot_log.critical(
+                                get_others_lot_log.warning(
                                     f'转发动态的原动态缺失或类型异常，无法解析原动态，转发动态dynamic_id={dynamic_item.get("id_str")}')
                         # 提取 at 用户信息
                         module_dynamic = (dynamic_item.get('modules') or {}).get('module_dynamic') or {}
@@ -426,7 +426,7 @@ class BiliSpaceUserItem:
                     if i.get('dynamic_ids'):
                         for dyn_id in i.get('dynamic_ids'):
                             ret_list.append(dyn_id)
-                    get_others_lot_log.critical(f'遇到折叠动态内容(inplace_fold)，当前未处理该类型，内容={i}')
+                    get_others_lot_log.warning(f'遇到折叠动态内容(inplace_fold)，当前未处理该类型，内容={i}')
             if not data.get('has_more') and len(ret_list) == 0:
                 return None
             return ret_list

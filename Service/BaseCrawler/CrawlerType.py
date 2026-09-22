@@ -96,6 +96,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         super().__init__(max_sem=self.config.max_sem, _logger=self.config.logger)
 
+        # 本轮在跑的 worker task 集合：用于「杀旧开新」时回收残留 worker
+        self._worker_tasks: set[asyncio.Task] = set()
+
         self._plugins = []
         for plugin_cfg in self.config.plugins:
             plugin = plugin_cfg.plugin_cls(crawler=self, **plugin_cfg.plugin_kwargs)
@@ -344,9 +347,18 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             *[x.on_run_end(end_param) for x in self._plugins], log=self.log
         )
 
-    async def worker(self):
+    async def worker(
+        self, queue: asyncio.Queue[WorkerModel | None] | None = None
+    ):
         """
         Worker 协程，固定池模式，持续从队列中获取任务并处理
+
+        Args:
+            queue: 本轮任务队列。必须由 run() 显式传入并全程使用该实例，
+                不能用 self.task_queue —— 爬虫实例会被「杀旧开新」复用，
+                旧 worker 若回头读 self.task_queue 会拿到新一轮的队列对象，
+                导致 task_done() 打到新队列上（ValueError: task_done() called
+                too many times）并抢走本轮任务。默认为 self.task_queue 仅为兼容。
 
         工作流程：
         1. 从任务队列获取一个任务（如果收到 None 则退出）
@@ -363,11 +375,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         重要：重新入队的操作必须在 async with self.sem 作用域外执行，
         否则当 max_sem=1 时可能导致死锁。
         """
+        if queue is None:
+            queue = self.task_queue
         while True:
-            worker_model: WorkerModel | None = await self.task_queue.get()
+            worker_model: WorkerModel | None = await queue.get()
             if worker_model is None:
                 self.log.debug(self.format_log("收到退出信号，退出任务处理。"))
-                self.task_queue.task_done()
+                queue.task_done()
                 return
 
             should_requeue = False
@@ -381,11 +395,11 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                         self.log.debug(self.format_log(f"完成任务状态: {worker_model.fetchStatus}"))
                         should_requeue = self._should_requeue(worker_model)
                     finally:
-                        self.task_queue.task_done()
+                        queue.task_done()
 
                 if should_requeue:
                     self.log.debug(self.format_log(f"任务需要重试: {worker_model.params}"))
-                    await self._handle_requeue(worker_model)
+                    await self._handle_requeue(worker_model, queue)
             except asyncio.CancelledError:
                 # 取消（如调度器"杀旧开新"）必须向上传播，此时不再触发统计回调，
                 # 否则 await 会立即被二次取消；task_done 已在内层 finally 中保证执行。
@@ -458,12 +472,40 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         )
         return False
 
-    async def _handle_requeue(self, worker_model: WorkerModel):
-        """将任务重新入队（在信号量作用域外执行，避免死锁）。"""
+    async def _handle_requeue(
+        self,
+        worker_model: WorkerModel,
+        queue: asyncio.Queue[WorkerModel | None] | None = None,
+    ):
+        """将任务重新入队（在信号量作用域外执行，避免死锁）。
+
+        queue 必须与 worker 处理该任务时使用的是同一个队列实例，
+        否则「杀旧开新」后重排的任务会落进新一轮的队列。
+        """
+        if queue is None:
+            queue = self.task_queue
         worker_model.fetchStatus = WorkerStatus.pending
         worker_model.retry_count += 1
         await self.on_task_requeue(worker_model)
-        await self.task_queue.put(worker_model)
+        await queue.put(worker_model)
+
+    async def _reap_leftover_workers(self):
+        """回收上一轮残留的 worker 协程。
+
+        「杀旧开新」只 cancel 了 run()/main() 所在的协程，worker 是独立 task，
+        不会随之结束：它们会阻塞在旧队列的 get() 上，并继续占用信号量。
+        新一轮 run() 开始时统一 cancel 掉，避免协程与信号量泄漏。
+        """
+        leftover = [t for t in self._worker_tasks if not t.done()]
+        if not leftover:
+            return
+        self.log.warning(
+            self.format_log(f"发现上一轮残留 worker {len(leftover)} 个，已回收。")
+        )
+        for task in leftover:
+            task.cancel()
+        await asyncio.gather(*leftover, return_exceptions=True)
+        self._worker_tasks.clear()
 
     async def run(self, init_params: ParamsType | None = None):
         """
@@ -499,6 +541,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         seqId = 0
         worker_model = WorkerModel(params=init_params, seqId=seqId)
 
+        # 先回收上一轮残留的 worker：调度器"杀旧开新"只 cancel 了 run() 所在协程，
+        # worker 是独立 task，会继续阻塞在旧队列上。
+        await self._reap_leftover_workers()
+
         # 重建任务队列：爬虫实例是复用的（调度器"杀旧开新"会 cancel 上一轮），
         # 上一轮被中断时队列中可能残留未执行任务、且 unfinished_tasks 计数可能不为 0
         # （cancel 打断在 get() 与 task_done() 之间时），残留会导致本轮统计被污染、
@@ -508,7 +554,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             self.log.warning(
                 self.format_log(f"发现上一轮残留任务 {leftover} 条，已丢弃并重建队列。")
             )
-        self.task_queue = asyncio.Queue()
+        # 本轮队列单独持有引用，并显式传给 worker；
+        # 绝不能让 worker 通过 self.task_queue 取队（那会指向下一轮的队列）。
+        queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
+        self.task_queue = queue
 
         await asyncio_gather(
             *[x.on_run_start(worker_model) for x in self._plugins], log=self.log
@@ -522,14 +571,16 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         
         # 启动固定数量的 worker
         for _ in range(worker_count):
-            task = asyncio.create_task(self.worker())
+            task = asyncio.create_task(self.worker(queue))
             task_set.add(task)
+            self._worker_tasks.add(task)
             task.add_done_callback(task_set.discard)
+            task.add_done_callback(self._worker_tasks.discard)
         
         # 处理初始参数（仅当 init_params 不为 None 时才入队执行）
         if init_params is not None:
             seqId += 1
-            await self.task_queue.put(worker_model)
+            await queue.put(worker_model)
             
         # 开始循环生成任务
         try:
@@ -554,13 +605,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                         await asyncio.sleep(10)
                 
                 # 智能背压控制：根据队列大小动态调整生成速度
-                queue_size = self.task_queue.qsize()
+                queue_size = queue.qsize()
                 if queue_size >= worker_count:
                     # 队列达到max_sem限制，暂停生成直到有空间
-                    while self.task_queue.qsize() >= worker_count:
+                    while queue.qsize() >= worker_count:
                         await asyncio.sleep(0.1)
                 
-                await self.task_queue.put(worker_model)
+                await queue.put(worker_model)
                 
         except Exception as e:
             self.log.exception(self.format_log(f"任务生成器异常: {e}"))
@@ -574,19 +625,19 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         # 恢复时，worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务。
         # 因此 join 返回后再确认队列确实为空，不为空则补一次等待。
         while True:
-            await self.task_queue.join()
-            if self.task_queue.empty():
+            await queue.join()
+            if queue.empty():
                 break
             self.log.debug(
                 self.format_log(
-                    f"join 后仍有 {self.task_queue.qsize()} 个任务，继续等待（重排竞态）。"
+                    f"join 后仍有 {queue.qsize()} 个任务，继续等待（重排竞态）。"
                 )
             )
         
         # 发送哨兵值通知所有 worker 退出
         # 发送 worker_count 个哨兵值，确保所有 worker 都能收到退出信号
         for _ in range(worker_count):
-            await self.task_queue.put(None)
+            await queue.put(None)
         
         # 等待所有活跃的 worker 任务完成
         if task_set:
@@ -599,5 +650,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.log.info(self.format_log("run finished."))
         
         # 清理队列中可能残留的项目（理论上应该为空，因为所有worker已完成）
-        while not self.task_queue.empty():
-            await self.task_queue.get()
+        while not queue.empty():
+            await queue.get()
+
+        # 收尾回收：正常路径 worker 已收到哨兵退出，这里兜底清理被 cancel 的个别 worker。
+        await self._reap_leftover_workers()

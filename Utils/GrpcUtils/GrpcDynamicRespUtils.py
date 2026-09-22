@@ -468,7 +468,7 @@ class DynTool:
                     for i in origDesc:
                         dynamicContent += i.get('text', '')
         if not dynamicContent.strip():
-            BiliGrpcUtils_logger.critical(f'动态内容获取为空！检查一下解析响应的函数！\n{dynamic_item}')
+            BiliGrpcUtils_logger.warning(f'动态内容获取为空！检查一下解析响应的函数！\n{dynamic_item}')
         return ObjDynCard(
             uid=uid,
             uname=uname,

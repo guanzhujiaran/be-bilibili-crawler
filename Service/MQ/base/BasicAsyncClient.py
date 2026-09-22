@@ -137,7 +137,7 @@ class BasicMessageReceiver:
         # if self._closing:
         #     self._connection.ioloop.stop()
         # else:
-        MQ_logger.critical(f'Connection closed, reconnect necessary: {reason}')
+        MQ_logger.warning(f'Connection closed, reconnect necessary: {reason}')
         self.reconnect()
 
     def reconnect(self):
@@ -223,7 +223,7 @@ class BasicMessageReceiver:
         self._channel.add_on_cancel_callback(self.on_consumer_cancelled)
 
     def on_consumer_cancelled(self, method_frame):
-        MQ_logger.critical(f'Consumer was cancelled remotely, shutting down: {method_frame}', )
+        MQ_logger.warning(f'Consumer was cancelled remotely, shutting down: {method_frame}', )
         if self._channel:
             self._channel.close()
 
@@ -292,10 +292,10 @@ class BasicMessageReceiver:
     def stop(self):
         if not self._closing:
             self._closing = True
-            MQ_logger.critical('Stopping')
+            MQ_logger.info('Stopping')
             if self._consuming:
                 self.stop_consuming()
-            MQ_logger.critical('Stopped')
+            MQ_logger.info('Stopped')
 
         self._stopping = True
 
@@ -343,7 +343,7 @@ class BasicMessageSender:
         if extra_routing_key and type(extra_routing_key) is str:
             routing_key = self.ROUTING_KEY + "." + extra_routing_key
         else:
-            MQ_logger.critical(
+            MQ_logger.warning(
                 f'Invalid routing key {extra_routing_key}!!!use original routing key 【{self.ROUTING_KEY}】 instead')
             routing_key = self.ROUTING_KEY
         self._channel.basic_publish(

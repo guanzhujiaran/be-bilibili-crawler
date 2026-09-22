@@ -183,6 +183,29 @@ class TrackedChatOpenAI(ChatOpenAI):
                 self._stats.disabled_reason,
             )
 
+    def _failure_context(self) -> str:
+        """把定位所需的少量统计压成一行，避免整份 stats 反复刷屏。"""
+        stats = self._stats
+        return (
+            f"model={self.model_name} base_url={self.openai_api_base} "
+            f"调用次数={stats.invoke_count} 失败次数={stats.failure_count} "
+            f"连续失败={stats.consecutive_failures} 已熔断={stats.disabled}"
+        )
+
+    def _log_call_failure(self, error: BaseException, *, level: str) -> None:
+        """统一的失败日志：异常类型 + 异常内容 + 定位上下文。
+
+        注意：消息与参数必须作为独立参数传给 loguru（不能用 f-string 拼成一条），
+        否则 {} 占位符既不会被替换，还会把多行信息粘成一行。
+        """
+        logger.log(
+            level,
+            "LLM 调用失败 | {}: {}\n  {}",
+            type(error).__name__,
+            error,
+            self._failure_context(),
+        )
+
     def invoke(
         self,
         input: Any,
@@ -202,12 +225,7 @@ class TrackedChatOpenAI(ChatOpenAI):
             self._stats.record_failure(e)
             if not was_disabled and self._stats.disabled:
                 self._log_if_disabled()
-            logger.warning(
-                "LLM 调用失败 model={} base_url={} stats={}",
-                self.model_name,
-                self.openai_api_base,
-                self._stats.model_dump(),
-            )
+            self._log_call_failure(e, level="WARNING")
             raise
         self._stats.record_success(
             time.monotonic() - start, **_extract_token_usage(result)
@@ -235,12 +253,7 @@ class TrackedChatOpenAI(ChatOpenAI):
             self._stats.record_failure(e)
             if not was_disabled and self._stats.disabled:
                 self._log_if_disabled()
-            logger.error(
-                f"LLM 调用失败\n{e}" 
-                f"model={ self.model_name}"
-                f"base_url={self.openai_api_base}"
-                f"stats={self._stats.model_dump()}",
-            )
+            self._log_call_failure(e, level="ERROR")
             raise
         self._stats.record_success(
             time.monotonic() - start, **_extract_token_usage(result)

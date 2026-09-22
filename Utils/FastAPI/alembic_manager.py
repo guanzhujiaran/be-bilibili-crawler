@@ -28,7 +28,7 @@ if str(_project_root) not in sys.path:
 
 async def run_alembic_upgrade_head() -> bool:
     """对所有数据库执行一次 alembic upgrade head（增量迁移），全部成功返回 True"""
-    myfastapi_logger.critical("===== 开始执行 alembic upgrade head =====")
+    myfastapi_logger.info("===== 开始执行 alembic upgrade head =====")
     success = True
     alembic_ini = _project_root / "alembic.ini"
     for db_name in _DB_URL_MAP:
@@ -42,7 +42,7 @@ async def run_alembic_upgrade_head() -> bool:
             myfastapi_logger.error(f"[{db_name}] alembic upgrade head 失败: {e}")
             success = False
     if success:
-        myfastapi_logger.critical("===== alembic upgrade head 全部执行完成 =====")
+        myfastapi_logger.info("===== alembic upgrade head 全部执行完成 =====")
     else:
         myfastapi_logger.error("===== 部分数据库 alembic upgrade head 执行失败 =====")
     return success
@@ -151,7 +151,7 @@ async def _check_single_db_schema(db_key: str) -> tuple[list[str], list[str]]:
 
 async def _check_all_schemas_match() -> bool:
     """遍历所有数据库，关键差异返回 False 阻塞启动"""
-    myfastapi_logger.critical("===== 开始 Schema 一致性校验 =====")
+    myfastapi_logger.info("===== 开始 Schema 一致性校验 =====")
 
     all_critical: dict[str, list[str]] = {}
     all_non_critical: dict[str, list[str]] = {}
@@ -164,7 +164,7 @@ async def _check_all_schemas_match() -> bool:
             if non_critical:
                 all_non_critical[db_key] = non_critical
     except Exception as e:
-        myfastapi_logger.critical(f"Schema 校验异常: {e}")
+        myfastapi_logger.error(f"Schema 校验异常: {e}")
         return False
 
     if all_non_critical:
@@ -187,7 +187,7 @@ async def _check_all_schemas_match() -> bool:
         myfastapi_logger.error("请先执行 alembic upgrade head 同步 Schema")
         return False
 
-    myfastapi_logger.critical("===== Schema 一致性校验全部通过 =====")
+    myfastapi_logger.info("===== Schema 一致性校验全部通过 =====")
     return True
 
 

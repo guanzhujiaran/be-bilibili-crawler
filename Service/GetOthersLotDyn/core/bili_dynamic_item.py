@@ -51,7 +51,7 @@ class BiliDynamicItem:
 
     def __post_init__(self):
         if not self.dynamic_id and not (self.dynamic_rid and self.dynamic_type):
-            get_others_lot_log.critical('BiliDynamicItem初始化失败：缺少有效的动态标识（需要dynamic_id或dynamic_rid+dynamic_type）')
+            get_others_lot_log.error('BiliDynamicItem初始化失败：缺少有效的动态标识（需要dynamic_id或dynamic_rid+dynamic_type）')
             raise ValueError('没有有效的动态信息！')
 
     def __hash__(self):
@@ -80,7 +80,7 @@ class BiliDynamicItem:
                 if code == 4101131 or dynamic_detail_resp.get('data') is None:
                     return result
                 # 动态ID不匹配，重新获取
-                get_others_lot_log.critical(
+                get_others_lot_log.error(
                     f"API返回的动态ID与期望的不匹配，将强制通过API重新获取，dynamic_id={self.dynamic_id}")
                 new_req = await self._get_dyn_detail_resp(force_api=True)
                 return await self.__solve_dynamic_item_detail(new_req)
@@ -101,7 +101,7 @@ class BiliDynamicItem:
                 new_req = await self._get_dyn_detail_resp(force_api=True)
                 return await self.__solve_dynamic_item_detail(new_req)
             else:
-                get_others_lot_log.critical(
+                get_others_lot_log.error(
                     f'动态详情解析失败，未知错误码code={code}，dynamic_id={self.dynamic_id}，等待10秒后重试')
                 await asyncio.sleep(10)
                 new_req = await self._get_dyn_detail_resp(force_api=True)
@@ -439,7 +439,7 @@ class BiliDynamicItem:
                                     await aid_dynamic_item.judge_lottery(lotRound_id)
                                     attached_card = aid_dynamic_item.bili_judge_lottery_result.cur_dynamic if aid_dynamic_item.bili_judge_lottery_result else None
                                 else:
-                                    get_others_lot_log.critical(
+                                    get_others_lot_log.error(
                                         f'附加视频(UGC)动态缺少id_str字段，无法进一步获取抽奖信息\ndynamic_detail={dynamic_detail}')
             else:
                 get_others_lot_log.info(

@@ -103,7 +103,7 @@ class ExtractOfficialLottery:
                     new_lot_data: Lotdata = grpc_sql_helper.process_resp_data_dict_2_lotdata(new_lot_data_resp)
                     new_updated_lot_data.append(new_lot_data)
                 else:
-                    self.log.critical(f'获取到空数据，可能是api接口问题，请检查！使用原始抽奖数据！！！{lot_data}')
+                    self.log.warning(f'获取到空数据，可能是api接口问题，请检查！使用原始抽奖数据！！！{lot_data}')
                     new_updated_lot_data.append(lot_data)
                 rs['cur_num'] += 1
                 self.log.info(f'当前更新了【{rs["cur_num"]}/{rs["total_num"]}】条官方抽奖数据')

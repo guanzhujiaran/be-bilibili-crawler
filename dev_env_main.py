@@ -23,12 +23,20 @@ grpc_dir = os.path.join(current_dir, "Service/GrpcModule/Grpc/GrpcProto")
 sys.path.append(grpc_dir)
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 from CONFIG import settings
+from Utils.通用.Common import mask_settings_for_log
 
-print(f"运行 settings:{settings}")
+print(f"运行 settings:{mask_settings_for_log(settings)}")
 if not settings.SHOW_LOG:
-    print("关闭日志输出")
-    logger.remove()
-    logger.add(sink=sys.stdout, level="ERROR", colorize=True)
+    print(f"日志输出：stdout sink 级别={settings.LOG_LEVEL}")
+    # 只移除 loguru 默认的 stderr sink（id=0），其余 sink（含业务文件 sink）保持不动
+    logger.remove(0)
+    logger.add(
+        sink=sys.stdout,
+        level=settings.LOG_LEVEL,
+        colorize=True,
+        backtrace=False,
+        diagnose=False,
+    )
 if sys.platform.startswith("windows"):
     asyncio.set_event_loop_policy(
         asyncio.WindowsProactorEventLoopPolicy()  # type: ignore

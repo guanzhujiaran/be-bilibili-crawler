@@ -52,6 +52,10 @@ def create_logger(user: UserMap) -> "Logger":
         level="WARNING",
         encoding="utf-8",
         enqueue=True,
+        # 关闭变量注解式堆栈：业务日志文件只需要「调用链 + 异常」，
+        # 且 diagnose 会把局部变量值（可能含 cookie/密码）写进日志文件。
+        backtrace=False,
+        diagnose=False,
         rotation="10MB",
         compression="zip",
         retention="15 days",

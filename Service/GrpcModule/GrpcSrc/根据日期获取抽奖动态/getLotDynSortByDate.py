@@ -230,7 +230,10 @@ class LotDynSortByDate:
                     myfastapi_logger.info('正在删除已生成的数据')
                     await self.sql.delete_dyn_detail_by_dyn_rids([x.rid for x in dyn_gen])
             else:
-                myfastapi_logger.error(f'{date_start}没有动态数据，不进行数据库的切割备份操作！')
+                # 「当天没有动态」是正常的空数据路径，不是故障，降为 warning 避免污染 ERROR 日志流。
+                myfastapi_logger.warning(
+                    f'{date_start}没有动态数据，不进行数据库的切割备份操作！'
+                )
 
 
 if __name__ == '__main__':

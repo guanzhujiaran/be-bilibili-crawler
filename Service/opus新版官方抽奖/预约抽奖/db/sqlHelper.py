@@ -27,7 +27,12 @@ def lock_wrapper(func: Callable) -> Callable:
             try:
                 return await func(*args, **kwargs)
             except Exception as e:
-                reserve_lot_logger.exception(e)
+                # 无限重试：日志必须写清是哪个方法、什么错、多久后重试，
+                # 否则只知道「出错了」而不知道该数据库操作是谁触发的。
+                reserve_lot_logger.exception(
+                    f"数据库操作失败，3 秒后重试：函数={getattr(func, '__qualname__', func)!r} "
+                    f"错误={type(e).__name__}: {e}"
+                )
                 await asyncio.sleep(3)
 
     return wrapper

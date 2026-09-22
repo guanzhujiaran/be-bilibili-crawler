@@ -97,7 +97,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
             await self.redis_helper.set_id(self.redis_helper.RedisMap.dyn_rid, rid)
             return WorkerStatus.complete
         else:
-            self.log.critical(f"origin dyn data: {data} \n获取动态时间失败！")
+            self.log.error(f"origin dyn data: {data} \n获取动态时间失败！")
             return WorkerStatus.nullData
 
     async def solve_reserve_data(
@@ -114,7 +114,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                     self._cur_stop_times += 1
                     self.latest_ts = stime
             else:
-                self.log.critical(
+                self.log.error(
                     f"business_id：{data} 获取预约时间失败：{reserve_resp}"
                 )
             await self.redis_helper.set_id(
@@ -123,7 +123,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
             return WorkerStatus.complete
         else:
 
-            self.log.critical(
+            self.log.error(
                 f"origin lottery_notice data：{data}"
                 f"\nlottery notice api data: {reserve_resp}"
                 f"\ninput params: {reserve_sid}"

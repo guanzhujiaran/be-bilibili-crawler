@@ -321,7 +321,15 @@ class BiliLotDataPublisher:
                         break
                 if queue_name is None:
                     raise ValueError(f"无法找到对应的队列: {cached_msg.queue_name}")
-                MQ_logger.critical(f"准备重发消息: {cached_msg}")
+                # 重发属于正常恢复流程，不该占用 CRITICAL；日志只保留定位所需的字段，
+                # 完整业务消息（可能上千字符）降到 DEBUG，避免刷屏。
+                msg_repr = str(cached_msg.msg)
+                MQ_logger.info(
+                    f"准备重发消息: id={cached_msg.id} queue={queue_name} "
+                    f"routing_key={cached_msg.routing_key} msg={msg_repr[:200]}"
+                    f"{'…(完整内容见 debug 日志)' if len(msg_repr) > 200 else ''}"
+                )
+                MQ_logger.debug(f"重发消息完整内容: id={cached_msg.id} msg={msg_repr}")
                 broker = get_broker()
                 if not broker._connection:
                     await broker.start()

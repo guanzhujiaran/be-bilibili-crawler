@@ -344,7 +344,7 @@ class BiliGrpc:
                     new_headers.append((k, v))
                 else:
                     new_headers.append((k, ''))
-                    self.grpc_api_any_log.critical(f'headers中出现了非法类型！{k}:{v}')
+                    self.grpc_api_any_log.warning(f'headers中出现了非法类型！{k}:{v}')
             headers.update(dict(new_headers))
             resp = Response(status_code=114514)
             try:

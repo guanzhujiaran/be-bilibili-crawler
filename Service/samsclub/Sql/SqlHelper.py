@@ -103,7 +103,7 @@ class SQLHelper(SqlHelperBase):
                             )
                             if str(origin_price) != str(price):
                                 obj_list.append(self.gen_update_obj(model_class, item, spu_id))
-                                sams_club_logger.critical(
+                                sams_club_logger.info(
                                     f'商品id** {spu_id} ** {spu_title}的{priceTypeName}有变化：{origin_price}->{price}')
                     case _:
                         for item in items:

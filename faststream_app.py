@@ -18,13 +18,22 @@ else:
 
     uvloop.install()
 from Utils.argParse import parse
+from CONFIG import settings
 
 args = parse()
 print(f'运行 args:{args}')
 if not args.logger:
-    print('关闭日志输出')
-    logger.remove()
-    logger.add(sink=sys.stdout, level="ERROR", colorize=True)
+    # 与 main.py / dev_env_main.py 一致：级别由环境变量 LOG_LEVEL 决定
+    print(f'日志输出：stdout sink 级别={settings.LOG_LEVEL}')
+    # 只移除 loguru 默认的 stderr sink（id=0），其余 sink（含业务文件 sink）保持不动
+    logger.remove(0)
+    logger.add(
+        sink=sys.stdout,
+        level=settings.LOG_LEVEL,
+        colorize=True,
+        backtrace=False,
+        diagnose=False,
+    )
 from controller.v1.mq.mq_controller import router
 import fastapi
 from fastapi_cache import FastAPICache

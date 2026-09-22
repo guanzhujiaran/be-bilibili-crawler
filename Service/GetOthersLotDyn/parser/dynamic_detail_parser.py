@@ -198,7 +198,7 @@ def parse_dynamic_item(dynamic_id: str | int, dynamic_detail_resp: dict) -> Dyna
     # 动态 ID 不匹配校验（仅图片类型需要严格校验）
     if (str(dynamic_type) == '2'
             and str(dynamic_data_dynamic_id) != str(dynamic_id)):
-        get_others_lot_log.critical(
+        get_others_lot_log.error(
             f"API返回的动态ID({dynamic_data_dynamic_id})与期望的动态ID({dynamic_id})不匹配，图片类型动态需要严格校验，将重新获取\ndata={dynamic_data}")
         return DynamicDetailParsed()  # 调用方负责重新获取
 
@@ -233,7 +233,7 @@ def parse_dynamic_item(dynamic_id: str | int, dynamic_detail_resp: dict) -> Dyna
         if module_tag_text == "置顶":
             top_dynamic = True
         else:
-            get_others_lot_log.critical(f'遇到未知的动态标签(module_tag)，当前仅支持"置顶"，tag内容={module_tag}')
+            get_others_lot_log.warning(f'遇到未知的动态标签(module_tag)，当前仅支持"置顶"，tag内容={module_tag}')
     else:
         top_dynamic = False
 

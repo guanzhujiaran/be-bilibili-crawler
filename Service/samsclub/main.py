@@ -133,7 +133,7 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
             dataList = resp.json().get('data', {}).get('dataList', [])
             self.log.debug(f'插入数据：{dataList}')
             if not dataList:
-                self.log.critical(
+                self.log.warning(
                     f'数据内容为空：{firstCategoryId, secondCategoryId, frontCategoryIds, start_page_num, pageSize}')
             await self.sql_helper.bulk_upsert_spu_info(dataList)
             file_p = self.FilePath.grouping_data_list(firstCategoryId, secondCategoryId, start_page_num)

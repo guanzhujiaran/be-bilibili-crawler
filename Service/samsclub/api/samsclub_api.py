@@ -217,9 +217,9 @@ class SamsClubApi:
             self.token_stat = SamsClubApiTokenStatEnum.FAIL
             match resp_code:
                 case "SPU_NOT_EXIST":
-                    self.log.critical(f'商品不存在：{resp_dict}')
+                    self.log.warning(f'商品不存在：{resp_dict}')
                 case "INTERNAL_ERROR":
-                    self.log.critical(f'服务器内部错误：{response.request.url}'
+                    self.log.error(f'服务器内部错误：{response.request.url}'
                                       f'\n{response.request.headers}'
                                       f'\n{response.request}'
                                       f'\n{resp_dict}')
@@ -227,7 +227,7 @@ class SamsClubApi:
                 case "AUTH_FAIL":
                     if is_updated_encrypt_key:
                         return False
-                    self.log.critical(f"被强制登出，等待token更新：{resp_dict}")
+                    self.log.warning(f"被强制登出，等待token更新：{resp_dict}")
                     await a_push_error(
                         subject="运行异常",
                         content=f'山姆会员商店token失效\n{resp_dict}',
@@ -236,12 +236,12 @@ class SamsClubApi:
                         if auth_token != self.headers_gen.auth_token:
                             break
                         await asyncio.sleep(3)
-                    self.log.critical(f'token更新成功：{self.headers_gen.auth_token}')
+                    self.log.info(f'token更新成功：{self.headers_gen.auth_token}')
                 case "BUSYNESS":
-                    self.log.critical(f'服务器繁忙：{resp_msg}')
+                    self.log.warning(f'服务器繁忙：{resp_msg}')
                     await asyncio.sleep(60)
                 case _:
-                    self.log.critical(f"请求未知错误！{resp_dict}")
+                    self.log.error(f"请求未知错误！{resp_dict}")
                     raise UnknownError(f"未知响应code：{resp_dict}")
         return bool(is_succ)
 
@@ -735,7 +735,7 @@ class SamsClubApi:
 
     async def configuration_abtest_portal_report(self, gray_config_strategy_details: SamsClubGrayConfigStrategyDetails):
         if not gray_config_strategy_details.paramsJson:
-            self.log.critical(f"{gray_config_strategy_details} gray_config_strategy_details.paramsJson is None")
+            self.log.warning(f"{gray_config_strategy_details} gray_config_strategy_details.paramsJson is None")
             return {}
         url = self._base_url + '/api/v1/sams/configuration/abtest/portal/report'
         body = [

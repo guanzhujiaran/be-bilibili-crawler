@@ -138,7 +138,7 @@ async def solve_return_lot(
     #     f"一般动态抽奖信息【{len(filtered_list)}】条",
     #     filtered_list
     # )
-    get_others_lot_log.critical(f'第三方抽奖动态过滤完成，共{len(filtered_list)}条有效抽奖')
+    get_others_lot_log.info(f'第三方抽奖动态过滤完成，共{len(filtered_list)}条有效抽奖')
     ret_list = [sqlalchemy_model_2_dict(x) for x in filtered_list]
     if ret_list:
         # await a_pushme(

@@ -103,7 +103,7 @@ class BiliSpaceMonitor:
 
     @async_pushme_try_catch_decorator
     async def main(self, show_log=True):
-        log.critical('启动B站动态监控程序！！！')
+        log.info('启动B站动态监控程序！！！')
         if not show_log:
             pass
         task_list = []
