@@ -5,9 +5,9 @@
 覆盖：
   A. 单元测试（不依赖真实 RabbitMQ / Redis，使用 mock）
      1. 消息模型序列化往返
-     2. 发布流程：先写 Redis 待发缓存 → broker.publish → 清除缓存
+     2. 发布流程：先写 Redis 待发缓存 → broker.publish(persist=True) → 清除缓存
      3. 消费者 RabbitMQTest 正常 ack
-     4. 消费者异常兜底 → handle_exception → nack + 推送告警
+     4. 消费者异常兜底 → 等待回退重试耗尽 → nack 重新入队 + 推送告警
      5. 失败重发 retry_pending_messages
   B. 集成测试（需要 docker 起的 rabbitmq；用 RUN_MQ_INTEGRATION=1 开启）
      6. 发布 → 消费闭环（publisher_producer 发布，RabbitMQTest 消费并 ack）
@@ -116,6 +116,8 @@ async def test_publisher_producer_writes_and_clears_cache(monkeypatch):
     assert kw["exchange"] is test_mq_prop.exchange
     assert kw["routing_key"] == test_mq_prop.routing_key_name
     assert kw["message"] == msg
+    # persist=True（delivery_mode=2）：RabbitMQ 重启后消息不丢
+    assert kw["persist"] is True
 
     # 3) 发布成功后清除缓存
     assert fake_redis.remove_pending_message.await_count == 1
@@ -177,13 +179,23 @@ async def test_rabbitmq_test_consumer_acks():
 
 
 # ============================================================================
-# A.4 消费者异常兜底 → handle_exception → nack + 推送告警
+# A.4 消费者异常兜底 → 等待回退重试耗尽 → nack 重新入队 + 推送告警
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_rabbitmq_test_consumer_exception_triggers_nack(monkeypatch):
+async def test_rabbitmq_test_consumer_exception_requeues_with_alert(monkeypatch):
+    """处理最终失败（此处为 ack 失败）→ 等待回退耗尽 → 推送告警 + nack(requeue=True)。
+
+    重试耗尽的错误回调与重新入队都发生在
+    ``Service.MQ.base.MQClient.consume_backoff`` 中，故 patch 该模块的 a_push_error
+    （告警本身由 message-service 侧按接收人聚合，见 be-message 的 push_aggregator）；
+    同时把重试次数压到 1，避免测试真的去 sleep 指数等待。
+    """
     from Service.MQ.base.MQClient.BiliLotDataFastStream import RabbitMQTest
+    from CONFIG import settings
+
+    monkeypatch.setattr(settings, "mq_consume_max_tries", 1)
 
     msg = mock.AsyncMock()
     msg.ack = mock.AsyncMock(side_effect=RuntimeError("boom"))
@@ -193,13 +205,49 @@ async def test_rabbitmq_test_consumer_exception_triggers_nack(monkeypatch):
 
     body = RabbitMQTestMsgModel(a=1, b="x", c={1: "y"}, d=["z"])
     with mock.patch(
-        "Service.MQ.base.MQClient.BiliLotDataFastStream.a_push_error",
+        "Service.MQ.base.MQClient.consume_backoff.a_push_error",
         new_callable=mock.AsyncMock,
     ) as mock_push:
         await RabbitMQTest().consume(body, msg)
 
-    msg.nack.assert_awaited_once()
     mock_push.assert_awaited_once()
+    assert mock_push.await_args.kwargs["subject"] == "MQ消费失败"
+    # 重新入队（不丢消息）：由 broker 稍后重投，消费者再跑一轮等待回退直到成功
+    msg.nack.assert_awaited_once_with(requeue=True)
+
+
+def test_build_alert_content_is_stable_for_dedup():
+    """告警正文必须「同因失败完全一致」：message-service 靠它去重计数。
+
+    正文里不能出现时间戳 / 单条消息参数，否则摘要会退化成
+    「一长串互不相同的条目」，聚合就失去意义。
+    """
+    from Service.MQ.base.MQClient.consume_backoff import build_alert_content
+
+    exc1 = RuntimeError("Failed in , multi: boom")
+    exc2 = RuntimeError("Failed in , multi: boom")
+
+    first = build_alert_content("OfficialReserveChargeLotQueue", exc1)
+    second = build_alert_content("OfficialReserveChargeLotQueue", exc2)
+
+    assert first == second
+    assert "OfficialReserveChargeLotQueue" in first
+    assert "RuntimeError" in first
+    # 不同队列 / 不同异常 → 不同正文（服务端分开计数）
+    assert build_alert_content("OtherQueue", exc1) != first
+
+
+def test_build_alert_content_clips_long_exception():
+    """超长异常（如整段响应体）被截断，避免把推送正文撑爆。"""
+    from Service.MQ.base.MQClient.consume_backoff import (
+        _ALERT_EXCEPTION_LIMIT,
+        build_alert_content,
+    )
+
+    content = build_alert_content("Q", RuntimeError("x" * 5000))
+
+    assert len(content) < _ALERT_EXCEPTION_LIMIT + 100
+    assert content.endswith("…")
 
 
 # ============================================================================

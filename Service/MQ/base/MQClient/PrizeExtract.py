@@ -15,6 +15,7 @@
 import asyncio
 import time
 
+from bili_common.core.backoff import run_with_backoff
 from bili_common.models import StrEnumAutoDoc
 from faststream.rabbit.fastapi import RabbitMessage
 
@@ -42,19 +43,8 @@ from Service.MQ.base.MQClient.base import (
     prize_extract_dyndetail_mq_prop,
 )
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
+from Service.MQ.base.MQClient.consume_backoff import build_consume_backoff_config
 from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
-from Utils.推送.PushMe import a_push_error
-
-
-# ============ 异常兜底（与 BiliLotDataFastStream.handle_exception 一致）============
-async def handle_exception(module_name: str, e: Exception, params, msg: RabbitMessage):
-    error_msg = f"[ERROR]队列:{module_name}\n异常类型:{type(e)}\n异常:{e}\n时间:{time.strftime('%Y-%m-%d %H:%M:%S')}\n参数:{params}"
-    MQ_logger.exception(error_msg)
-    await a_push_error(
-        subject="运行异常",
-        content=f"抽奖MQ错误 - {module_name} - {e}\n{error_msg}",
-    )
-    await msg.nack()
 
 
 # ============ 并发/去重相关常量（两队列共享同一把全局信号量）============
@@ -148,6 +138,17 @@ class PrizeExtractRedisManager(RedisManagerBase):
 
 
 prize_extract_redis = PrizeExtractRedisManager()
+
+# 在途的「资源释放」任务强引用集合：release 动作被 shield 托管为独立任务后，
+# 不能依赖局部变量保活（asyncio 对任务只持弱引用），否则可能被 GC 掉导致锁泄漏。
+_pending_release_tasks: set[asyncio.Task] = set()
+
+
+async def _release_resources(sem_acquired: bool, lock_key: str) -> None:
+    """释放信号量（仅在持有名额时）与 redis 去重锁。"""
+    if sem_acquired:
+        await prize_extract_redis.release_semaphore(SEM_KEY)
+    await prize_extract_redis.release_lock(lock_key)
 
 
 # region 共享处理核心（两队列共用，按 params.target_db 分支落库）
@@ -269,24 +270,41 @@ async def process_prize_extract(
             return None
 
         # 4) 不存在 → 调用大模型提取并写库
-        #    大模型彻底失败：直接 nack，交给 RabbitMQ 延迟重试
-        result = await _do_extract_and_store(params)
+        #    失败不立即 nack 重投：先在进程内按「指数等待 + 抖动」重试（见
+        #    bili_common.core.backoff / consume_backoff），重试耗尽才交给 RabbitMQ。
+        #    修复前是「失败 → 立即 nack(requeue=True) → 立刻重投」的热循环。
+        result = await run_with_backoff(
+            lambda: _do_extract_and_store(params),
+            config=build_consume_backoff_config(
+                module_name=module_name,
+                params=params,
+            ),
+        )
 
         MQ_logger.info(f"【{module_name}】{lock_key} 提取并入库完成: {result}")
         await msg.ack()
         return result
     except Exception as e:
         MQ_logger.warning(
-            f"【{module_name}】{lock_key} 大模型提取失败，"
-            f"nack 交给 RabbitMQ 延迟重试: {type(e).__name__}: {e}"
+            f"【{module_name}】{lock_key} 大模型提取失败（本轮等待回退已耗尽），"
+            f"nack 重新入队等待下一轮：{type(e).__name__}: {e}"
         )
-        await msg.nack()
+        # 不丢消息：消息重新入队，由 broker 稍后重投，消费者再跑一轮等待回退，
+        # 直到处理成功为止（持久化与重投全部交给 RabbitMQ）。
+        await msg.nack(requeue=True)
         return None
     finally:
-        # 释放信号量（仅在持有名额时）与 redis 去重锁
-        if sem_acquired:
-            await prize_extract_redis.release_semaphore(SEM_KEY)
-        await prize_extract_redis.release_lock(lock_key)
+        # 释放动作必须「不可取消」：连接拆除 / 任务取消时 CancelledError 可能恰好
+        # 投递在 release 的 await 上，导致去重锁与信号量泄漏（后续同 key 消息长期
+        # 被「正在查询/处理中」跳过）。这里托管为独立任务并用 shield 等待，
+        # 保证释放动作跑完（本任务自身的取消仍会正常向上传播）。
+        release_task = asyncio.create_task(
+            _release_resources(sem_acquired=sem_acquired, lock_key=lock_key)
+        )
+        # asyncio 只对运行中的任务持弱引用，登记一份强引用避免被 GC。
+        _pending_release_tasks.add(release_task)
+        release_task.add_done_callback(_pending_release_tasks.discard)
+        await asyncio.shield(release_task)
 
 
 # endregion

@@ -1,11 +1,10 @@
-import socket
-import time
 import traceback
-from collections import deque
 from functools import wraps
 from typing import Literal, Optional
 
 from log.base_log import pushme_logger
+
+from bili_common.core.push_settings import build_server_label
 
 from CONFIG import settings
 from Service.MQ.message.message_pub import publish_message
@@ -35,18 +34,11 @@ class PushSubject(str):
 def server_label() -> str:
     """返回本服务标识前缀，例如 ``[be-bilibili-crawler@10.0.0.5]``。
 
-    所有推送标题都会带上它，便于在告警中区分「是哪台服务器的哪个服务」报错。
-    ``SERVER_NAME`` / ``SERVER_ADDRESS`` 来自全局 ``settings``（可被环境变量覆盖），
+    实现统一在 ``bili_common.core.push_settings.build_server_label``（与 RPA-Browser
+    共用一份），本函数只做本服务的零参包装，历史调用点保持不变。
     ``SERVER_ADDRESS`` 缺省时自动取本机 hostname。
     """
-    name = settings.SERVER_NAME or "be-bilibili-crawler"
-    addr = settings.SERVER_ADDRESS or socket.gethostname()
-    return f"[{name}@{addr}]"
-
-push_msg_d = deque(maxlen=50)
-_last_push_time: float = 0
-_PUSH_INTERVAL = 60  # 推送间隔（秒），至少间隔1分钟，避免刷屏/刷接口
-
+    return build_server_label(settings)
 
 def async_pushme_try_catch_decorator(func):
     @wraps(func)
@@ -85,7 +77,8 @@ async def a_pushme(
     """统一的（信息类）推送入口。
 
     行为已从「直接调用 PushMe/PushPlus 接口」改为「发布到 RabbitMQ，
-    由 message-service 统一完成实际推送」，以便集中管理推送渠道与限流。
+    由 message-service 统一完成实际推送」，**限流 / 去重 / 聚合也统一交给 message-service**
+    （见 be-message-service 的 ``push_aggregator``）。
     标题会自动加上本服务标识前缀（服务名@地址）与消息主题标识（默认 ``[i]`` 信息）。
 
     报错类推送请使用 :func:`a_push_error`，其标题只写服务+地址与失败主题，
@@ -115,6 +108,10 @@ async def a_push_error(
     与 :func:`a_pushme` 的区别：标题含「服务@地址 + 失败主题[f] + 笼统的 subject（如 运行异常）」，
     不写入任何具体错误信息；具体错误内容（异常信息、堆栈、上下文）全部放入 content。
 
+    注意：failure 主题（``[f]``）的推送会被 message-service 按「接收人」在冷却期内
+    聚合成一条摘要，因此 **content 必须稳定可去重**（同因失败内容完全一致），
+    否则摘要会退化成「一长串互不相同的条目」；逐条明细请写本地日志。
+
     :param topic: 消息主题标识，默认 ``[f]``（失败），可传 ``[w]`` 等其它主题。
     """
     title = f"{topic}{server_label()} {subject}"
@@ -122,17 +119,6 @@ async def a_push_error(
 
 
 async def _dispatch(title: str, content: str, push_type: str) -> None:
-    """实际的限流 / 去重 / 发布逻辑（a_pushme 与 a_push_error 共用）。"""
-    global _last_push_time
-    # 内容去重，避免重复告警刷屏
-    if content in push_msg_d:
-        return
-    now = time.time()
-    # 频率限制，避免短时间大量推送打爆推送服务
-    if now - _last_push_time < _PUSH_INTERVAL:
-        return
-    _last_push_time = now
-    push_msg_d.append(content)
-
+    """发布推送请求到 message-service（限流 / 去重 / 聚合都在那边统一做）。"""
     # 携带共享的全局渠道配置（MESSAGE_CONFIG），由 message-service 统一推送
     await publish_message(title, content, push_type, config=settings.message_config)

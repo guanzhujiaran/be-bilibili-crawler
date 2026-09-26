@@ -95,7 +95,8 @@ docker compose up -d be-bilibili-crawler
 | `MESSAGE_CONFIG` | 统一推送渠道配置（JSON，与 message-service / rpa-browser 共用） |
 | `MESSAGE_SERVICE_HOST` / `MESSAGE_SERVICE_PORT` | message-service 地址 |
 | `llm_apis` | 外部 LLM API 列表（OpenAI 兼容） |
-| `SERVER_NAME` / `SERVER_ADDRESS` | 服务标识（写入告警标题） |
+| `SERVER_NAME` / `SERVER_ADDRESS` | 服务标识（写入告警标题，来自 `bili_common` 的 `PushNotifySettingsMixin`） |
+| `PUSHME_URL` / `PUSHPLUS_URL` / `HITOKOTO_API_URL` | 渠道默认端点 / 一言接口（同上，与其它服务共用默认值） |
 | `SHOW_LOG` / `IS_DEV` | 日志开关 / 是否开发环境 |
 
 6 个业务库：`biliopusdb`（普通抽奖动态）、`bilidb`（话题抽奖）、`bili_reserve`（预约抽奖）、`dyndetail`（动态详情）、`proxy_db`（代理）、`samsclub`（山姆会员店）。

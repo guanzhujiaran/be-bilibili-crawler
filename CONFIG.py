@@ -2,140 +2,17 @@ from bili_common.models import StrEnumAutoDoc
 import os
 from dataclasses import dataclass
 from fake_useragent import UserAgent
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import AsyncAdaptedQueuePool
+
+# 「推送 / 服务标识」配置片段与推送渠道配置模型统一来自 bili-common（单一来源）
+from bili_common.core.push_settings import PushNotifySettingsMixin
+from bili_common.models.push import PushChannelConfig
 
 from Service.BaseCrawler.config import CrawlerConfig, get_crawler_config
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
-
-
-class PushChannelConfig(BaseModel):
-    """全局推送渠道配置（pydantic 模型）。
-
-    字段与 message-service 的 PushChannelConfig 保持一致，以便原样序列化后
-    经 RabbitMQ 投递给 message-service 解析，未知字段一律忽略。
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    # 一言（随机句子）
-    hitokoto: bool = True
-
-    # Bark
-    bark_push: str = ""
-    bark_archive: str = ""
-    bark_group: str = ""
-    bark_sound: str = ""
-    bark_icon: str = ""
-    bark_level: str = ""
-    bark_url: str = ""
-
-    # 钉钉机器人
-    dd_bot_secret: str = ""
-    dd_bot_token: str = ""
-
-    # 飞书机器人
-    fskey: str = ""
-
-    # go-cqhttp
-    gobot_url: str = ""
-    gobot_qq: str = ""
-    gobot_token: str = ""
-
-    # Gotify
-    gotify_url: str = ""
-    gotify_token: str = ""
-    gotify_priority: int = 0
-
-    # iGot
-    igot_push_key: str = ""
-
-    # Server 酱
-    push_key: str = ""
-
-    # PushDeer
-    deer_key: str = ""
-    deer_url: str = ""
-
-    # Synology Chat
-    chat_url: str = ""
-    chat_token: str = ""
-
-    # PushPlus
-    push_plus_token: str = ""
-    push_plus_url: str = ""
-    push_plus_user: str = ""
-    push_plus_template: str = "html"
-    push_plus_channel: str = "wechat"
-    push_plus_webhook: str = ""
-    push_plus_callbackurl: str = ""
-    push_plus_to: str = ""
-
-    # 微加机器人
-    we_plus_bot_token: str = ""
-    we_plus_bot_receiver: str = ""
-    we_plus_bot_version: str = "pro"
-
-    # Qmsg 酱
-    qmsg_key: str = ""
-    qmsg_type: str = ""
-
-    # 企业微信
-    qywx_origin: str = ""
-    qywx_am: str = ""
-    qywx_key: str = ""
-
-    # Telegram
-    tg_bot_token: str = ""
-    tg_user_id: str = ""
-    tg_api_host: str = ""
-    tg_proxy_auth: str = ""
-    tg_proxy_host: str = ""
-    tg_proxy_port: str = ""
-
-    # 智能微秘书
-    aibotk_key: str = ""
-    aibotk_type: str = ""
-    aibotk_name: str = ""
-
-    # SMTP 邮件
-    smtp_server: str = ""
-    smtp_ssl: str = "false"
-    smtp_email: str = ""
-    smtp_password: str = ""
-    smtp_name: str = ""
-
-    # PushMe
-    pushme_key: str = ""
-    pushme_url: str = ""
-
-    # Chronocat
-    chronocat_qq: str = ""
-    chronocat_token: str = ""
-    chronocat_url: str = ""
-
-    # 自定义 Webhook
-    webhook_url: str = ""
-    webhook_body: str = ""
-    webhook_headers: str = ""
-    webhook_method: str = ""
-    webhook_content_type: str = ""
-
-    # Ntfy
-    ntfy_url: str = ""
-    ntfy_topic: str = ""
-    ntfy_priority: str = "3"
-    ntfy_token: str = ""
-    ntfy_username: str = ""
-    ntfy_password: str = ""
-    ntfy_actions: str = ""
-
-    # WxPusher
-    wxpusher_app_token: str = ""
-    wxpusher_topic_ids: str = ""
-    wxpusher_uids: str = ""
 
 
 class GetOthersLotDynConfig(BaseModel):
@@ -235,7 +112,7 @@ class LLMApiConfigPatch(BaseModel):
     requests_per_second: float | None = None
 
 
-class Settings(BaseSettings):
+class Settings(PushNotifySettingsMixin, BaseSettings):
     MYSQL_HOST: str
     MYSQL_PORT: str
     MYSQL_USER: str
@@ -247,11 +124,10 @@ class Settings(BaseSettings):
     RABBITMQ_PORT: str
     RABBITMQ_USER: str
     RABBITMQ_PASSWORD: str
-    # 全局推送渠道配置（PushChannelConfig pydantic 模型，与 message-service / rpa-browser 共用同一份）
-    message_config: PushChannelConfig = PushChannelConfig()
-    # 本服务标识（写入推送告警标题，便于定位「哪台服务器的哪个服务」报错）
+    # 推送渠道配置（message_config）、服务标识（SERVER_NAME / SERVER_ADDRESS）、
+    # 渠道默认端点（pushme_url / pushplus_url）等共用项由 PushNotifySettingsMixin 提供，
+    # 此处只覆盖本服务有差异的默认值（服务名）。
     SERVER_NAME: str = "be-bilibili-crawler"
-    SERVER_ADDRESS: str = ""  # 缺省自动取本机 hostname
     UNIDBG_HOST: str
     UNIDBG_PORT: str
     V2RAY_HOST: str
@@ -284,6 +160,20 @@ class Settings(BaseSettings):
     # 通过环境变量 FASTSTREAM_LOG_LEVEL 覆盖。仅影响 FastStream 框架自身的标准库日志，
     # 不影响本项目 loguru 业务日志（MQ_logger 等）。
     faststream_log_level: str = "WARNING"
+
+    # ===== MQ 消费者「等待回退（backoff）」重试策略 =====
+    # 见 Service/MQ/base/MQClient/consume_backoff.py 与 bili_common.core.backoff。
+    # 背景：faststream 的 nack 默认 requeue=True，失败后消息被立即重投，
+    # 无等待策略时会形成热循环（生产日志里曾把 curl 句柄 / 日志文件句柄打爆）。
+    # 单条消息在进程内最多处理几次（含首次）；<=0 表示不限次数、由 max_time 兜底
+    mq_consume_max_tries: int = 0
+    # 单条消息最长处理时间（秒）；<=0 表示不限
+    mq_consume_max_time: float = 600.0
+    # 指数等待底数：第 n 次失败等待 = factor * base ** n
+    mq_consume_backoff_base: float = 2.0
+    mq_consume_backoff_factor: float = 3.0
+    # 单次等待上限（秒），避免指数增长后等待过久
+    mq_consume_backoff_max_wait: float = 300.0
 
     model_config = SettingsConfigDict(
         env_file=(
@@ -334,13 +224,15 @@ class PushNotifyConfig(BaseModel):
 
     @classmethod
     def from_message_config(cls, cfg: PushChannelConfig) -> "PushNotifyConfig":
+        # 渠道端点缺省值单一来源：settings.pushme_url / pushplus_url
+        # （由 bili_common 的 PushNotifySettingsMixin 提供，可被同名环境变量覆盖）
         return cls(
             pushme=PushMeChannel(
-                url=cfg.pushme_url or "https://push.i-i.me",
+                url=cfg.pushme_url or settings.pushme_url,
                 token=cfg.pushme_key,
             ),
             pushplus=PushPlusChannel(
-                url=cfg.push_plus_url or "http://www.pushplus.plus/send",
+                url=cfg.push_plus_url or settings.pushplus_url,
                 token=cfg.push_plus_token,
             ),
         )

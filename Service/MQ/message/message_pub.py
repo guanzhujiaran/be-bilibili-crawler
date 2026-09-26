@@ -55,6 +55,8 @@ async def publish_message(
             exchange=message_exchange,
             routing_key="message.push",
             queue=message_queue,
+            # persist=True（delivery_mode=2）：推送请求也落盘，RabbitMQ 重启后不丢
+            persist=True,
         )
         MQ_logger.debug(f"已发布推送消息到 message 队列: {title}")
     except Exception as e:  # noqa: BLE001

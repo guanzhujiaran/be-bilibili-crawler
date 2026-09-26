@@ -1,8 +1,7 @@
 from datetime import datetime
-import json
 import time
 import asyncio
-from typing import Any, Dict
+from typing import Dict
 from faststream.rabbit.fastapi import RabbitMessage
 from Models.MQ.MQRouterModels import RabbitMQTestMsgModel
 from Models.lottery_database.bili.LotteryDataModels import BiliLotteryStatusEnum
@@ -20,25 +19,10 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
-from Utils.推送.PushMe import a_push_error
+from Service.MQ.base.MQClient.consume_backoff import consume_with_backoff
 # 全局锁，确保所有 lottery_id 的处理串行化，避免milvus数据库高并发下崩溃
 # 简单粗暴但有效，适用于并发量不大的场景
 _global_lottery_lock = asyncio.Lock()
-
-
-async def handle_exception(
-        module_name: str,
-        e: Exception,
-        params: Any,
-        msg: RabbitMessage
-):
-    error_msg = f"[ERROR]队列:{module_name}\n异常类型:{type(e)}\n异常:{e}\n时间:{time.strftime('%Y-%m-%d %H:%M:%S')}\n参数:{params}"
-    MQ_logger.exception(error_msg)
-    await a_push_error(
-        subject="运行异常",
-        content=f"抽奖MQ错误 - {module_name} - {e}\n{json.dumps(error_msg, ensure_ascii=False)}",
-    )
-    await msg.nack()
 
 
 async def _test_publish(pub_msg: str):
@@ -74,11 +58,15 @@ class RabbitMQTest(BaseFastStreamMQ):
                       _body: RabbitMQTestMsgModel,
                       msg: RabbitMessage,
                       ):
-        try:
+        async def _process():
             MQ_logger.info(f"【{self.mq_props.queue_name}】收到消息：{_body}")
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(self.mq_props.queue_name, e, _body, msg)
+
+        await consume_with_backoff(
+            module_name=self.mq_props.queue_name,
+            params=_body,
+            msg=msg,
+            handler=_process,
+        )
 
 
 # endregion
@@ -93,7 +81,9 @@ class OfficialReserveChargeLot(BaseFastStreamMQ):
                       _body: LotDataReq,
                       msg: RabbitMessage,
                       ):
-        try:
+        module_name = self.mq_props.queue_name
+
+        async def _process():
             lot_data = await get_lot_notice(
                 business_id=_body.business_id,
                 business_type=_body.business_type,
@@ -110,12 +100,15 @@ class OfficialReserveChargeLot(BaseFastStreamMQ):
                     lot_data_dict=newly_lot_data,
                     extra_routing_key="OfficialReserveChargeLotMQ"
                 )
-                # result = await asyncio.to_thread(grpc_sql_helper.upsert_lot_detail, newly_lot_data)
-                return await msg.ack()
+                return
             MQ_logger.debug(f"未获取到抽奖提示数据！参数：{_body}\t响应：{lot_data}")
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(self.mq_props.queue_name, e, _body, msg)
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=_body,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class UpsertOfficialReserveChargeLot(BaseFastStreamMQ):
@@ -143,23 +136,29 @@ class UpsertOfficialReserveChargeLot(BaseFastStreamMQ):
         ```
         这种响应的data字段
         """
-        try:
-            if newly_lot_data:
-                lot_data = grpc_sql_helper.process_resp_data_dict_2_lotdata(newly_lot_data)
-                await BiliLotDataPublisher.pub_upsert_milvus_bili_lot_data(lot_data)
-                result = await grpc_sql_helper.upsert_lot_detail(newly_lot_data)
-                MQ_logger.info(f"【{self.mq_props.queue_name}】upsert_lot_detail {newly_lot_data} result: {result}")
-                if lot_data.status == BiliLotteryStatusEnum.end:
-                    await BiliLotDataPublisher.pub_upsert_bili_atari(
-                        lottery_id=lot_data.lottery_id,
-                        extra_routing_key='UpsertOfficialReserveChargeLotMQ'
-                    )
-                return await msg.ack()
-            MQ_logger.debug(
-                f"【{self.mq_props.queue_name}】未获取到抽奖提示数据！参数：{newly_lot_data}")
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(self.mq_props.queue_name, e, newly_lot_data, msg)
+        module_name = self.mq_props.queue_name
+
+        async def _process():
+            if not newly_lot_data:
+                MQ_logger.debug(
+                    f"【{module_name}】未获取到抽奖提示数据！参数：{newly_lot_data}")
+                return
+            lot_data = grpc_sql_helper.process_resp_data_dict_2_lotdata(newly_lot_data)
+            await BiliLotDataPublisher.pub_upsert_milvus_bili_lot_data(lot_data)
+            result = await grpc_sql_helper.upsert_lot_detail(newly_lot_data)
+            MQ_logger.info(f"【{module_name}】upsert_lot_detail {newly_lot_data} result: {result}")
+            if lot_data.status == BiliLotteryStatusEnum.end:
+                await BiliLotDataPublisher.pub_upsert_bili_atari(
+                    lottery_id=lot_data.lottery_id,
+                    extra_routing_key='UpsertOfficialReserveChargeLotMQ'
+                )
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=newly_lot_data,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class UpsertLotDataByDynamicId(BaseFastStreamMQ):
@@ -175,30 +174,35 @@ class UpsertLotDataByDynamicId(BaseFastStreamMQ):
             msg: RabbitMessage,
     ):
         module_name = self.mq_props.queue_name
-        try:
+
+        async def _process():
             MQ_logger.debug(
                 f"【{module_name}】收到消息：{lot_data_dynamic_req}")
-            if lot_data_dynamic_req.dynamic_id:
-                dyn_detail = await dyn_detail_scrapy.get_grpc_single_dynDetail_by_dynamic_id(
-                    lot_data_dynamic_req.dynamic_id)
-                await dyn_detail_scrapy.Sqlhelper.upsert_DynDetail(
-                    doc_id=dyn_detail.get('rid'),
-                    dynamic_id=dyn_detail.get('dynamic_id'),
-                    dynData=dyn_detail.get('dynData'),
-                    lot_id=dyn_detail.get('lot_id'),
-                    dynamic_created_time=dyn_detail.get('dynamic_created_time'))
-                if dyn_detail.get('lot_id'):
-                    MQ_logger.info(
-                        f"【{module_name}】获取到抽奖提示数据！参数：{lot_data_dynamic_req}")
-                else:
-                    MQ_logger.debug(
-                        f"【{module_name}】未获取到抽奖提示数据！参数：{lot_data_dynamic_req}")
-                return await msg.ack()
-            MQ_logger.debug(
-                f"未获取到【{module_name}】参数！参数：{lot_data_dynamic_req}")
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(module_name, e, lot_data_dynamic_req, msg)
+            if not lot_data_dynamic_req.dynamic_id:
+                MQ_logger.debug(
+                    f"未获取到【{module_name}】参数！参数：{lot_data_dynamic_req}")
+                return
+            dyn_detail = await dyn_detail_scrapy.get_grpc_single_dynDetail_by_dynamic_id(
+                lot_data_dynamic_req.dynamic_id)
+            await dyn_detail_scrapy.Sqlhelper.upsert_DynDetail(
+                doc_id=dyn_detail.get('rid'),
+                dynamic_id=dyn_detail.get('dynamic_id'),
+                dynData=dyn_detail.get('dynData'),
+                lot_id=dyn_detail.get('lot_id'),
+                dynamic_created_time=dyn_detail.get('dynamic_created_time'))
+            if dyn_detail.get('lot_id'):
+                MQ_logger.info(
+                    f"【{module_name}】获取到抽奖提示数据！参数：{lot_data_dynamic_req}")
+            else:
+                MQ_logger.debug(
+                    f"【{module_name}】未获取到抽奖提示数据！参数：{lot_data_dynamic_req}")
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=lot_data_dynamic_req,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class UpsertTopicLot(BaseFastStreamMQ):
@@ -214,13 +218,18 @@ class UpsertTopicLot(BaseFastStreamMQ):
             msg: RabbitMessage,
     ):
         module_name = self.mq_props.queue_name
-        try:
+
+        async def _process():
             MQ_logger.debug(
                 f"【{module_name}】收到消息：{_body}")
-            lot_data = await topic_robot.pipeline(_body.topic_id)
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(module_name, e, _body, msg)
+            await topic_robot.pipeline(_body.topic_id)
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=_body,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class UpsertMilvusBiliLotData(BaseFastStreamMQ):
@@ -236,15 +245,20 @@ class UpsertMilvusBiliLotData(BaseFastStreamMQ):
             msg: RabbitMessage,
     ):
         module_name = self.mq_props.queue_name
-        try:
+
+        async def _process():
             MQ_logger.debug(
                 f"【{module_name}】收到消息：{_body}")
             lot_data = Lotdata(**_body)
             da = await lot_data_2_bili_lot_data_ls(lot_data)
             await save_bili_lot_data_embeddings(da)
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(module_name, e, _body, msg)
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=_body,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class UpsertBiliAtari(BaseFastStreamMQ):
@@ -259,14 +273,19 @@ class UpsertBiliAtari(BaseFastStreamMQ):
             msg: RabbitMessage,
     ):
         module_name = self.mq_props.queue_name
-        try:
+
+        async def _process():
             async with _global_lottery_lock:
                 MQ_logger.debug(
                     f"【{module_name}】收到消息：{lottery_id}")
                 await grpc_sql_helper.sync_all_lottery_result_2_bili_user_info(lottery_id=lottery_id)
-                return await msg.ack()
-        except Exception as e:
-            await handle_exception(module_name, e, lottery_id, msg)
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=lottery_id,
+            msg=msg,
+            handler=_process,
+        )
 
 
 class BiliVoucher(BaseFastStreamMQ):
@@ -281,25 +300,56 @@ class BiliVoucher(BaseFastStreamMQ):
             msg: RabbitMessage,
     ):
         module_name = self.mq_props.queue_name
-        try:
+
+        async def _process():
             MQ_logger.debug(
                 f"【{module_name}】收到消息：{voucher_info}")
-            if int(time.time()) - voucher_info.generate_ts > 10:
-                return await msg.ack()
+            # 凭证字段在模型里都是可空的：缺失时直接跳过，避免 TypeError 让消息
+            # 反复重试（过期/不完整的验证码凭证不影响抽奖主流程）。
+            generate_ts = voucher_info.generate_ts
+            if generate_ts is None:
+                MQ_logger.warning(f"【{module_name}】凭证缺少生成时间，跳过：{voucher_info}")
+                return
+            if int(time.time()) - generate_ts > 10:
+                return
+            voucher = voucher_info.voucher
+            ua = voucher_info.ua
+            ck = voucher_info.ck
+            origin = voucher_info.origin
+            referer = voucher_info.referer
+            ticket = voucher_info.ticket
+            version = voucher_info.version
+            session_id = voucher_info.session_id
+            if (
+                voucher is None
+                or ua is None
+                or ck is None
+                or origin is None
+                or referer is None
+                or ticket is None
+                or version is None
+                or session_id is None
+            ):
+                MQ_logger.warning(f"【{module_name}】凭证字段不完整，跳过：{voucher_info}")
+                return
             await geetest_v3_breaker.a_validate_form_voucher_ua(
-                voucher_info.voucher,
-                voucher_info.ua,
-                voucher_info.ck,
-                voucher_info.origin,
-                voucher_info.referer,
-                voucher_info.ticket,
-                voucher_info.version,
-                voucher_info.session_id,
+                voucher,
+                ua,
+                ck,
+                origin,
+                referer,
+                ticket,
+                version,
+                session_id,
                 True,
             )
-            return await msg.ack()
-        except Exception as e:
-            await handle_exception(module_name, e, voucher_info, msg)
+
+        await consume_with_backoff(
+            module_name=module_name,
+            params=voucher_info,
+            msg=msg,
+            handler=_process,
+        )
 
 
 official_reserve_charge_lot = OfficialReserveChargeLot()

@@ -64,6 +64,8 @@ def publisher_producer(mq_props: MQPropBase):
             queue=mq_props.rabbit_queue,
             exchange=mq_props.exchange,
             routing_key=routing_key,
+            # persist=True（delivery_mode=2）：消息落盘，RabbitMQ 重启后不丢
+            persist=True,
         )
         # 发布成功后删除缓存
         await redis_obj.remove_pending_message(cached_message.id)
@@ -338,6 +340,8 @@ class BiliLotDataPublisher:
                     queue=queue_name,
                     exchange=exch,
                     routing_key=cached_msg.routing_key,
+                    # 与首次发布一致：persist=True（delivery_mode=2），broker 重启不丢
+                    persist=True,
                 )
                 # 发布成功后删除缓存
                 await redis_obj.remove_pending_message(cached_msg.id)
