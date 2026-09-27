@@ -216,6 +216,16 @@ class TrackedChatOpenAI(ChatOpenAI):
         return self._stats
 
     @property
+    def slot_fingerprint(self) -> str:
+        """本实例对应槽位的指纹（base_url + model_name + token），用于进程内锁。
+
+        与 ``Service/llm_service/pool.py`` 计算槽位指纹的口径保持一致。
+        """
+        return slot_fingerprint(
+            self.openai_api_base, self.model_name, self.openai_api_key
+        )
+
+    @property
     def available(self) -> bool:
         return self._stats.available
 
