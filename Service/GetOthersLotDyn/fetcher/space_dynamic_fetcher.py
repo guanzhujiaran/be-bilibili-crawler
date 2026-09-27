@@ -35,6 +35,16 @@ BAPI = methods()
 _is_use_available_proxy = True
 
 
+def _is_pinned_dynamic(card_dict: dict) -> bool:
+    """判断空间动态是否被置顶
+
+    置顶动态的发布时间与本轮的抓取区间无关，且不会写入 t_lotuserspaceresp，
+    因此统一在计数、动态解析、时间判断中剔除，保证「全新跑」与「断点续爬」行为一致。
+    """
+    module_tag = (card_dict.get('modules') or {}).get('module_tag') or {}
+    return module_tag.get('text') == '置顶'
+
+
 def _extract_space_dynamic_times(space_req_dict: dict) -> list[int]:
     """从空间动态响应中提取所有动态的发布时间戳
 
@@ -46,6 +56,8 @@ def _extract_space_dynamic_times(space_req_dict: dict) -> list[int]:
         return []
     time_list = []
     for card_dict in cards_json:
+        if _is_pinned_dynamic(card_dict):
+            continue
         # 一次性取出 module_author，避免重复 .get()
         module_author = (card_dict.get('modules') or {}).get('module_author') or {}
         pub_ts = module_author.get('pub_ts')
@@ -155,13 +167,26 @@ class BiliSpaceUserItem:
         while 1:
             if succ_counter:
                 succ_counter.update_ts = int(time.time())
-            if origin_offset != 0 and first_get_dynamic_flag and not secondRound:  # 从半当中开始接着获取动态
-                items = await SqlHelper.getSpaceRespTillOffset(self.uid, origin_offset)
+            # 断点续爬：上一次运行中途退出后，从数据库恢复动态继续获取。
+            # 注意必须只恢复「本轮」已获取到的动态（round_id 相同）：
+            # 1) 否则上一轮/更早轮次的历史动态也会被恢复并计入 n，重新启动后
+            #    「动态数量过少」的判断会被历史数据放大而失真；
+            # 2) 恢复出的动态发布时间也只应反映本轮的扫描进度，避免过早命中 SpareTime 结束条件。
+            is_resume_from_db = (
+                origin_offset != 0 and first_get_dynamic_flag and not secondRound
+            )
+            restored_items: list[dict] = []
+            if is_resume_from_db:
+                first_get_dynamic_flag = False
+                restored_items = await SqlHelper.getSpaceRespTillOffset(
+                    self.uid, origin_offset, round_id=self.lot_round_id
+                )
+            if is_resume_from_db and restored_items:  # 从半当中开始接着获取动态
                 dyreq_dict = {
                     'code': 0,
                     'data': {
                         'has_more': True,
-                        'items': items,
+                        'items': restored_items,
                         'offset': origin_offset,
                         "update_baseline": "",
                         'update_num': 0
@@ -170,9 +195,11 @@ class BiliSpaceUserItem:
                     'ttl': 1
                 }
                 get_others_lot_log.info(
-                    f'断点续爬：uid={self.uid}，从数据库恢复offset={origin_offset}之后的空间动态{len(items)}条，之后将继续从B站API获取')
-                first_get_dynamic_flag = False
+                    f'断点续爬：uid={self.uid}，从数据库恢复本轮offset={origin_offset}之后的空间动态{len(restored_items)}条，之后将继续从B站API获取')
             else:
+                if is_resume_from_db:
+                    get_others_lot_log.warning(
+                        f'断点续爬：uid={self.uid}，数据库中未找到本轮offset={origin_offset}之后的空间动态，改为直接从B站API获取')
                 start_ts = time.time()
                 get_others_lot_log.debug(f'正在请求B站API获取用户uid={self.uid}的空间动态')
                 dyreq_dict = await asyncio.create_task(
@@ -302,10 +329,13 @@ class BiliSpaceUserItem:
                 SpareTime=SpareTime,
                 succ_counter=succ_counter
             ))
+        # n 只统计「本轮」（含断点续爬时从数据库恢复的本轮动态）获取到的动态数量，
+        # 因此重新启动续爬时不会被上一轮的历史动态放大，也不会因为本轮只爬了一部分而误报
         if n <= 50 and time.time() - time_list[-1] >= SpareTime and secondRound == False and not isPubLotUser:
             get_others_lot_log.warning(
-                f'用户uid={self.uid}获取到的动态数量过少({n}条)，可能存在异常，请前往主页查看：https://space.bilibili.com/{self.uid}')
-        get_others_lot_log.debug(f'用户uid={self.uid}空间动态获取完毕')
+                f'用户uid={self.uid}本轮获取到的动态数量过少({n}条)，可能存在异常，请前往主页查看：https://space.bilibili.com/{self.uid}')
+        get_others_lot_log.debug(
+            f'用户uid={self.uid}空间动态获取完毕，本轮获取到的动态数量={n}条')
 
     async def __add_space_card_to_db(self, spaceResp: dict) -> List[int | str] | None:
         """将空间动态响应保存到数据库
@@ -318,8 +348,7 @@ class BiliSpaceUserItem:
             # 过滤置顶动态并保存到数据库（单次遍历）
             ret_list = []
             for i in items:
-                module_tag = ((i.get('modules') or {}).get('module_tag') or {})
-                if module_tag.get('text') == '置顶':
+                if _is_pinned_dynamic(i):
                     continue
                 space_resp_card_dynamic_id = i.get('id_str')
                 await SqlHelper.addSpaceResp(LotUserSpaceResp=TLotuserspaceresp(
@@ -362,6 +391,10 @@ class BiliSpaceUserItem:
             data = space_req_dict.get('data') or {}
             items = data.get('items') or []
             for dynamic_item in items:
+                # 置顶动态与本轮抓取区间无关，且不会入库，续爬时也无法从数据库恢复，
+                # 因此这里直接剔除（不计入动态数量，也不参与抽奖动态判定），保证两种跑法结果一致
+                if _is_pinned_dynamic(dynamic_item):
+                    continue
                 self.updateNum += 1
                 dynamic_id_str = str(dynamic_item.get('id_str'))
                 ret_list.append(dynamic_id_str)

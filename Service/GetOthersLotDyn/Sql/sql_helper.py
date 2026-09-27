@@ -567,16 +567,24 @@ class __SqlHelper(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def getSpaceRespTillOffset(
-        self, uid: int | str, offset: int | str
+        self, uid: int | str, offset: int | str, round_id: int | str | None = None
     ) -> list[dict]:
         """
         获取所有比offset值大的动态，也就是获取offset值之后发布的动态
         :param uid:
         :param offset:
+        :param round_id: 指定轮次时仅返回该轮获取到的空间动态。断点续爬必须限定轮次，
+            否则会把上一轮（或更早轮次）的历史动态一并恢复出来，导致本轮"获取到的动态数量"被放大
         :return:
         """
         if offset is None:
             offset = ""
+        # round_id 为空时保持原有的全轮次行为（向后兼容）
+        round_filter = (
+            [TLotuserspaceresp.dynLotRound_id == round_id]
+            if round_id is not None
+            else []
+        )
         async with self.async_session() as session:
             sql = (
                 select(TLotuserspaceresp)
@@ -584,6 +592,7 @@ class __SqlHelper(SqlHelperBase):
                     and_(
                         TLotuserspaceresp.spaceUid == uid,
                         TLotuserspaceresp.spaceOffset >= offset,
+                        *round_filter,
                     )
                 )
                 .order_by(TLotuserspaceresp.spaceOffset.desc())

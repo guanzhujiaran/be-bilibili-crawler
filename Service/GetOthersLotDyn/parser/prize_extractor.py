@@ -329,6 +329,14 @@ async def _do_extract(
     alerted = False
     while True:
         if chat_openai_client:
+            # 指定槽位（MQ 消费者用槽位租约锁定了某条 LLM 配置）：锁定哪个槽位就只用哪个，
+            # 不再遍历其他实例，否则会出现「锁着 A 槽位、请求打到 B」——锁形同虚设。
+            if getattr(chat_openai_client, "disabled", False):
+                # 该槽位已熔断（不可恢复错误）：立刻抛出，让上层释放槽位、重新抢一个
+                # （能抢到哪个由槽位池决定），而不是对着死槽位无限退避。
+                raise AllLLMsDisabledError(
+                    "指定的 LLM 槽位已熔断（不可恢复错误），需要换一个槽位重试"
+                )
             all_llms = [chat_openai_client]
         else:
             try:

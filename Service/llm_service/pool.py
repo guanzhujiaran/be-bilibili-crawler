@@ -15,8 +15,9 @@
 """
 
 from Service.llm_service import SamplingPreset
-from Service.llm_service.tracked_llm import TrackedChatOpenAI
+from Service.llm_service.tracked_llm import TrackedChatOpenAI, slot_fingerprint
 
+from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
@@ -149,6 +150,42 @@ def get_all_free_llms() -> list[TrackedChatOpenAI]:
     ]
 
     return list(ordered)
+
+
+@dataclass(slots=True, frozen=True, eq=False)
+class LLMSlot:
+    """一个云端 LLM 槽位：一条配置 + 它的指纹 + 对应实例。
+
+    槽位是「并发控制」与「配置身份」的绑定单元：同一槽位（同一
+    base_url + model_name + token）同时最多 1 个在途请求，
+    跨进程约束见 :mod:`Service.llm_service.slot`。
+    """
+
+    fingerprint: str
+    config: LLMApiConfig
+    llm: TrackedChatOpenAI
+
+
+def get_llm_slots() -> list[LLMSlot]:
+    """当前配置对应的槽位列表（顺序与 ``settings.llm_apis`` 一致）。
+
+    ``_build_free_llms`` 与本函数使用同一套过滤条件（``base_url`` 与
+    ``model_name`` 均非空）且实例池按同一顺序缓存（缓存键含全部配置字段），
+    因此两者可以按下标配对。长度不符只可能是内部状态不一致，此时返回空列表，
+    让调用方按「没有可用槽位」处理（本机等待），而不是把配置错配到别的实例上。
+    """
+    llms = _get_free_llms()
+    configs = [c for c in settings.llm_apis if c.base_url and c.model_name]
+    if len(configs) != len(llms):
+        return []
+    return [
+        LLMSlot(
+            fingerprint=slot_fingerprint(cfg.base_url, cfg.model_name, cfg.token),
+            config=cfg,
+            llm=llm,
+        )
+        for cfg, llm in zip(configs, llms, strict=True)
+    ]
 
 
 def get_llm_stats() -> list[dict[str, Any]]:

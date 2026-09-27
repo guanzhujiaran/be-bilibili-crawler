@@ -40,6 +40,10 @@ class MQPropBase:
     queue_name: QueueName
     routing_key_name: RoutingKey
     exchange: RabbitExchange
+    # 消费者预取上限（在途未确认消息数）；None 表示不额外设置 QoS。
+    # 用于「消息在等待期间保持未确认」的队列：没有上限时 broker 会把整条积压
+    # 全部推成未确认消息（驻留 broker 内存），设上限后堆积会留在队列里。
+    prefetch_count: int | None = None
     _rabbit_queue: RabbitQueue | None = None
     _exchange_name: ExchangeName | None = None
 

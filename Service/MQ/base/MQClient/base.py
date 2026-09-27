@@ -3,6 +3,7 @@ import logging
 from faststream import AckPolicy
 from faststream.rabbit import RabbitExchange, ExchangeType
 from faststream.rabbit.fastapi import RabbitRouter
+from faststream.rabbit.schemas import Channel
 from CONFIG import CONFIG, settings
 
 from Models.MQ.BaseMQModel import ExchangeName, MQPropBase, QueueName, RoutingKey
@@ -17,11 +18,18 @@ class BaseFastStreamMQ:
 
     @property
     def sub_params(self) -> dict:
-        return {
+        params = {
             "queue": self.mq_props.rabbit_queue,
             "exchange": self.mq_props.exchange,
             "ack_policy": AckPolicy.MANUAL,
         }
+        if self.mq_props.prefetch_count:
+            # 限制「在途未确认消息数」：入库队列在等槽位/等配置期间不 ack，
+            # 没有上限时 broker 会把整条积压全部推成未确认消息并驻留内存。
+            params["channel"] = Channel(
+                prefetch_count=self.mq_props.prefetch_count, global_qos=True
+            )
+        return params
 
     @property
     def pub_params(self) -> dict:
@@ -125,15 +133,23 @@ bili_voucher_prop = MQPropBase(
     exchange=exch
 )
 
+# 入库队列的消费者预取上限：这两条队列在「等槽位 / 等配置」期间保持消息未确认，
+# 必须限制在途未确认消息数（否则 broker 会把整条积压全推成未确认消息）。
+# 取 2 倍槽位数（下限 8）：保证在途消息数不少于槽位数，槽位不会空转；
+# 该值在导入时按当时的 llm_apis 计算（槽位数是个位数，够用）。
+_PRIZE_EXTRACT_PREFETCH = max(8, len(settings.llm_apis) * 2)
+
 prize_extract_biliopus_mq_prop = MQPropBase(
     queue_name=QueueName.PrizeExtractBiliOpusMQ,
     routing_key_name=RoutingKey.PrizeExtractBiliOpusMQ,
-    exchange=exch
+    exchange=exch,
+    prefetch_count=_PRIZE_EXTRACT_PREFETCH,
 )
 prize_extract_dyndetail_mq_prop = MQPropBase(
     queue_name=QueueName.PrizeExtractDynDetailMQ,
     routing_key_name=RoutingKey.PrizeExtractDynDetailMQ,
-    exchange=exch
+    exchange=exch,
+    prefetch_count=_PRIZE_EXTRACT_PREFETCH,
 )
 
 test_mq_prop = MQPropBase(

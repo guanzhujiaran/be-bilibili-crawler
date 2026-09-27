@@ -6,9 +6,15 @@ TrackedChatOpenAI 在 invoke / ainvoke 时自动记录：
 - 速率（最近 60 秒调用次数、平均耗时）
 - 最后使用时间戳
 - token 消耗量（输入 / 输出 / 总量）
+
+进程内并发控制按「槽位」粒度：槽位 = 一条云端 LLM 配置
+（base_url + model_name + token），同一槽位同时最多 1 个在途请求，
+不同槽位互不阻塞 —— 见 :class:`_SlotLockRegistry`。
+跨进程的同一约束由 redis 槽位租约（``Service/llm_service/slot.py``）承担。
 """
 
 import asyncio
+import hashlib
 import time
 from collections import deque
 from typing import Any
@@ -42,9 +48,53 @@ def _extract_status_code(error: BaseException) -> int | None:
         return response_status
     return None
 
-# 全局共享的 LLM 调用锁：所有 TrackedChatOpenAI 实例共用同一把锁，
-# 保证任意时刻只有一个 LLM 请求真正打到上游，消除账户级并发超限（429/1302）。
-_LLM_GLOBAL_LOCK = asyncio.Lock()
+def _secret_value(value: Any) -> str:
+    """把 SecretStr / str / None 统一取成明文串（仅参与指纹计算，不落日志）。"""
+    if value is None:
+        return ""
+    getter = getattr(value, "get_secret_value", None)
+    if callable(getter):
+        return str(getter())
+    return str(value)
+
+
+def slot_fingerprint(
+    base_url: str | None, model_name: str | None, token: Any
+) -> str:
+    """槽位指纹：``sha256("base_url|model_name|token")`` 取前 16 位十六进制。
+
+    槽位 = 一条云端 LLM 配置；指纹是它在 redis key / 进程内锁里的身份。
+    刻意用 sha256 而不是明文拼接：apikey 不能落到 redis key、日志或报错信息里。
+    """
+    raw = f"{base_url or ''}|{model_name or ''}|{_secret_value(token)}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+class _SlotLockRegistry:
+    """按槽位指纹维护进程内调用锁：同一槽位串行，不同槽位互不阻塞。
+
+    替代原先「所有 LLM 共享一把全局锁」的做法 —— 那把锁把多配置并行彻底抹平
+    （配置再多也只有 1 个在途请求）。槽位粒度才与「同一 (base_url, model, token)
+    同时最多 1 个请求」的约束精确对应。
+
+    线程/协程安全：本服务运行在 asyncio 单线程事件循环中，``lock_for`` 内无 await，
+    读写不会被其他协程打断。
+    """
+
+    __slots__ = ("_locks",)
+
+    def __init__(self) -> None:
+        self._locks: dict[str, asyncio.Lock] = {}
+
+    def lock_for(self, fingerprint: str) -> asyncio.Lock:
+        lock = self._locks.get(fingerprint)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[fingerprint] = lock
+        return lock
+
+
+_slot_locks = _SlotLockRegistry()
 
 
 class LLMUsageStats(BaseModel):
@@ -242,9 +292,10 @@ class TrackedChatOpenAI(ChatOpenAI):
     ) -> AIMessage:
         self._stats.record_start()
         start = time.monotonic()
-        # 所有 LLM 共享一把全局锁：持有期间串行化上游请求，消除账户级并发超限。
+        # 按槽位加锁：同一 (base_url, model, token) 同时最多 1 个在途请求，
+        # 不同槽位可以并行（多配置的吞吐才是 ×N 而不是被全局锁压成 1）。
         try:
-            async with _LLM_GLOBAL_LOCK:
+            async with _slot_locks.lock_for(self.slot_fingerprint):
                 result: AIMessage = await super().ainvoke(
                     input, config, stop=stop, **kwargs
                 )

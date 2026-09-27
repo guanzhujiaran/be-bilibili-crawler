@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from bili_common.core.backoff import BackoffConfig
 from sqlalchemy import select, and_, text, or_, exists, case
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -43,13 +44,17 @@ from Service.GetOthersLotDyn.Sql.models import (
     TLotuserspaceresp, TRiddynid, TLotExtraInfo,
 )
 from Service.GetOthersLotDyn.Sql.sql_helper import __SqlHelper
+from Service.MQ.base.MQClient import PrizeExtract as prize_extract_module
 from Service.MQ.base.MQClient.PrizeExtract import (
-    _do_extract_and_store, process_prize_extract,
+    _consume_once, _do_extract_and_store, process_prize_extract,
     prize_extract_biliopus, prize_extract_dyndetail,
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import PrizeExtractResp
+from Service.llm_service import LLMSlotLease
 
 TEST_REF_ID_BASE = 999990000
+#: 「不会真的落库」的用例用的 ref_id（走的是错误/跳过分支，不写数据库）
+TEST_REF_ID_ASYNC_ERROR = 999991000
 
 
 # ========================================================================
@@ -230,6 +235,18 @@ def _case_to_req(case: MockCase, ref_id: int) -> PrizeExtractParams:
     )
 
 
+def _fake_lease() -> LLMSlotLease:
+    """测试用的槽位租约桩：业务代码只用到 fingerprint 与 llm 两个字段，
+    lock / client / notify_key 仅供类型完整（真实释放路径在测试里被 mock 掉）。"""
+    return LLMSlotLease(
+        fingerprint="test-slot",
+        llm=AsyncMock(),
+        lock=AsyncMock(),
+        client=AsyncMock(),
+        notify_key="llm_slot:notify:test-slot",
+    )
+
+
 async def _verify_db(helper: TestSqlHelper, ref_id: int, case: MockCase) -> list[str]:
     diffs = []
     expected = case.mock_result
@@ -266,9 +283,9 @@ async def _enter_patches(stack: AsyncExitStack, case: MockCase, extra: bool = Fa
                   new=AsyncMock(return_value=True)),
             patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
                   new=AsyncMock()),
-            patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_semaphore_blocking",
-                  new=AsyncMock(return_value=True)),
-            patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_semaphore",
+            patch("Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.acquire",
+                  new=AsyncMock(return_value=_fake_lease())),
+            patch("Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.release",
                   new=AsyncMock()),
             patch("Service.MQ.base.MQClient.PrizeExtract._already_stored",
                   new=AsyncMock(return_value=False)),
@@ -291,7 +308,7 @@ async def test_do_extract_and_store(case: MockCase, test_sqlhelper: TestSqlHelpe
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case)
-        result = await _do_extract_and_store(params)
+        result = await _do_extract_and_store(params, _fake_lease())
 
     assert result is not None
     assert result.is_lot == case.mock_result.is_lot
@@ -415,14 +432,14 @@ async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
 
 
 # ========================================================================
-# 测试 6: 消费任务被取消时仍释放 redis 去重锁与信号量（取消安全）
+# 测试 6: 消费任务被取消时仍释放 redis 去重锁与槽位租约（取消安全）
 # ========================================================================
 
 @pytest.mark.asyncio
 async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper):
     """取消恰好落在「释放资源」过程中时（真实日志里的典型形态：连接拆除导致
-    在途任务被批量 cancel，CancelledError 被投递到 release_lock 的 await 上），
-    释放动作必须仍然跑完，不能留下泄漏的去重锁/信号量。"""
+    在途任务被批量 cancel，CancelledError 被投递到 release 的 await 上），
+    释放动作必须仍然跑完，不能留下泄漏的去重锁/槽位租约。"""
     case = BILIOPUS_CASES[0]
     ref_id = TEST_REF_ID_BASE + len(_CASES) * 5
     req = _case_to_req(case, ref_id)
@@ -432,11 +449,11 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
     mock_msg.ack = AsyncMock()
     mock_msg.nack = AsyncMock()
 
-    release_semaphore_started = asyncio.Event()
+    release_started = asyncio.Event()
 
-    async def _slow_release_semaphore(*args, **kwargs):
+    async def _slow_release_slot(*args, **kwargs):
         # 模拟 redis 往返：取消会在这个 await 上被投递
-        release_semaphore_started.set()
+        release_started.set()
         await asyncio.sleep(0.2)
 
     release_lock = AsyncMock()
@@ -444,14 +461,14 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
         stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_semaphore",
-            new=_slow_release_semaphore))
+            "Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.release",
+            new=_slow_release_slot))
         stack.enter_context(patch(
             "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
             new=release_lock))
 
         task = asyncio.create_task(process_prize_extract(mq_props, req, mock_msg))
-        await asyncio.wait_for(release_semaphore_started.wait(), timeout=5)
+        await asyncio.wait_for(release_started.wait(), timeout=5)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -460,4 +477,128 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
 
     release_lock.assert_awaited_once()
     mock_msg.ack.assert_called_once()  # 处理已完成并 ack，只是清理阶段被取消
+    mock_msg.nack.assert_not_called()
+
+
+# ========================================================================
+# 测试 7: 本轮失败既不能 ack 也不能 nack，由外层继续下一轮
+# ========================================================================
+
+@pytest.mark.asyncio
+async def test_extract_failure_never_acks(test_sqlhelper: TestSqlHelper):
+    """单轮失败时**既不能 ack 也不能 nack**（ack 会丢消息，nack 重投的副本又可能
+    撞上尚未释放的去重锁被丢弃），并且消息由外层循环继续重试。
+
+    确定性断言：把「重试耗尽」压成一次（max_tries=1）并替换掉告警回调，
+    不做任何等待、不依赖取消。
+    """
+    case = BILIOPUS_CASES[0]
+    ref_id = TEST_REF_ID_ASYNC_ERROR
+    params = _case_to_req(case, ref_id)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    async def _always_fail(*args, **kwargs):
+        raise RuntimeError("模拟大模型调用失败")
+
+    giveup = AsyncMock()
+
+    async with AsyncExitStack() as stack:
+        await _enter_patches(stack, case, extra=True)
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract._do_extract_and_store",
+            new=_always_fail))
+        # 让 run_with_backoff 一次即放弃（避免 6s 起的真实退避），并由 mock 承接 on_giveup
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract.build_consume_backoff_config",
+            new=lambda **kwargs: BackoffConfig(
+                max_tries=1, on_giveup=giveup, jitter=None)))
+
+        # 单轮：失败必须抛出，且不得确认消息；槽位与去重锁仍要归还
+        with pytest.raises(RuntimeError):
+            await _consume_once(mq_props, params, mock_msg)
+
+    mock_msg.ack.assert_not_called()
+    mock_msg.nack.assert_not_called()
+    giveup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_process_prize_extract_retries_next_round(test_sqlhelper: TestSqlHelper):
+    """外层循环：本轮失败后继续下一轮，直到成功才 ack，全程不 nack。"""
+    case = BILIOPUS_CASES[0]
+    ref_id = TEST_REF_ID_ASYNC_ERROR + 1
+    params = _case_to_req(case, ref_id)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    async def _fail_twice_then_ok(*args, **kwargs):
+        _fail_twice_then_ok.calls += 1
+        if _fail_twice_then_ok.calls <= 2:
+            raise RuntimeError("模拟本轮失败")
+        await mock_msg.ack()
+        return "本轮成功"
+
+    _fail_twice_then_ok.calls = 0
+
+    with patch(
+        "Service.MQ.base.MQClient.PrizeExtract._consume_once",
+        new=_fail_twice_then_ok,
+    ):
+        result = await process_prize_extract(mq_props, params, mock_msg)
+
+    assert result == "本轮成功"
+    assert _fail_twice_then_ok.calls == 3, "失败两轮后应继续到第三轮"
+    mock_msg.ack.assert_awaited_once()
+    mock_msg.nack.assert_not_called()
+
+
+# ========================================================================
+# 测试 8: 去重锁被其他副本占用时不得 ack，重试到抢到为止
+# ========================================================================
+
+@pytest.mark.asyncio
+async def test_lock_held_by_other_copy_never_acks(
+    test_sqlhelper: TestSqlHelper, monkeypatch
+):
+    """重复副本抢不到去重锁时不能 ack 丢弃（旧实现的丢数据窗口），
+    而是重试抢锁，抢到后按「库里已有」正常结束。
+
+    确定性断言：acquire_lock 前两次返回 False、第三次成功，并把退避下限调到 0，
+    全程无真实等待。
+    """
+    case = BILIOPUS_CASES[0]
+    ref_id = TEST_REF_ID_ASYNC_ERROR + 2
+    params = _case_to_req(case, ref_id)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    # 退避下限临时调小，测试里不真等 1s
+    monkeypatch.setattr(prize_extract_module, "LOCK_RETRY_MIN_WAIT", 0.0)
+    acquire_lock = AsyncMock(side_effect=[False, False, True])
+
+    async with AsyncExitStack() as stack:
+        await _enter_patches(stack, case, extra=True)
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
+            new=acquire_lock))
+        # 抢到锁后「库里已有提取信息」→ 正常 ack 结束
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract._already_stored",
+            new=AsyncMock(return_value=True)))
+
+        result = await _consume_once(mq_props, params, mock_msg)
+
+    assert result is None
+    assert acquire_lock.await_count == 3, "抢不到锁时应持续重试"
+    mock_msg.ack.assert_awaited_once()
     mock_msg.nack.assert_not_called()

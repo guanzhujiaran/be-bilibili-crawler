@@ -3,24 +3,30 @@
 设计目标：
 - 两条队列（biliopusdb / dyndetail）各自可被独立消费、独立扩缩容，
   但「大模型提取 + 写库」的处理逻辑共享同一套：PrizeExtractConsumer.consume
-  → process_prize_extract(req)。
-- 处理流程（处理大模型的返回数据，统一一套）：
-  1. redis 去重锁：该记录是否正在查询/处理；
+  → process_prize_extract(params)。
+- 处理流程（每轮）：
+  1. redis 去重锁：该记录是否正被其他副本处理；
   2. 直接查目标数据库是否已存在提取信息（不判断「最近」）；
-  3. 全局 redis 信号量：限制同时调用大模型的并发数；
-  4. 不存在 → 调用大模型提取并写库；存在或并发满 → 跳过/重新入队。
+  3. 抢一个可用的 LLM 槽位（每个 (base_url, model, token) 跨进程最多 1 个在途请求）；
+  4. 不存在 → 用该槽位调用大模型提取并写库。
+- **ack / nack 语义（不丢消息）**：
+  只有「确认库里已有提取结果」与「本轮成功写库」两处会 ack；其余情况（抢不到去重锁、
+  没有可用槽位、提取或写库失败）一律保持消息未确认，在本机退避后继续下一轮，
+  **永不 nack**。进程崩溃时未确认消息由 broker 重投，持久化与重投全部交给 RabbitMQ。
+  反之，「什么都没做就 ack」会真的丢数据：重复副本一旦撞上尚未释放的去重锁被 ack 丢弃，
+  而原副本随后又失败，这条消息就再也没人处理了（旧实现的「并发已满重新入队 + ack」
+  与「nack 后 finally 才释放锁」两条路径都存在这个窗口）。
 - 具体落库目标由消息体里的自定义参数类 PrizeExtractParams.target_db 决定。
 """
 
 import asyncio
 import time
 
-from bili_common.core.backoff import run_with_backoff
+from bili_common.core.backoff import equal_jitter, expo_wait, run_with_backoff
 from bili_common.models import StrEnumAutoDoc
 from faststream.rabbit.fastapi import RabbitMessage
 
-from CONFIG import CONFIG, settings
-from log.base_log import MQ_logger
+from CONFIG import CONFIG
 from Models.MQ.PrizeExtractMQModel import (
     PrizeExtractParams,
     PrizeExtractTargetEnum,
@@ -29,11 +35,12 @@ from Models.MQ.PrizeExtractResult import (
     OfficialPrizeExtractResult,
     PrizeExtractResult,
 )
-from Service.GetOthersLotDyn.parser.prize_extractor import (
-    extract_prize_info_for_biliopusdb,
-    extract_prize_info_for_lotdata, PrizeExtractResp,
-)
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
+from Service.GetOthersLotDyn.parser.prize_extractor import (
+    PrizeExtractResp,
+    extract_prize_info_for_biliopusdb,
+    extract_prize_info_for_lotdata,
+)
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
 )
@@ -42,28 +49,24 @@ from Service.MQ.base.MQClient.base import (
     prize_extract_biliopus_mq_prop,
     prize_extract_dyndetail_mq_prop,
 )
-from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.MQ.base.MQClient.consume_backoff import build_consume_backoff_config
+from Service.llm_service import LLMSlotLease, llm_slot_pool
 from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
+from log.base_log import MQ_logger
+
+# ============ 去重锁相关常量 ============
+LOCK_TTL = 600  # 秒：去重锁兜底过期（持有者崩溃后由此兜底，避免记录被永久锁死）
+LOCK_RETRY_MAX_BACKOFF = 30.0  # 秒：抢不到去重锁时本机退避的等待上限
+LOCK_RETRY_MIN_WAIT = 1.0  # 秒：退避下限（抖动可能给出接近 0 的值，避免空转）
+
+#: 抢不到去重锁时的等待序列：指数退避 + 抖动，封顶 LOCK_RETRY_MAX_BACKOFF
+_lock_wait = expo_wait(base=2.0, factor=1.0, max_value=LOCK_RETRY_MAX_BACKOFF)
 
 
-# ============ 并发/去重相关常量（两队列共享同一把全局信号量）============
-LOCK_TTL = 600  # 秒：去重锁兜底过期
-SEM_TTL = 600  # 秒：信号量 key 过期（崩溃自愈）
-SEM_ACQUIRE_TIMEOUT = 60.0  # 秒：阻塞等待信号量超时
-SEM_KEY = "global"  # 全局唯一 key，所有提取共享同一把并发闸
-
-
-def _max_concurrency() -> int:
-    """全局大模型并发上限：实时读取当前 LLM 配置数量（支持在线热更新），至少为 1。"""
-    return max(1, len(settings.llm_apis))
-
-
-# ============ redis 锁 + 信号量 ============
+# ============ redis 去重锁 ============
 class PrizeExtractRedisManager(RedisManagerBase):
     class RedisMap(StrEnumAutoDoc):
         lock_prefix = "prize_extract:lock"
-        sem_prefix = "prize_extract:sem"
 
     def __init__(self):
         super().__init__(
@@ -83,59 +86,6 @@ class PrizeExtractRedisManager(RedisManagerBase):
         async with redis_client_factory(pool=self.pool) as r:
             await r.delete(lock_key)
 
-    # region 分布式信号量：限制大模型提取的并发数（跨所有消费者实例）
-    # Lua：当前计数 < max 才 INCR，否则返回 0。首次 INCR 时设置过期，
-    # 防止消费者崩溃导致计数永不回落（TTL 后 key 自动删除 → 计数归零）。
-    _SEM_ACQUIRE_SCRIPT = """
-    local cur = redis.call('GET', KEYS[1])
-    if cur and tonumber(cur) >= tonumber(ARGV[1]) then
-        return 0
-    end
-    local newv = redis.call('INCR', KEYS[1])
-    if newv == 1 then
-        redis.call('EXPIRE', KEYS[1], ARGV[2])
-    end
-    return 1
-    """
-
-    async def acquire_semaphore(self, key: str, max_concurrency: int, ttl: int) -> bool:
-        """原子地尝试获取一个信号量名额。返回 True 表示成功占用一个并发位。"""
-        sem_key = f"{self.RedisMap.sem_prefix.value}:{key}"
-        async with redis_client_factory(pool=self.pool) as r:
-            res = await r.eval(
-                self._SEM_ACQUIRE_SCRIPT, 1, sem_key, max_concurrency, ttl
-            )
-            return bool(res)
-
-    async def release_semaphore(self, key: str) -> None:
-        """释放一个信号量名额（DECR，绝不为负；归零则删除 key）。"""
-        sem_key = f"{self.RedisMap.sem_prefix.value}:{key}"
-        async with redis_client_factory(pool=self.pool) as r:
-            cur = await r.decr(sem_key)
-            if cur <= 0:
-                await r.delete(sem_key)
-
-    async def acquire_semaphore_blocking(
-        self,
-        key: str,
-        max_concurrency: int,
-        ttl: int,
-        timeout: float = SEM_ACQUIRE_TIMEOUT,
-    ) -> bool:
-        """带超时的阻塞获取信号量。
-
-        在 timeout 内以轮询方式尝试获取名额；超时仍未拿到则返回 False，
-        由调用方决定（重新入队 / 延后处理）。
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if await self.acquire_semaphore(key, max_concurrency, ttl):
-                return True
-            await asyncio.sleep(0.2)
-        return False
-
-    # endregion
-
 
 prize_extract_redis = PrizeExtractRedisManager()
 
@@ -144,10 +94,10 @@ prize_extract_redis = PrizeExtractRedisManager()
 _pending_release_tasks: set[asyncio.Task] = set()
 
 
-async def _release_resources(sem_acquired: bool, lock_key: str) -> None:
-    """释放信号量（仅在持有名额时）与 redis 去重锁。"""
-    if sem_acquired:
-        await prize_extract_redis.release_semaphore(SEM_KEY)
+async def _release_resources(lease: LLMSlotLease | None, lock_key: str) -> None:
+    """释放槽位租约（仅在持有租约时）与 redis 去重锁。"""
+    if lease is not None:
+        await llm_slot_pool.release(lease)
     await prize_extract_redis.release_lock(lock_key)
 
 
@@ -156,6 +106,24 @@ def _lock_key(params: PrizeExtractParams) -> str:
     if params.target_db == PrizeExtractTargetEnum.DYNDETAIL:
         return f"dyndetail:{params.lottery_id}"
     return f"biliopusdb:{params.ref_id}:{params.lot_type}"
+
+
+async def _wait_own_lock(module_name: str, lock_key: str) -> None:
+    """一直重试到抢到去重锁为止（同一条记录可能正被另一个副本处理）。
+
+    抢不到时本机退避重试，**不 ack、不 nack**：重复副本的正确归宿是「处理」或
+    「确认库里已有」，直接 ack 丢弃会在原副本随后失败时真的丢消息。
+    持有者若崩溃，去重锁会在 LOCK_TTL 后自动过期，这里自然能抢到。
+    """
+    attempt = 0
+    while not await prize_extract_redis.acquire_lock(lock_key, LOCK_TTL):
+        attempt += 1
+        wait = max(LOCK_RETRY_MIN_WAIT, equal_jitter(_lock_wait(attempt)))
+        MQ_logger.info(
+            f"【{module_name}】{lock_key} 正在被其他副本处理，{wait:.1f}s 后重试"
+            f"（第 {attempt} 次，消息保持未确认）"
+        )
+        await asyncio.sleep(wait)
 
 
 async def _already_stored(params: PrizeExtractParams) -> bool:
@@ -173,17 +141,24 @@ async def _already_stored(params: PrizeExtractParams) -> bool:
 
 async def _do_extract_and_store(
     params: PrizeExtractParams,
+    lease: LLMSlotLease,
 ) -> PrizeExtractResult | OfficialPrizeExtractResult:
-    """调用大模型提取并把结果写库，返回 result（值），不回填到 req。
+    """用租约锁定的槽位调用大模型提取并把结果写库，返回 result（值）。
 
-    具体提取函数与落库目标由 params.target_db 决定。
+    具体提取函数与落库目标由 params.target_db 决定；LLM 调用一律使用 ``lease.llm``
+    —— 锁定哪个槽位就用哪个槽位，否则「锁着 A 槽位、请求打到 B」会让槽位锁形同虚设。
     """
     if params.target_db == PrizeExtractTargetEnum.DYNDETAIL:
         lottery_id = params.lottery_id
         if lottery_id is None:
             MQ_logger.warning(f"【dyndetail】缺少 lottery_id，跳过提取: {params}")
             return PrizeExtractResult()
-        result: PrizeExtractResp[OfficialPrizeExtractResult] = await extract_prize_info_for_lotdata(dyn_content=params.lottery_text)
+        result: PrizeExtractResp[OfficialPrizeExtractResult] = (
+            await extract_prize_info_for_lotdata(
+                dyn_content=params.lottery_text,
+                chat_openai_client=lease.llm,
+            )
+        )
         await grpc_sql_helper.save_extra_info(
             lottery_id=lottery_id,
             is_grand_prize=int(result.result.is_grand_prize),
@@ -197,6 +172,7 @@ async def _do_extract_and_store(
         result = await extract_prize_info_for_biliopusdb(
             dyn_content=params.dyn_content,
             dyn_publish_time=params.dyn_publish_time,
+            chat_openai_client=lease.llm,
         )
         r = result.result
         # is_lot 判断逻辑（从 judge_lottery 移入）：
@@ -223,58 +199,40 @@ async def _do_extract_and_store(
         return r
 
 
-async def process_prize_extract(
+async def _consume_once(
     mq_props, params: PrizeExtractParams, msg: RabbitMessage
 ) -> PrizeExtractResult | OfficialPrizeExtractResult | None:
-    """两队列共享的处理流程：去重锁 → 查库 → 信号量 → 大模型提取写库。
+    """执行一轮处理：抢去重锁 → 查库 → 抢槽位 → 提取写库 → ack。
 
-    mq_props 用于「并发已满」时把消息重新入队回原队列。
-    result 单独返回（不塞进 params）。
+    - 返回值：提取结果（本轮已成功写库并 ack）；``None`` 表示确认「库里已有提取信息」
+      并 ack；
+    - 抛出的异常表示「本轮没干成」，由 :func:`process_prize_extract` 决定继续下一轮，
+      调用方**不会** ack/nack 这条消息。
     """
     module_name = mq_props.queue_name
-    # 值传递：从入参复制出独立的 params 对象，避免直接引用共享入参的内部状态
-    params = PrizeExtractParams.model_validate(params.model_dump())
     lock_key = _lock_key(params)
-    sem_acquired = False
-    result: PrizeExtractResult | OfficialPrizeExtractResult | None = None
+    lease: LLMSlotLease | None = None
     try:
-        # 1) redis 锁：正在查询/处理则跳过
-        if not await prize_extract_redis.acquire_lock(lock_key, LOCK_TTL):
-            MQ_logger.info(f"【{module_name}】{lock_key} 正在查询/处理中，跳过")
-            await msg.ack()
-            return None
+        # 1) redis 锁：同一条记录正被其他副本处理时，本机等它结束（不是丢弃）
+        await _wait_own_lock(module_name, lock_key)
 
-        # 2) 直接查对应数据库是否已存在提取信息
+        # 2) 直接查对应数据库是否已存在提取信息 → 数据确实在库里，消息使命完成
         if await _already_stored(params):
             MQ_logger.info(f"【{module_name}】{lock_key} 已存在提取信息，跳过")
             await msg.ack()
             return None
 
-        # 3) 全局信号量：限制大模型提取并发数
-        #    并发已满则重新入队到队尾，稍后（信号量释放后）再处理，
-        #    避免 RabbitMQ 持续投递导致瞬时并发压垮 LLM。
-        max_concurrency = _max_concurrency()
-        sem_acquired = await prize_extract_redis.acquire_semaphore_blocking(
-            key=SEM_KEY,
-            max_concurrency=max_concurrency,
-            ttl=SEM_TTL,
-            timeout=SEM_ACQUIRE_TIMEOUT,
+        # 3) 抢一个 LLM 槽位：没有可用槽位时在本机等运维补回配置（消息保持未确认）
+        lease = await llm_slot_pool.acquire()
+        MQ_logger.info(
+            f"【{module_name}】{lock_key} 占用 LLM 槽位 {lease.fingerprint}"
         )
-        if not sem_acquired:
-            MQ_logger.warning(
-                f"【{module_name}】{lock_key} 大模型提取并发已满"
-                f"({max_concurrency})，重新入队稍后处理"
-            )
-            await BiliLotDataPublisher.pub_prize_extract(params, mq_props=mq_props)
-            await msg.ack()
-            return None
 
-        # 4) 不存在 → 调用大模型提取并写库
-        #    失败不立即 nack 重投：先在进程内按「指数等待 + 抖动」重试（见
-        #    bili_common.core.backoff / consume_backoff），重试耗尽才交给 RabbitMQ。
-        #    修复前是「失败 → 立即 nack(requeue=True) → 立刻重投」的热循环。
+        # 4) 用该槽位调用大模型提取并写库。
+        #    失败不立即 ack/nack：先在进程内按「指数等待 + 抖动」重试（见
+        #    bili_common.core.backoff / consume_backoff），一轮耗尽后由外层继续下一轮。
         result = await run_with_backoff(
-            lambda: _do_extract_and_store(params),
+            lambda: _do_extract_and_store(params, lease),
             config=build_consume_backoff_config(
                 module_name=module_name,
                 params=params,
@@ -284,27 +242,42 @@ async def process_prize_extract(
         MQ_logger.info(f"【{module_name}】{lock_key} 提取并入库完成: {result}")
         await msg.ack()
         return result
-    except Exception as e:
-        MQ_logger.warning(
-            f"【{module_name}】{lock_key} 大模型提取失败（本轮等待回退已耗尽），"
-            f"nack 重新入队等待下一轮：{type(e).__name__}: {e}"
-        )
-        # 不丢消息：消息重新入队，由 broker 稍后重投，消费者再跑一轮等待回退，
-        # 直到处理成功为止（持久化与重投全部交给 RabbitMQ）。
-        await msg.nack(requeue=True)
-        return None
     finally:
         # 释放动作必须「不可取消」：连接拆除 / 任务取消时 CancelledError 可能恰好
-        # 投递在 release 的 await 上，导致去重锁与信号量泄漏（后续同 key 消息长期
-        # 被「正在查询/处理中」跳过）。这里托管为独立任务并用 shield 等待，
+        # 投递在 release 的 await 上，导致去重锁与槽位租约泄漏（后续同 key 消息长期
+        # 被「正在处理中」跳过）。这里托管为独立任务并用 shield 等待，
         # 保证释放动作跑完（本任务自身的取消仍会正常向上传播）。
         release_task = asyncio.create_task(
-            _release_resources(sem_acquired=sem_acquired, lock_key=lock_key)
+            _release_resources(lease=lease, lock_key=lock_key)
         )
         # asyncio 只对运行中的任务持弱引用，登记一份强引用避免被 GC。
         _pending_release_tasks.add(release_task)
         release_task.add_done_callback(_pending_release_tasks.discard)
         await asyncio.shield(release_task)
+
+
+async def process_prize_extract(
+    mq_props, params: PrizeExtractParams, msg: RabbitMessage
+) -> PrizeExtractResult | OfficialPrizeExtractResult | None:
+    """两队列共享的处理流程：**永不 nack**，本轮没成就本机继续下一轮。
+
+    ack 只发生在「确认库里已有」与「本轮成功写库」两处；其余情况消息保持未确认，
+    由本机退避重试（崩溃时由 broker 重投未确认消息），因此不会丢数据。
+    """
+    module_name = mq_props.queue_name
+    # 值传递：从入参复制出独立的 params 对象，避免直接引用共享入参的内部状态
+    params = PrizeExtractParams.model_validate(params.model_dump())
+    while True:
+        try:
+            return await _consume_once(mq_props, params, msg)
+        except asyncio.CancelledError:
+            # 取消必须向上传播（连接拆除 / 服务关停），不能当成普通失败吞掉
+            raise
+        except Exception as e:
+            MQ_logger.warning(
+                f"【{module_name}】{_lock_key(params)} 本轮处理失败，"
+                f"消息保持未确认并继续下一轮（不 nack）：{type(e).__name__}: {e}"
+            )
 
 
 # endregion
