@@ -14,17 +14,23 @@ def raw_resp_content_2_dict(*, raw_resp: Response, protobuf_msg, is_gzip: bool =
     try:
         protobuf_msg.ParseFromString(grpc_msg_decompress)
     except Exception as e:
+        if is_gzip:
+            raw_content_desc = f'Content hex (gzip, 5-byte prefix stripped): {grpc_msg_decompress.hex()}'
+        else:
+            raw_content_desc = f'Content hex (5-byte prefix stripped): {grpc_msg_decompress.hex()}'
         resp_dict = MessageToDict(protobuf_msg)
         if resp_dict:
             BiliGrpcApi_logger.warning(
-                f'Partial parsing success for URL: {raw_resp.url}. Response: {resp_dict}'
+                f'Partial parsing success for URL: {raw_resp.url}. Error: {e}. '
+                f'Partially parsed message: {resp_dict}. {raw_content_desc}'
             )
             return resp_dict
         else:
             BiliGrpcApi_logger.error(
-                f'Failed to parse gRPC message for URL: {raw_resp.url}. '
-                f'Headers: {raw_resp.headers}. Request body: {raw_resp.request.body}. '
-                f'Response text: {raw_resp.text}. Content hex: {raw_resp.content.hex()}'
+                f'Failed to parse gRPC message for URL: {raw_resp.url}. Error: {e}. '
+                f'Headers: {raw_resp.headers}. Request body: {raw_resp.request.content!r}. '
+                f'Response text: {raw_resp.text}. '
+                f'{raw_content_desc}. Full response content hex: {raw_resp.content.hex()}'
             )
             raise DecodeError(f'Failed to parse gRPC message: {e}')
     resp_dict = MessageToDict(protobuf_msg)

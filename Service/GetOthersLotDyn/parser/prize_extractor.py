@@ -9,10 +9,11 @@
 核心特性：
 - with_structured_output 驱动 LLM 调用，无需 agent 层
 - 仅使用云端 LLM（get_all_free_llms），不再使用本地大模型进行抽奖判断
-- 无回退：依次尝试所有已配置的免费(云端) LLM，全部失败时直接抛错，
-  不进行任何正则/本地回退；由调用方跳过保存（留空），等待手动脚本
+- 仅尝试「可用」(healthy) 的槽位；冷却中的槽位按健康状态机的自动恢复时间等待：
+  限流/瞬时故障 → 等一会儿；今日额度耗尽 → 等次日；欠费 → 等充值；
+  鉴权失败/模型下线等不可恢复错误 → 该条配置被直接删除
+- 无回退：不进行任何正则/本地回退；由调用方跳过保存（留空），等待手动脚本
   judge_grand_prize 回填大奖判断结果
-- 采样参数通过 get_all_free_llms() 关键字参数传入
 """
 
 from typing import TypeVar, Generic
@@ -29,10 +30,13 @@ from loguru import logger
 from pydantic import BaseModel, Field, ValidationError
 from Models.MQ.PrizeExtractResult import PrizeExtractResult, OfficialPrizeExtractResult
 from Service.llm_service import (
+    AllLLMsCoolingError,
     AllLLMsDisabledError,
     SamplingPreset,
+    TrackedChatOpenAI,
     get_all_free_llms,
     get_llm_stats,
+    get_removed_llm_records,
 )
 from Utils.推送.PushMe import a_push_error
 
@@ -251,35 +255,108 @@ async def _push_cloud_unavailable_error(exc: Exception) -> None:
 
 
 def _describe_disabled_llms() -> str:
-    """列出当前已熔断的模型清单（模型名 + 熔断原因），用于告警内容"""
+    """列出当前不可用/已删除的模型清单（模型名 + 状态 + 原因），用于告警内容"""
     try:
         stats = get_llm_stats()
     except Exception as e:  # 统计不可用不应影响告警本身
-        return f"（获取熔断明细失败：{type(e).__name__}: {e}）"
-    disabled = [item for item in stats if item.get("disabled")]
-    if not disabled:
-        return "（当前未记录到熔断实例）"
+        return f"（获取槽位明细失败：{type(e).__name__}: {e}）"
+    unavailable = [item for item in stats if not item.get("available")]
+    if not unavailable:
+        return "（当前未记录到不可用实例）"
     lines = [
-        f"- {item.get('model')} @ {item.get('base_url')}：{item.get('disabled_reason')}"
-        for item in disabled
+        f"- {item.get('model')} @ {item.get('base_url')}："
+        f"{item.get('state')}（{item.get('disabled_reason')}）"
+        for item in unavailable
     ]
-    return "已熔断模型：\n" + "\n".join(lines)
+    return "不可用槽位：\n" + "\n".join(lines)
+
+
+def _describe_removed_llms() -> str:
+    """列出已被删除的槽位（不可恢复错误的处置痕迹）"""
+    removed = get_removed_llm_records()
+    if not removed:
+        return "（本次运行未删除任何槽位）"
+    lines = [
+        f"- {record.model_name} @ {record.base_url}：{record.reason}"
+        for record in removed
+    ]
+    return "本次运行已删除的槽位（不可恢复错误）：\n" + "\n".join(lines)
+
+
+def _resume_wait(resume_at: float | None) -> float:
+    """按「最近自动恢复时间」算出本机应等待多久（封顶 _RETRY_MAX_DELAY）"""
+    if resume_at is None:
+        return float(_RETRY_BASE_DELAY)
+    return min(max(1.0, resume_at - time.time()), float(_RETRY_MAX_DELAY))
+
+
+async def _await_slot_available(llm: ChatOpenAI, max_wait: float | None) -> None:
+    """锁定槽位不可用时按健康状态处理，保证返回时槽位可用（或抛出让上层换槽位/重投）。
+
+    - 已删除（不可恢复错误）→ 立刻抛 :class:`AllLLMsDisabledError`，必须换槽位；
+    - 冷却中且剩余冷却时间在 ``max_wait`` 预算内 → 就地睡到冷却结束（「休息一会儿再用」）；
+    - 冷却中但等不起（超预算，例如「今日额度」要等次日）→ 抛
+      :class:`AllLLMsCoolingError`，由上层释放槽位换一个 / 把消息交还队列重投。
+
+    非 :class:`TrackedChatOpenAI`（例如脚本里手搓的 ChatOpenAI）没有健康状态，视为可用。
+    """
+    if not isinstance(llm, TrackedChatOpenAI):
+        return
+    health = llm.stats.health
+    if health.available:
+        return
+    if health.removed:
+        raise AllLLMsDisabledError(
+            f"指定的 LLM 槽位已因不可恢复错误被删除（{health.reason}），需要换一个槽位重试"
+        )
+    delay = health.resume_delay()
+    if delay is not None and (max_wait is None or delay <= max_wait):
+        logger.warning(
+            f"锁定的 LLM 槽位处于 {health.state.value} 状态，"
+            f"{delay:.0f}s 后自动恢复，就地等待再试（原因：{health.reason}）"
+        )
+        # +1s 抵消时间流逝带来的边界误差，确保醒来时冷却确实已到期
+        await asyncio.sleep(delay + 1.0)
+        if llm.available:
+            return
+    raise AllLLMsCoolingError(
+        f"指定的 LLM 槽位处于 {health.state.value} 状态（{health.reason}），"
+        f"需等待 {0.0 if delay is None else delay:.0f}s 超出本轮预算，需要换槽位或稍后重试",
+        resume_at=health.resume_at,
+    )
+
+
+async def _push_llms_cooling_error(exc: Exception) -> None:
+    """全部云端 LLM 都在冷却中时推送告警（可自动恢复，属于「等一等」而不是「坏了」）"""
+    try:
+        await a_push_error(
+            subject="云端LLM全部冷却中（抽奖判断暂停）",
+            content=(
+                "云端 LLM 当前全部处于冷却状态（限流 / 今日额度耗尽 / 欠费 / 连续失败），"
+                "抽奖判断正在等待其自动恢复，不会跳过保存。\n"
+                f"{_describe_disabled_llms()}\n"
+                f"错误信息：{exc}"
+            ),
+        )
+    except Exception as push_err:
+        logger.exception(f"推送云端 LLM 冷却告警失败: {push_err}")
 
 
 async def _push_all_llms_disabled_error(exc: Exception) -> None:
-    """全部云端 LLM 均已熔断时推送告警（经 message-service 推到 pushplus）。
+    """全部云端 LLM 均已删除时推送告警（经 message-service 推到 pushplus）。
 
-    与「本轮全部失败、仍在等比退避重试」不同：熔断是不可恢复状态
-    （模型下线 / 鉴权失败等 HTTP 400/401/403/404），本次不会再重试，
-    只能等服务重启或热更新 llm_apis 配置后恢复，因此单独告警。
+    与「本轮全部失败、仍在等比退避重试」不同：不可恢复错误
+    （鉴权失败 / 模型下线 / 模型不存在）会让该条配置被**直接删除**，本次不会再重试，
+    只能在补回 llm_apis 配置后恢复，因此单独告警。
     """
     try:
         await a_push_error(
-            subject="云端LLM全部熔断（抽奖判断已中断）",
+            subject="云端LLM全部不可用（抽奖判断已中断）",
             content=(
-                "所有云端 LLM 均已因不可恢复错误（模型下线 / 鉴权失败等 400/401/403/404）"
-                "被熔断，抽奖判断（含大奖判断）本次不再重试，"
-                "需重启服务或热更新 llm_apis 配置后才能恢复。\n"
+                "所有云端 LLM 均已因不可恢复错误（鉴权失败 / 模型下线 / 模型不存在）"
+                "被删除配置，抽奖判断（含大奖判断）本次不再重试，"
+                "需补回 llm_apis 配置后才能恢复。\n"
+                f"{_describe_removed_llms()}\n"
                 f"{_describe_disabled_llms()}\n"
                 f"错误信息：{exc}"
             ),
@@ -295,16 +372,28 @@ async def _do_extract(
     chat_openai_client: ChatOpenAI | None = None,
     result_model: type[_TResult],
     system_prompt: str | None = None,
+    max_wait: float | None = None,
 ) -> PrizeExtractResp[_TResult]:
     """一次性提取抽奖相关信息（内部共享实现）
 
-    仅使用云端 LLM 进行抽奖判断，不再使用本地大模型，也不做任何回退
-    （正则/SVM 等）。当所有云端 LLM 调用均失败时直接抛出 RuntimeError，
-    由调用方决定是否跳过保存（留空），等待手动脚本 judge_grand_prize 回填。
+    仅使用云端 LLM 进行抽奖判断，不再使用本地大模型，也不做任何回退（正则/SVM 等）。
+    槽位不可用时按健康状态分流：
+
+    - 全部已删除（不可恢复错误）→ ``AllLLMsDisabledError``（不可恢复）；
+    - 全部冷却中（限流 / 今日额度 / 欠费 / 连续失败）→ ``AllLLMsCoolingError``，
+      睡到最近一个槽位的自动恢复时间再继续；
+    - 未配置任何 LLM → ``RuntimeError``。
+
+    三种都是 RuntimeError 子类，调用方按类型决定「继续等」还是「放弃并告警」。
 
     result_model / system_prompt 由调用方决定：
       - 普通/预约抽奖 → PrizeExtractResult + 完整提示词
       - 官方/充电抽奖 → OfficialPrizeExtractResult + 仅大奖提示词
+
+    Args:
+        max_wait: 本次调用允许阻塞的最长等待（秒），来自 MQ 消费侧的「消息确认超时预算」。
+            冷却等待超过它时不睡掉预算，直接抛出交给上层换槽位 / 把消息交还队列重投；
+            ``None`` 表示不设上界（脚本等非 MQ 场景）。
     """
     start_ts = time.time()
     if not dyn_content or not dyn_content.strip():
@@ -331,27 +420,47 @@ async def _do_extract(
         if chat_openai_client:
             # 指定槽位（MQ 消费者用槽位租约锁定了某条 LLM 配置）：锁定哪个槽位就只用哪个，
             # 不再遍历其他实例，否则会出现「锁着 A 槽位、请求打到 B」——锁形同虚设。
-            if getattr(chat_openai_client, "disabled", False):
-                # 该槽位已熔断（不可恢复错误）：立刻抛出，让上层释放槽位、重新抢一个
-                # （能抢到哪个由槽位池决定），而不是对着死槽位无限退避。
-                raise AllLLMsDisabledError(
-                    "指定的 LLM 槽位已熔断（不可恢复错误），需要换一个槽位重试"
-                )
+            # 槽位不可用时按状态处理，让上层释放槽位后重新抢一个 / 等冷却结束：
+            #   - removed（不可恢复，配置已删除）→ AllLLMsDisabledError
+            #   - cooling / quota_wait / suspended 且冷却在预算内 → 就地等到恢复
+            #   - 冷却超出预算 → AllLLMsCoolingError（交给上层换槽位 / 交还消息重投）
+            await _await_slot_available(chat_openai_client, max_wait)
             all_llms = [chat_openai_client]
         else:
             try:
-                # 每轮都重新取实例列表：被熔断（不可恢复错误）的模型会立即被剔除，
-                # 全部熔断时立刻告警并抛出，而不是拿着旧快照无限退避重试。
+                # 每轮都重新取实例列表：已删除与冷却中的槽位都不会返回，
+                # 不会拿着旧快照对死槽位无限退避重试。
                 all_llms = get_all_free_llms()
             except AllLLMsDisabledError as e:
-                # 全部模型熔断：不可恢复，发送告警（pushplus）后直接抛出
+                # 全部槽位已删除：不可恢复，发送告警（pushplus）后直接抛出
                 await _push_all_llms_disabled_error(e)
                 raise
+            except AllLLMsCoolingError as e:
+                # 全部槽位在冷却中（限流 / 今日额度 / 欠费）：可自动恢复。
+                wait = _resume_wait(e.resume_at)
+                if max_wait is not None and wait > max_wait:
+                    # 需要的等待超过本轮预算：不在这里把预算睡掉，
+                    # 抛出交给上层（MQ 消费者会释放锁并把消息交还队列重投）
+                    logger.warning(
+                        f"全部云端 LLM 均在冷却中，需等待 {wait:.0f}s "
+                        f"超出本轮剩余预算 {max_wait:.0f}s，交还消息稍后重试：{e}"
+                    )
+                    raise
+                if not alerted:
+                    await _push_llms_cooling_error(e)
+                    alerted = True
+                logger.warning(
+                    f"全部云端 LLM 均在冷却中，{wait:.0f}s 后（最近自动恢复时间）继续重试：{e}"
+                )
+                await asyncio.sleep(wait)
+                continue
             except RuntimeError as e:
                 # 未配置任何云端 LLM：不再回退，直接抛错
                 await _push_cloud_unavailable_error(e)
                 raise
         for idx, llm in enumerate(all_llms):
+            # 统计层实例：bind() 之后拿到的是 RunnableBinding，但最终仍会委托到它
+            tracked_llm = llm if isinstance(llm, TrackedChatOpenAI) else None
             llm = llm.bind(
                 **SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256)
             )
@@ -382,9 +491,20 @@ async def _do_extract(
                 # 修复成功则直接采用，避免一次本可挽救的调用被整体判失败
                 repaired = _repair_structured_output(e, result_model)
                 if repaired is not None:
+                    # 这次调用其实成功了：模型有返回、只是格式不合规。统计层却已经按
+                    # 失败记了一笔（解析异常穿过它的 ainvoke），必须回滚 —— 否则
+                    # consecutive_failures 只增不减，连续几次就把它推进冷却，
+                    # 成功率还永远停在 0。解析发生在统计埋点之外时回滚返回 False，
+                    # 那次调用本来就被记成成功，不会重复计数。
+                    recovered = (
+                        tracked_llm.stats.record_recovered()
+                        if tracked_llm is not None
+                        else False
+                    )
                     logger.warning(
                         f"免费 LLM [{idx + 1}/{len(all_llms)}] 输出格式不合规"
-                        f"（{type(e).__name__}），已本地修复后采用: {repaired}"
+                        f"（{type(e).__name__}），已本地修复后采用"
+                        f"{'（该次失败已回滚为成功）' if recovered else ''}: {repaired}"
                     )
                     return PrizeExtractResp(
                         dyn_content=text,
@@ -398,7 +518,12 @@ async def _do_extract(
                 last_err = e
                 continue
 
-        # 本轮所有 LLM 均失败：仅告警一次，然后按等比退避等待并继续重试
+        # 本轮所有 LLM 均失败：
+        # - 锁定槽位本轮失败后被状态机判为「不可用」→ 立刻抛出，交给上层换槽位 / 等冷却，
+        #   不再对着一个正在冷却的槽位按等比退避空转；
+        # - 槽位仍健康（只是单次瞬时失败，未达冷却阈值）→ 告警一次并按等比退避重试。
+        if chat_openai_client is not None:
+            await _await_slot_available(chat_openai_client, max_wait)
         if not alerted:
             await _push_cloud_unavailable_error(
                 last_err or RuntimeError("全部免费 LLM 均调用失败")
@@ -423,6 +548,7 @@ async def extract_prize_info_for_biliopusdb(
     dyn_content: str,
     dyn_publish_time: datetime | None = None,
     chat_openai_client: ChatOpenAI | None = None,
+    max_wait: float | None = None,
 ) -> PrizeExtractResp[PrizeExtractResult]:
     """
     面向 biliopusdb (普通抽奖动态) 的抽奖信息提取。
@@ -432,6 +558,7 @@ async def extract_prize_info_for_biliopusdb(
       - is_lot, need_repost, required_topic_text → 用于抽奖判断
       - is_grand_prize → 用于 t_lot_extra_info (ref_id + lot_type='common')
       - chat_openai_client -> 支持传入自定义的客户端来执行操作
+      - max_wait -> 允许阻塞的最长等待（秒），MQ 消费侧传入「消息确认超时预算」的剩余时间
     调用方通常进一步通过 SqlHelper.save_extra_info() 统一入库（含 prize_names / lottery_time）。
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
     不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
@@ -441,6 +568,7 @@ async def extract_prize_info_for_biliopusdb(
         dyn_publish_time=dyn_publish_time,
         chat_openai_client=chat_openai_client,
         result_model=PrizeExtractResult,
+        max_wait=max_wait,
     )
 
 
@@ -448,6 +576,7 @@ async def extract_prize_info_for_lotdata(
     *,
     dyn_content: str,
     chat_openai_client: ChatOpenAI | None = None,
+    max_wait: float | None = None,
 ) -> PrizeExtractResp[OfficialPrizeExtractResult]:
     """
     面向 dyndetail (官方/充电抽奖) 的抽奖信息提取。
@@ -466,6 +595,7 @@ async def extract_prize_info_for_lotdata(
         chat_openai_client=chat_openai_client,
         result_model=OfficialPrizeExtractResult,
         system_prompt=_OFFICIAL_SYSTEM_PROMPT,
+        max_wait=max_wait,
     )
 
 

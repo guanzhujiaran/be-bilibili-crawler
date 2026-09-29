@@ -1,11 +1,23 @@
-"""带调用统计的 ChatOpenAI 子类
+"""带调用统计（含健康状态机）的 ChatOpenAI 子类
 
 TrackedChatOpenAI 在 invoke / ainvoke 时自动记录：
 - 调用次数（总数 / 成功 / 失败）
-- 是否可用（连续失败超过阈值判定为不可用，成功一次即恢复）
+- 健康状态（见 ``Service/llm_service/health.py`` 的状态机：healthy / cooling /
+  quota_wait / suspended / removed，由服务器返回的错误分类驱动迁移）
 - 速率（最近 60 秒调用次数、平均耗时）
 - 最后使用时间戳
 - token 消耗量（输入 / 输出 / 总量）
+- **失败调用**的耗时与 token（单独放「失败桶」``failed_*``，不污染上面这些
+  成功口径的量；两者合起来才能算出真实的平均耗时 / 平均 token）
+
+结构化输出的解析失败（模型返回的 JSON 不合规）会走到这里记成一次失败，但业务层
+可能本地修好并采用这次输出 —— 那其实是成功的调用。因此提供
+:meth:`LLMUsageStats.record_recovered`：把最近一次失败回滚为成功，否则
+``consecutive_failures`` 只增不减，健康槽位会被自己的「可修复失败」推进冷却。
+
+状态迁移后的副作用（例如「不可恢复 → 删除配置」）不在这里做，而是通过
+``set_state_change_handler`` 注入的回调交给实例池处理 —— 统计层不认识池，
+池也不需要知道统计口径，各管一件事。
 
 进程内并发控制按「槽位」粒度：槽位 = 一条云端 LLM 配置
 （base_url + model_name + token），同一槽位同时最多 1 个在途请求，
@@ -17,6 +29,7 @@ import asyncio
 import hashlib
 import time
 from collections import deque
+from collections.abc import Callable
 from typing import Any
 
 from langchain_core.messages import AIMessage
@@ -25,28 +38,19 @@ from langchain_openai import ChatOpenAI
 from loguru import logger
 from pydantic import BaseModel, Field, PrivateAttr, computed_field
 
-# 连续失败达到该次数后判定为不可用
-MAX_CONSECUTIVE_FAILURES = 3
-
-# 这些 HTTP 状态码代表「模型/配置层面已不可用」（模型下线、模型不存在、
-# 鉴权失败等），重试没有任何意义，直接熔断该实例，避免每轮抽奖判断都白跑一次。
-# 注意：429（限流）与 5xx / 超时属于可恢复错误，不在其列。
-NON_RETRYABLE_STATUS_CODES = frozenset({400, 401, 403, 404})
+from .health import (
+    MAX_CONSECUTIVE_FAILURES,
+    LLMFailureKind,
+    LLMHealth,
+    LLMState,
+    classify_llm_failure,
+    describe_failure,
+    extract_retry_after,
+)
 
 # 速率统计窗口（秒）
 RATE_WINDOW_SECONDS = 60.0
 
-
-def _extract_status_code(error: BaseException) -> int | None:
-    """从异常中提取 HTTP 状态码（openai 的 APIStatusError 及其子类均有该属性）"""
-    status_code = getattr(error, "status_code", None)
-    if isinstance(status_code, int):
-        return status_code
-    response = getattr(error, "response", None)
-    response_status = getattr(response, "status_code", None)
-    if isinstance(response_status, int):
-        return response_status
-    return None
 
 def _secret_value(value: Any) -> str:
     """把 SecretStr / str / None 统一取成明文串（仅参与指纹计算，不落日志）。"""
@@ -96,13 +100,17 @@ class _SlotLockRegistry:
 
 _slot_locks = _SlotLockRegistry()
 
+#: 健康状态迁移回调：入参为「实例、迁移前状态、迁移后状态」。
+#: 统计层不负责「不可恢复 → 删除配置」这类副作用，统一交给实例池注入的处理函数。
+StateChangeHandler = Callable[["TrackedChatOpenAI", LLMState, LLMState], None]
+
 
 class LLMUsageStats(BaseModel):
-    """单个 LLM 实例的使用统计
+    """单个 LLM 实例的使用统计 + 健康状态
 
     Pydantic 模型：可直接 model_dump() / 作为接口响应返回，
-    computed_field（available / rate_per_minute / avg_latency_seconds）
-    会一并包含在序列化结果中。
+    computed_field（health / state / available / disabled / rate_per_minute /
+    avg_latency_seconds）会一并包含在序列化结果中。
     """
 
     invoke_count: int = Field(default=0, description="总调用次数")
@@ -119,20 +127,62 @@ class LLMUsageStats(BaseModel):
     input_tokens: int = Field(default=0, description="累计输入（prompt）token 数")
     output_tokens: int = Field(default=0, description="累计输出（completion）token 数")
     total_tokens: int = Field(default=0, description="累计消耗 token 总数")
-    disabled: bool = Field(
-        default=False, description="是否已熔断：遇到不可恢复错误（模型下线/鉴权失败等）"
+    failed_elapsed_seconds: float = Field(
+        default=0.0, description="失败调用累计耗时（秒）"
     )
-    disabled_reason: str | None = Field(default=None, description="熔断原因")
+    failed_input_tokens: int = Field(
+        default=0, description="失败调用累计输入（prompt）token 数"
+    )
+    failed_output_tokens: int = Field(
+        default=0, description="失败调用累计输出（completion）token 数"
+    )
+    failed_total_tokens: int = Field(default=0, description="失败调用累计 token 总数")
+    recovered_count: int = Field(
+        default=0,
+        description="业务层本地修复后采用的次数（已从失败回滚为成功）",
+    )
+    health: LLMHealth = Field(
+        default_factory=LLMHealth,
+        description="健康状态机：healthy / cooling / quota_wait / suspended / removed",
+    )
 
     _recent_calls: deque[float] = PrivateAttr(default_factory=lambda: deque(maxlen=512))
+    # 「最近一次失败」暂存的耗时 / token：供 record_recovered 原样挪到成功桶
+    _pending_elapsed_seconds: float = PrivateAttr(default=0.0)
+    _pending_input_tokens: int = PrivateAttr(default=0)
+    _pending_output_tokens: int = PrivateAttr(default=0)
+    _pending_total_tokens: int = PrivateAttr(default=0)
+    _has_pending_failure: bool = PrivateAttr(default=False)
 
-    @computed_field(description="是否可用：未熔断且连续失败未达到阈值")  # type: ignore[prop-decorator]
+    @computed_field(description="当前健康状态（见 health.LLMState）")  # type: ignore[prop-decorator]
+    @property
+    def state(self) -> LLMState:
+        return self.health.state
+
+    @computed_field(description="是否可用：状态为 healthy")  # type: ignore[prop-decorator]
     @property
     def available(self) -> bool:
-        return (
-            not self.disabled
-            and self.consecutive_failures < MAX_CONSECUTIVE_FAILURES
-        )
+        return self.health.available
+
+    @computed_field(description="是否已删除：遇到不可恢复错误（模型下线/鉴权失败等）")  # type: ignore[prop-decorator]
+    @property
+    def disabled(self) -> bool:
+        return self.health.removed
+
+    @computed_field(description="不可用原因（健康状态机的当前原因）")  # type: ignore[prop-decorator]
+    @property
+    def disabled_reason(self) -> str | None:
+        return self.health.reason
+
+    @computed_field(description="自动恢复时间戳（unix 秒）；null 表示不会自动恢复")  # type: ignore[prop-decorator]
+    @property
+    def resume_at(self) -> float | None:
+        return self.health.resume_at
+
+    @computed_field(description="最近一次失败的分类")  # type: ignore[prop-decorator]
+    @property
+    def failure_kind(self) -> LLMFailureKind | None:
+        return self.health.failure_kind
 
     @computed_field(description="最近 60 秒内的调用次数")  # type: ignore[prop-decorator]
     @property
@@ -153,6 +203,27 @@ class LLMUsageStats(BaseModel):
         if self.success_count <= 0:
             return 0.0
         return self.total_tokens / self.success_count
+
+    @property
+    def _all_calls(self) -> int:
+        """成功 + 失败的调用总数（「全部口径」的平均值用它做分母）"""
+        return self.success_count + self.failure_count
+
+    @computed_field(description="全部调用（成功 + 失败）的平均耗时（秒）")  # type: ignore[prop-decorator]
+    @property
+    def avg_latency_all_seconds(self) -> float:
+        if self._all_calls <= 0:
+            return 0.0
+        return (
+            self.total_elapsed_seconds + self.failed_elapsed_seconds
+        ) / self._all_calls
+
+    @computed_field(description="全部调用（成功 + 失败）的平均 token 消耗")  # type: ignore[prop-decorator]
+    @property
+    def avg_tokens_per_call_all(self) -> float:
+        if self._all_calls <= 0:
+            return 0.0
+        return (self.total_tokens + self.failed_total_tokens) / self._all_calls
 
     def record_start(self) -> None:
         now = time.time()
@@ -175,16 +246,92 @@ class LLMUsageStats(BaseModel):
         self.output_tokens += output_tokens
         self.total_tokens += total_tokens
         self.last_error = None
+        self._clear_pending_failure()
+        self.health.record_success()
 
-    def record_failure(self, error: BaseException) -> None:
+    def record_failure(
+        self,
+        error: BaseException,
+        *,
+        elapsed_seconds: float = 0.0,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        total_tokens: int = 0,
+    ) -> LLMFailureKind:
+        """记录一次失败，并按错误分类驱动健康状态机迁移，返回本次失败的分类。
+
+        ``elapsed_seconds`` / token 落在**失败桶**（``failed_*`` 字段）：上游报错时
+        通常拿不到 usage，但耗时总能拿到。这些量单独统计，不污染「成功口径」的
+        ``total_elapsed_seconds`` / ``total_tokens`` / ``avg_latency_seconds``。
+
+        这组值会被暂存，供 :meth:`record_recovered` 在「业务层本地修复成功」时
+        原样挪进成功桶 —— 同一次调用不应该既算失败又缺耗时。
+        """
         self.failure_count += 1
         self.consecutive_failures += 1
         self.last_error = repr(error)
-        status_code = _extract_status_code(error)
-        if status_code in NON_RETRYABLE_STATUS_CODES and not self.disabled:
-            # 模型下线 / 鉴权失败等：重试无意义，直接熔断（重启或热更新配置后恢复）
-            self.disabled = True
-            self.disabled_reason = f"HTTP {status_code}（不可恢复错误）：{error}"
+        self.failed_elapsed_seconds += elapsed_seconds
+        self.failed_input_tokens += input_tokens
+        self.failed_output_tokens += output_tokens
+        self.failed_total_tokens += total_tokens
+        self._pending_elapsed_seconds = elapsed_seconds
+        self._pending_input_tokens = input_tokens
+        self._pending_output_tokens = output_tokens
+        self._pending_total_tokens = total_tokens
+        self._has_pending_failure = True
+        kind = classify_llm_failure(error)
+        self.health.record_failure(
+            kind,
+            reason=describe_failure(kind, error),
+            consecutive_failures=self.consecutive_failures,
+            retry_after=extract_retry_after(error),
+        )
+        return kind
+
+    def record_recovered(self) -> bool:
+        """把「最近一次失败」纠正为一次成功（业务层本地修复成功后调用）。
+
+        背景：结构化输出的解析失败（模型返回的 JSON 不合规）在统计层被记成一次
+        失败，但业务层可以本地修好并采用这次输出 —— 它其实是一次成功的调用。
+        不回滚的话 ``consecutive_failures`` 只增不减：连续 3 次就能把一个健康槽位
+        推进冷却，成功率还会永远停在 0（生产日志里 449 次本地修复被这样误计，
+        某模型因此累积 380 次「失败」、0 次成功）。
+
+        回滚内容：``failure_count -1``、``success_count +1``、连续失败清零、清空
+        ``last_error``；该次调用暂存的耗时 / token 从失败桶挪进成功桶；健康状态按
+        一次成功重置（``REMOVED`` 终态除外，由状态机自己保证）。
+
+        Returns:
+            是否真的回滚了一次已记录的失败。返回 ``False`` 表示统计层从没记过这次
+            失败 —— 例如解析发生在统计埋点之外（某些 langchain 版本把解析放在模型
+            调用之后、统计层之外），那次调用已经被正常记为成功了，这里不能重复计数。
+        """
+        self.recovered_count += 1
+        if not self._has_pending_failure:
+            return False
+        self.failure_count -= 1
+        self.failed_elapsed_seconds -= self._pending_elapsed_seconds
+        self.failed_input_tokens -= self._pending_input_tokens
+        self.failed_output_tokens -= self._pending_output_tokens
+        self.failed_total_tokens -= self._pending_total_tokens
+        self.success_count += 1
+        self.consecutive_failures = 0
+        self.last_error = None
+        self.total_elapsed_seconds += self._pending_elapsed_seconds
+        self.input_tokens += self._pending_input_tokens
+        self.output_tokens += self._pending_output_tokens
+        self.total_tokens += self._pending_total_tokens
+        self._clear_pending_failure()
+        self.health.record_success()
+        return True
+
+    def _clear_pending_failure(self) -> None:
+        """清掉「最近一次失败」的暂存值（成功或回滚后调用）"""
+        self._has_pending_failure = False
+        self._pending_elapsed_seconds = 0.0
+        self._pending_input_tokens = 0
+        self._pending_output_tokens = 0
+        self._pending_total_tokens = 0
 
 
 def _extract_token_usage(result: Any) -> dict[str, int]:
@@ -193,27 +340,79 @@ def _extract_token_usage(result: Any) -> dict[str, int]:
     结果不是 AIMessage 或无 usage 信息时返回全 0。
     """
     if isinstance(result, AIMessage) and result.usage_metadata:
-        usage = result.usage_metadata
-        return {
-            "input_tokens": usage.get("input_tokens", 0),
-            "output_tokens": usage.get("output_tokens", 0),
-            "total_tokens": usage.get("total_tokens", 0),
-        }
+        return _usage_metadata_to_counts(result)
+    return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+
+def _usage_metadata_to_counts(message: AIMessage) -> dict[str, int]:
+    """把 ``AIMessage.usage_metadata`` 压成统计用的三个计数"""
+    usage = message.usage_metadata or {}
+    return {
+        "input_tokens": usage.get("input_tokens", 0),
+        "output_tokens": usage.get("output_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+
+
+def _find_ai_message(value: Any) -> AIMessage | None:
+    """在一层局部变量里找 ``AIMessage``：可能是它本身，也可能装在 Generation 列表里"""
+    if isinstance(value, AIMessage):
+        return value
+    if isinstance(value, (list, tuple)) and value:
+        message = getattr(value[0], "message", None)
+        if isinstance(message, AIMessage):
+            return message
+    return None
+
+
+def _extract_token_usage_from_exception(error: BaseException) -> dict[str, int]:
+    """尽力从失败调用的异常回溯里取回 token 消耗。
+
+    解析类失败（模型已经返回了内容，只是格式不合规）其实已经消耗了 token，
+    但异常本身不带 usage —— 它只留在 langchain 解析器帧的局部变量里（那些帧
+    仍在 traceback 上）。所以这里顺着回溯找 ``AIMessage``，取到就记下，
+    取不到返回全 0。
+
+    纯只读、全程吞异常：取不到只是少一个观测值，绝不能影响失败处理本身。
+    """
+    try:
+        frame = error.__traceback__
+        while frame is not None:
+            for value in list(frame.tb_frame.f_locals.values()):
+                message = _find_ai_message(value)
+                if message is not None and message.usage_metadata:
+                    return _usage_metadata_to_counts(message)
+            frame = frame.tb_next
+    except Exception:  # noqa: BLE001 - 观测性数据取不到就算了
+        pass
     return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
 
 
 class TrackedChatOpenAI(ChatOpenAI):
-    """带调用统计的 ChatOpenAI
+    """带调用统计与健康状态机的 ChatOpenAI
 
     通过 .stats 属性访问统计信息；bind() 返回的 RunnableBinding 最终仍会
     委托到本实例的 invoke/ainvoke，统计不会丢失。
+
+    可用性语义：
+    - ``available``：状态机处于 ``healthy``（冷却中的槽位不可用，到点自动恢复）；
+    - ``disabled``：状态机处于 ``removed``，即已因不可恢复错误被彻底删除。
     """
 
     _stats: LLMUsageStats = PrivateAttr(default_factory=LLMUsageStats)
+    _state_change_handler: StateChangeHandler | None = PrivateAttr(default=None)
+
+    def set_state_change_handler(self, handler: StateChangeHandler) -> None:
+        """注入状态迁移回调（实例池在构建实例时注册，用于删除配置 / 告警等副作用）"""
+        self._state_change_handler = handler
 
     @property
     def stats(self) -> LLMUsageStats:
         return self._stats
+
+    @property
+    def state(self) -> LLMState:
+        return self._stats.state
 
     @property
     def slot_fingerprint(self) -> str:
@@ -233,14 +432,38 @@ class TrackedChatOpenAI(ChatOpenAI):
     def disabled(self) -> bool:
         return self._stats.disabled
 
-    def _log_if_disabled(self) -> None:
-        """熔断时打印一次明确告警，便于定位到具体是哪条模型配置出了问题"""
-        if self._stats.disabled:
-            logger.warning(
-                "LLM 已熔断，本次运行不再调用该模型：model={} base_url={} 原因={}",
+    def _log_state_change(self, previous: LLMState, current: LLMState) -> None:
+        """状态迁移时打印一次明确日志，便于定位到具体是哪条模型配置出了问题"""
+        health = self._stats.health
+        if current is LLMState.HEALTHY:
+            logger.info(
+                "LLM 槽位已恢复可用（{} → {}）：model={} base_url={}",
+                previous.value,
+                current.value,
                 self.model_name,
                 self.openai_api_base,
-                self._stats.disabled_reason,
+            )
+            return
+        logger.warning(
+            "LLM 槽位状态迁移：{} → {}；model={} base_url={} 原因={} 自动恢复时间={}",
+            previous.value,
+            current.value,
+            self.model_name,
+            self.openai_api_base,
+            health.reason,
+            health.resume_at,
+        )
+
+    def _notify_state_change(self, previous: LLMState, current: LLMState) -> None:
+        """把状态迁移通知给注入的处理函数（未注入或状态未变时什么也不做）"""
+        handler = self._state_change_handler
+        if handler is None or previous is current:
+            return
+        try:
+            handler(self, previous, current)
+        except Exception as e:  # noqa: BLE001 - 副作用失败不应影响调用结果与状态机
+            logger.warning(
+                "LLM 槽位状态迁移回调执行失败：{}: {}", type(e).__name__, e
             )
 
     def _failure_context(self) -> str:
@@ -249,7 +472,7 @@ class TrackedChatOpenAI(ChatOpenAI):
         return (
             f"model={self.model_name} base_url={self.openai_api_base} "
             f"调用次数={stats.invoke_count} 失败次数={stats.failure_count} "
-            f"连续失败={stats.consecutive_failures} 已熔断={stats.disabled}"
+            f"连续失败={stats.consecutive_failures} 状态={stats.state.value}"
         )
 
     def _log_call_failure(self, error: BaseException, *, level: str) -> None:
@@ -266,6 +489,27 @@ class TrackedChatOpenAI(ChatOpenAI):
             self._failure_context(),
         )
 
+    def _record_call_failure(
+        self, error: Exception, *, elapsed_seconds: float, level: str
+    ) -> None:
+        """统一的失败记账：统计 → 迁移日志 → 迁移回调 → 失败日志。
+
+        只接受 ``Exception``：``asyncio.CancelledError`` / ``KeyboardInterrupt`` /
+        ``SystemExit`` 不是槽位的错，不能污染统计与健康状态 —— 生产里进程关闭时
+        一次性把 6 个健康槽位记成了失败，把它们的连续失败次数推高。
+        """
+        previous = self._stats.state
+        self._stats.record_failure(
+            error,
+            elapsed_seconds=elapsed_seconds,
+            **_extract_token_usage_from_exception(error),
+        )
+        current = self._stats.state
+        if current is not previous:
+            self._log_state_change(previous, current)
+            self._notify_state_change(previous, current)
+        self._log_call_failure(error, level=level)
+
     def invoke(
         self,
         input: Any,
@@ -280,12 +524,10 @@ class TrackedChatOpenAI(ChatOpenAI):
             # 同步 invoke 路径无法 await 锁，且本服务 LLM 调用均为异步，
             # 故同步路径直接发起请求（全局锁仅作用于异步 ainvoke）。
             result = super().invoke(input, config, stop=stop, **kwargs)
-        except BaseException as e:
-            was_disabled = self._stats.disabled
-            self._stats.record_failure(e)
-            if not was_disabled and self._stats.disabled:
-                self._log_if_disabled()
-            self._log_call_failure(e, level="WARNING")
+        except Exception as e:
+            self._record_call_failure(
+                e, elapsed_seconds=time.monotonic() - start, level="WARNING"
+            )
             raise
         self._stats.record_success(
             time.monotonic() - start, **_extract_token_usage(result)
@@ -309,14 +551,28 @@ class TrackedChatOpenAI(ChatOpenAI):
                 result: AIMessage = await super().ainvoke(
                     input, config, stop=stop, **kwargs
                 )
-        except BaseException as e:
-            was_disabled = self._stats.disabled
-            self._stats.record_failure(e)
-            if not was_disabled and self._stats.disabled:
-                self._log_if_disabled()
-            self._log_call_failure(e, level="ERROR")
+        except Exception as e:
+            self._record_call_failure(
+                e, elapsed_seconds=time.monotonic() - start, level="ERROR"
+            )
             raise
         self._stats.record_success(
             time.monotonic() - start, **_extract_token_usage(result)
         )
         return result
+
+
+__all__ = [
+    "MAX_CONSECUTIVE_FAILURES",
+    "LLMFailureKind",
+    "LLMHealth",
+    "LLMState",
+    "LLMUsageStats",
+    "RATE_WINDOW_SECONDS",
+    "StateChangeHandler",
+    "TrackedChatOpenAI",
+    "classify_llm_failure",
+    "describe_failure",
+    "extract_retry_after",
+    "slot_fingerprint",
+]

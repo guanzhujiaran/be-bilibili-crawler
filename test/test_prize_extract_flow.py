@@ -10,6 +10,7 @@
 """
 import asyncio
 import sys
+import time
 from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -50,7 +51,8 @@ from Service.MQ.base.MQClient.PrizeExtract import (
     prize_extract_biliopus, prize_extract_dyndetail,
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import PrizeExtractResp
-from Service.llm_service import LLMSlotLease
+from Service.MQ.base.MQClient.consume_budget import ConsumeBudget
+from Service.llm_service import LLMSlotLease, LLMSlotWaitTimeout
 
 TEST_REF_ID_BASE = 999990000
 #: 「不会真的落库」的用例用的 ref_id（走的是错误/跳过分支，不写数据库）
@@ -247,6 +249,13 @@ def _fake_lease() -> LLMSlotLease:
     )
 
 
+def _fake_budget(total_seconds: float = 600.0) -> ConsumeBudget:
+    """测试用的消息确认预算（足够大，正常路径不会因预算耗尽而重投）"""
+    return ConsumeBudget.start(
+        total_seconds=total_seconds, queue_name="test-queue", label="test-label"
+    )
+
+
 async def _verify_db(helper: TestSqlHelper, ref_id: int, case: MockCase) -> list[str]:
     diffs = []
     expected = case.mock_result
@@ -308,7 +317,7 @@ async def test_do_extract_and_store(case: MockCase, test_sqlhelper: TestSqlHelpe
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case)
-        result = await _do_extract_and_store(params, _fake_lease())
+        result = await _do_extract_and_store(params, _fake_lease(), _fake_budget())
 
     assert result is not None
     assert result.is_lot == case.mock_result.is_lot
@@ -519,7 +528,7 @@ async def test_extract_failure_never_acks(test_sqlhelper: TestSqlHelper):
 
         # 单轮：失败必须抛出，且不得确认消息；槽位与去重锁仍要归还
         with pytest.raises(RuntimeError):
-            await _consume_once(mq_props, params, mock_msg)
+            await _consume_once(mq_props, params, mock_msg, _fake_budget())
 
     mock_msg.ack.assert_not_called()
     mock_msg.nack.assert_not_called()
@@ -596,9 +605,91 @@ async def test_lock_held_by_other_copy_never_acks(
             "Service.MQ.base.MQClient.PrizeExtract._already_stored",
             new=AsyncMock(return_value=True)))
 
-        result = await _consume_once(mq_props, params, mock_msg)
+        result = await _consume_once(mq_props, params, mock_msg, _fake_budget())
 
     assert result is None
     assert acquire_lock.await_count == 3, "抢不到锁时应持续重试"
     mock_msg.ack.assert_awaited_once()
     mock_msg.nack.assert_not_called()
+
+
+# ========================================================================
+# 测试 9: 消息确认超时预算
+# ========================================================================
+
+def test_consume_budget_bounds_wait():
+    """预算是自起算点算的：bound() 截断等待、remaining() 不为负、expired() 到点即真。"""
+    budget = ConsumeBudget.start(
+        total_seconds=0.2, queue_name="q", label="l"
+    )
+    assert budget.remaining() > 0
+    assert budget.bound(10.0) <= 0.2 + 1e-6, "等待必须被截断到剩余预算内"
+    assert not budget.expired()
+
+    time.sleep(0.25)
+    assert budget.remaining() == 0.0, "剩余预算不得为负"
+    assert budget.bound(10.0) == 0.0
+    assert budget.expired()
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_requeues_instead_of_broker_nack(
+    monkeypatch, test_sqlhelper: TestSqlHelper
+):
+    """预算在开始新一轮前就耗尽：必须主动 nack(requeue=True) 交还队列，且不得 ack。
+
+    这是「不能超过 RabbitMQ 消息确认时间」的核心保障：抢在 broker 的
+    consumer_timeout 之前把消息交还，避免被强制 nack 造成不可控的重复消费。
+    """
+    case = BILIOPUS_CASES[0]
+    params = _case_to_req(case, TEST_REF_ID_ASYNC_ERROR + 3)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    # 预算为 0 → 开始新一轮前已耗尽；交还前的抖动不真等
+    monkeypatch.setattr(prize_extract_module, "ACK_BUDGET_SECONDS", 0.0)
+    monkeypatch.setattr(ConsumeBudget, "requeue_jitter", AsyncMock())
+    consume_once = AsyncMock()
+
+    async with AsyncExitStack() as stack:
+        await _enter_patches(stack, case, extra=True)
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract._consume_once", new=consume_once))
+        result = await process_prize_extract(mq_props, params, mock_msg)
+
+    assert result is None
+    assert consume_once.await_count == 0, "预算耗尽时不应再开始新一轮"
+    mock_msg.ack.assert_not_called()
+    mock_msg.nack.assert_awaited_once()
+    assert mock_msg.nack.await_args.kwargs.get("requeue") is True
+
+
+@pytest.mark.asyncio
+async def test_slot_wait_timeout_requeues_message(
+    monkeypatch, test_sqlhelper: TestSqlHelper
+):
+    """等槽位超出预算（LLMSlotWaitTimeout）：不 ack，主动交还队列重投。"""
+    case = BILIOPUS_CASES[0]
+    params = _case_to_req(case, TEST_REF_ID_ASYNC_ERROR + 4)
+    mq_props = prize_extract_biliopus.mq_props
+
+    mock_msg = AsyncMock()
+    mock_msg.ack = AsyncMock()
+    mock_msg.nack = AsyncMock()
+
+    monkeypatch.setattr(ConsumeBudget, "requeue_jitter", AsyncMock())
+
+    async with AsyncExitStack() as stack:
+        await _enter_patches(stack, case, extra=True)
+        stack.enter_context(patch(
+            "Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.acquire",
+            new=AsyncMock(side_effect=LLMSlotWaitTimeout("超出预算"))))
+        result = await process_prize_extract(mq_props, params, mock_msg)
+
+    assert result is None
+    mock_msg.ack.assert_not_called()
+    mock_msg.nack.assert_awaited_once()
+    assert mock_msg.nack.await_args.kwargs.get("requeue") is True

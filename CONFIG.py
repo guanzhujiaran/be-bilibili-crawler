@@ -175,6 +175,17 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     # 单次等待上限（秒），避免指数增长后等待过久
     mq_consume_backoff_max_wait: float = 300.0
 
+    # ===== MQ 消费者「消息确认超时预算」=====
+    # 见 Service/MQ/base/MQClient/consume_budget.py。
+    # 背景：入库队列在「等槽位 / 等 LLM 冷却」期间刻意保持消息未确认，而 RabbitMQ 的
+    # consumer_timeout（默认 30 分钟）会在超时后强制关闭 channel 并重投消息 ——
+    # 表现为「莫名重投 + 重复消费」，且 channel 已关，ack 也失败。
+    # 因此每条消息都带一个自「收到消息」起算的预算，耗尽时主动 nack(requeue=True) 交还队列。
+    # 收到消息后允许占用未确认状态的最长时长（秒）；应与 broker 的 consumer_timeout 对齐
+    mq_consume_ack_timeout: float = 1800.0
+    # 留给「释放锁 + nack + 日志」的收尾余量（秒），实际预算 = ack_timeout - ack_reserve
+    mq_consume_ack_reserve: float = 60.0
+
     model_config = SettingsConfigDict(
         env_file=(
             os.path.join(_current_dir, ".env.fastapi.prod"),

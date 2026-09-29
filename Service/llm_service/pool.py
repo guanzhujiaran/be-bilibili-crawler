@@ -5,23 +5,37 @@
     或：llm_apis__0__base_url=...  llm_apis__0__model_name=...  llm_apis__0__token=...
 
 按列表顺序轮询选择主模型。所有调用均走云端，不再使用本地大模型。
-调用方通过 get_all_free_llms() 获取全部云端 LLM 实例并逐个显式尝试，
-全部失败时再决定回退到正则判断（由调用方控制）。
+调用方通过 get_all_free_llms() 获取当前【可用】(healthy) 的实例并逐个显式尝试。
 
-若未配置任何云端 API，get_all_free_llms() 会抛出 RuntimeError，由调用方捕获。
+可用性由 ``Service/llm_service/health.py`` 的状态机描述：
+
+- 不可恢复错误（鉴权失败 / 模型下线等）→ 该条配置**直接删除**，池里不再有它；
+- 限流 / 今日额度 / 欠费 / 连续瞬时失败 → 进入冷却，到点自动恢复，本轮不参与尝试。
+
+因此 get_all_free_llms() 可能抛出（均为 RuntimeError 子类，调用方按类型分流）：
+- RuntimeError：未配置任何云端 API；
+- AllLLMsDisabledError：全部已删除（不可恢复，需要人工重新配置）；
+- AllLLMsCoolingError：全部在冷却中（可自动恢复，按 resume_at 等待）。
 
 支持运行时热更新：set_llm_apis() 可在线替换 settings.llm_apis 并立即重建实例池
 （get_llm_configs() 读取当前配置，token 已脱敏），对应内部接口 GET/POST /llm/config。
 """
 
-from Service.llm_service import SamplingPreset
-from Service.llm_service.tracked_llm import TrackedChatOpenAI, slot_fingerprint
-
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
-from pydantic import SecretStr
+from loguru import logger
+from pydantic import BaseModel, Field, SecretStr
+
+from Service.llm_service import SamplingPreset
+from Service.llm_service.health import LLMState
+from Service.llm_service.tracked_llm import (
+    StateChangeHandler,
+    TrackedChatOpenAI,
+    slot_fingerprint,
+)
 
 from CONFIG import LLMApiConfig, LLMApiConfigPatch, settings
 
@@ -30,12 +44,95 @@ _free_llm_cache_key: str = ""
 
 
 class AllLLMsDisabledError(RuntimeError):
-    """所有云端 LLM 均已熔断（模型下线 / 鉴权失败等不可恢复错误）。
+    """所有云端 LLM 均已删除（模型下线 / 鉴权失败等不可恢复错误）。
 
     继承 RuntimeError，兼容调用方既有的 ``except RuntimeError`` 处理；
     调用方可据此单独发送告警：这不是「暂时失败、仍在重试」，
-    而是不可恢复状态，只能等重启或热更新 llm_apis 配置后恢复。
+    而是不可恢复状态，只能等重新配置 llm_apis 后恢复（重启或热更新皆可）。
     """
+
+
+class AllLLMsCoolingError(RuntimeError):
+    """所有云端 LLM 都在冷却中（限流 / 今日额度 / 欠费 / 连续瞬时失败）。
+
+    与 :class:`AllLLMsDisabledError` 的区别：这是**可自动恢复**的临时状态。
+    ``resume_at`` 是最近一个槽位的自动恢复时间戳（unix 秒），
+    调用方应据此等待，而不是当成不可恢复错误处理。
+    """
+
+    def __init__(self, message: str, *, resume_at: float | None = None) -> None:
+        super().__init__(message)
+        #: 最近一个槽位的自动恢复时间戳；None 表示没有会自动恢复的槽位
+        self.resume_at = resume_at
+
+
+class RemovedLLMRecord(BaseModel):
+    """一条被删除的槽位记录（不可恢复错误的处置结果，仅供观测）"""
+
+    fingerprint: str = Field(description="槽位指纹（sha256 前 16 位）")
+    model_name: str = Field(description="模型名")
+    base_url: str = Field(description="接口地址")
+    reason: str | None = Field(default=None, description="删除原因（错误分类 + 服务端返回）")
+    removed_at: float = Field(description="删除时间戳（unix 秒）")
+
+
+# 被删除的槽位记录（不可恢复错误导致的删除）：配置已被摘除，这里只留观测痕迹
+_removed_records: list[RemovedLLMRecord] = []
+
+
+def _describe_resume(delay: float | None) -> str:
+    """把「距自动恢复还有多少秒」压成可读文案"""
+    if delay is None:
+        return "不会自动恢复"
+    return f"{delay:.0f}s 后自动恢复"
+
+
+def _earliest_resume_at(llms: list[TrackedChatOpenAI]) -> float | None:
+    """取一组实例里最早的自动恢复时间戳；都不会自动恢复时返回 None"""
+    deadlines = [
+        llm.stats.health.resume_at
+        for llm in llms
+        if llm.stats.health.resume_at is not None
+    ]
+    return min(deadlines) if deadlines else None
+
+
+def _on_slot_state_change(
+    llm: TrackedChatOpenAI, previous: LLMState, current: LLMState
+) -> None:
+    """状态迁移副作用：不可恢复（REMOVED）→ 直接删除该条配置。
+
+    冷却类状态（COOLING / QUOTA_WAIT / SUSPENDED）不做删除，
+    到点由状态机自动恢复；日志已在 ``TrackedChatOpenAI._log_state_change`` 打过。
+    """
+    if current is not LLMState.REMOVED:
+        return
+    _remove_slot_from_cache(
+        llm.slot_fingerprint,
+        model_name=llm.model_name,
+        base_url=llm.openai_api_base or "",
+        reason=llm.stats.health.reason,
+    )
+
+
+#: 无 token 的配置（本地 / 免鉴权上游）在实例里填的占位密钥。
+_PLACEHOLDER_TOKEN = "not-needed"
+
+
+def _token_for_config(cfg: LLMApiConfig) -> str:
+    """配置里的 token 归一化为「实例实际持有的密钥串」（空 token 用占位符）"""
+    return cfg.token or _PLACEHOLDER_TOKEN
+
+
+def _fingerprint_of(cfg: LLMApiConfig) -> str:
+    """按「建实例时的取值」计算槽位指纹，与 ``TrackedChatOpenAI.slot_fingerprint`` 对齐。
+
+    必须用 :func:`_token_for_config` 而不是裸 ``cfg.token``：实例在 token 为空时
+    会填占位密钥，若比对侧仍用空串，同一个槽位就会算出两个指纹 —— 后果是
+    「不可恢复 → 删除配置」找不到它（配置删不掉），并且进程内锁的 key 与 redis
+    租约的 key 不一致（同一槽位的互斥失效）。
+    """
+    return slot_fingerprint(cfg.base_url, cfg.model_name, _token_for_config(cfg))
 
 
 def _build_free_llms() -> list[TrackedChatOpenAI]:
@@ -50,16 +147,16 @@ def _build_free_llms() -> list[TrackedChatOpenAI]:
                 check_every_n_seconds=0.1,
                 max_bucket_size=1,
             )
-            llms.append(
-                TrackedChatOpenAI(
-                    model=cfg.model_name,
-                    base_url=cfg.base_url,
-                    api_key=(
-                        SecretStr(cfg.token) if cfg.token else SecretStr("not-needed")
-                    ),
-                    rate_limiter=rate_limiter,
-                )
+            llm = TrackedChatOpenAI(
+                model=cfg.model_name,
+                base_url=cfg.base_url,
+                api_key=SecretStr(_token_for_config(cfg)),
+                rate_limiter=rate_limiter,
             )
+            # 状态迁移的副作用（删除配置等）由池处理：统计层不认识池，池也不管统计口径
+            handler: StateChangeHandler = _on_slot_state_change
+            llm.set_state_change_handler(handler)
+            llms.append(llm)
     return llms
 
 
@@ -81,6 +178,34 @@ def _get_free_llms() -> list[TrackedChatOpenAI]:
         _free_llm_cache = _build_free_llms()
         _free_llm_cache_key = key
     return _free_llm_cache
+
+
+def remove_llm_by_fingerprint(fingerprint: str) -> bool:
+    """按槽位指纹删除「配置 + 缓存实例」，返回是否真的删掉了。
+
+    与整池重建（``set_llm_apis``）不同：这里**保留其他槽位的实例对象**，
+    因此其他槽位的统计与健康状态（冷却进度等）不会因为删掉一个坏 key 而被清零。
+
+    仅影响运行时内存，不写回 .env：重启后以环境变量配置为准。
+    """
+    global _free_llm_cache, _free_llm_cache_key
+    # 先确保缓存已按当前配置构建，否则可能只删了配置、留下悬空实例
+    cached = _get_free_llms()
+    if not any(llm.slot_fingerprint == fingerprint for llm in cached):
+        return False
+    settings.llm_apis = [
+        cfg for cfg in settings.llm_apis if _fingerprint_of(cfg) != fingerprint
+    ]
+    _free_llm_cache = [
+        llm for llm in _free_llm_cache if llm.slot_fingerprint != fingerprint
+    ]
+    _free_llm_cache_key = _config_key()
+    return True
+
+
+def get_removed_llm_records() -> list[RemovedLLMRecord]:
+    """已被删除的槽位记录（不可恢复错误的处置痕迹，供日志 / 接口观测）"""
+    return list(_removed_records)
 
 
 # 轮询索引，用于循环切换主模型（协程安全）
@@ -118,38 +243,84 @@ def _map_kwargs_for_openai(kwargs: dict[str, Any]) -> dict[str, Any]:
     return mapped
 
 
+def _remove_slot_from_cache(
+    fingerprint: str, *, model_name: str, base_url: str, reason: str | None
+) -> None:
+    """把某个槽位从「配置 + 缓存实例」里摘掉，并记一条删除记录。
+
+    只动运行时内存（与 :func:`set_llm_apis` 的语义一致，不写回 .env）：
+    重启后以环境变量配置为准，运维可据此确认坏配置是否已从部署里清掉。
+    """
+    removed = remove_llm_by_fingerprint(fingerprint)
+    _removed_records.append(
+        RemovedLLMRecord(
+            fingerprint=fingerprint,
+            model_name=model_name,
+            base_url=base_url,
+            reason=reason,
+            removed_at=time.time(),
+        )
+    )
+    if not removed:
+        logger.warning(
+            "LLM 槽位标记为不可恢复，但配置中已找不到它（可能已被热更新替换）："
+            "model={} base_url={}",
+            model_name,
+            base_url,
+        )
+        return
+    logger.error(
+        "LLM 槽位因不可恢复错误被删除配置：model={} base_url={} 原因={}"
+        "（重启或重新配置 llm_apis 可恢复）",
+        model_name,
+        base_url,
+        reason,
+    )
+
+
 def get_all_free_llms() -> list[TrackedChatOpenAI]:
-    """返回当前所有云端(免费) LLM 实例（已按轮询顺序旋转，并应用采样参数）。
+    """返回当前【可用】(healthy) 的云端 LLM 实例（已按轮询顺序旋转）。
 
-    - 已熔断的实例（disabled：模型下线/鉴权失败等不可恢复错误）会被剔除，不再尝试；
-    - 其余可用实例（stats.available 为 True）排在前面，暂时不可用实例仅后置，
-      给其恢复机会。调用方应逐个尝试，只有当【所有】实例都调用失败时，
-      才认为云端不可用（进而决定是否回退到正则判断等）。
+    - 不可恢复错误（鉴权失败 / 模型下线 / 模型不存在）的槽位在状态迁移时
+      已被删除配置，这里不会再出现；
+    - 冷却中的槽位（限流 / 今日额度 / 欠费 / 连续瞬时失败）本轮不参与尝试，
+      到点会自动恢复为 healthy；调用方拿到 :class:`AllLLMsCoolingError`
+      时可按其 ``resume_at`` 等到点再试。
 
-    若未配置任何云端 API（llm_apis 为空），或全部实例均已熔断，抛出 RuntimeError。
+    可用实例为空时抛错（均为 RuntimeError 子类，兼容既有 ``except RuntimeError``）：
+    - 未配置任何云端 API → ``RuntimeError``；
+    - 全部已删除 → :class:`AllLLMsDisabledError`；
+    - 全部在冷却中 → :class:`AllLLMsCoolingError`。
 
     用法：
-        for llm in get_all_free_llms(num_predict=256):
+        for llm in get_all_free_llms():
             structured_llm = llm.with_structured_output(schema=MyModel)
             ...
     """
     rotated, _ = _next_rotated_llms()
     if not rotated:
         raise RuntimeError("未配置任何云端 LLM（llm_apis 为空），无法进行云端判断")
-    alive = [llm for llm in rotated if not llm.disabled]
-    if not alive:
+    usable = [llm for llm in rotated if llm.available]
+    if usable:
+        return usable
+
+    cooling = [llm for llm in rotated if not llm.disabled]
+    if not cooling:
         detail = "; ".join(
-            f"{llm.model_name}（{llm.stats.disabled_reason}）" for llm in rotated
+            f"{llm.model_name}（{llm.stats.health.reason}）" for llm in rotated
         )
         raise AllLLMsDisabledError(
-            f"全部云端 LLM 均已熔断（不可恢复错误），无法进行云端判断：{detail}"
+            f"全部云端 LLM 均已因不可恢复错误被删除，无法进行云端判断：{detail}"
         )
-    # 可用实例优先，暂时不可用实例后置（保持各自相对顺序）
-    ordered = [llm for llm in alive if llm.available] + [
-        llm for llm in alive if not llm.available
-    ]
-
-    return list(ordered)
+    detail = "; ".join(
+        f"{llm.model_name}（{llm.stats.state.value}，"
+        f"{_describe_resume(llm.stats.health.resume_delay())}）"
+        for llm in cooling
+    )
+    raise AllLLMsCoolingError(
+        f"全部云端 LLM 均在冷却中，暂不可用：{detail}",
+        resume_at=_earliest_resume_at(cooling),
+    )
 
 
 @dataclass(slots=True, frozen=True, eq=False)
@@ -179,11 +350,7 @@ def get_llm_slots() -> list[LLMSlot]:
     if len(configs) != len(llms):
         return []
     return [
-        LLMSlot(
-            fingerprint=slot_fingerprint(cfg.base_url, cfg.model_name, cfg.token),
-            config=cfg,
-            llm=llm,
-        )
+        LLMSlot(fingerprint=_fingerprint_of(cfg), config=cfg, llm=llm)
         for cfg, llm in zip(configs, llms, strict=True)
     ]
 

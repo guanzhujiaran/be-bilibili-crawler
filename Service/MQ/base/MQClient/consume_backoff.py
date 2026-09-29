@@ -41,11 +41,21 @@ from bili_common.core.backoff import (
 from faststream.rabbit.fastapi import RabbitMessage
 
 from CONFIG import settings
+from Service.llm_service.pool import AllLLMsCoolingError, AllLLMsDisabledError
 from log.base_log import MQ_logger
 from Utils.推送.PushMe import a_push_error
 
 #: 「重试耗尽」错误回调：接收回退上下文（含最后一次异常、重试次数、耗时）
 ErrorCallback = Callable[[BackoffContext], Awaitable[None] | None]
+
+#: 「槽位不可用」信号：不是消费失败，而是「换个槽位 / 等冷却」。
+#: 出现这类异常时立刻放弃本轮（不再对着冷却中的槽位空转），把控制权交回外层重新抢槽位。
+_LLM_UNAVAILABLE_ERRORS = (AllLLMsDisabledError, AllLLMsCoolingError)
+
+
+def is_llm_unavailable(exc: BaseException | None) -> bool:
+    """是否为「LLM 槽位不可用」（需要换槽位 / 等冷却，而不是继续重试同一个槽位）"""
+    return isinstance(exc, _LLM_UNAVAILABLE_ERRORS)
 
 #: 推送正文里异常文本的截断长度：保证「同队列 + 同类异常」的正文完全一致，
 #: message-service 才能按内容去重计数（压成 ``×N`` 而不是一长串互不相同的条目）
@@ -114,14 +124,29 @@ def build_consume_backoff_config(
     module_name: str,
     params: Any,
     on_giveup: ErrorCallback | None = None,
+    max_time_limit: float | None = None,
 ) -> BackoffConfig:
-    """构造消费者用的等待回退配置（参数全部来自 ``settings``，可环境变量覆盖）。"""
+    """构造消费者用的等待回退配置（参数全部来自 ``settings``，可环境变量覆盖）。
+
+    Args:
+        module_name: 队列名（日志 / 告警用）。
+        params: 消息参数（错误回调用）。
+        on_giveup: 自定义「重试耗尽」回调；为 ``None`` 时走默认实现。
+        max_time_limit: 上层给的额外时间上界（秒），例如消息确认超时预算的剩余时间；
+            取它与 ``settings.mq_consume_max_time`` 的较小值，保证一轮重试不会越过预算。
+    """
     max_tries = settings.mq_consume_max_tries
     # max_tries<=0 视为「不限次数」，交给 max_time 兜底；两者都为 0 则退化为单次执行
     tries: int | None = max_tries if max_tries > 0 else None
     max_time: float | None = settings.mq_consume_max_time
     if max_time is not None and max_time <= 0:
         max_time = None
+
+    if max_time_limit is not None:
+        # 上限兜到 1s：BackoffConfig 要求 max_time > 0，而预算可能刚好耗尽；
+        # 预算是否真的用完由调用方用 ConsumeBudget.expired() 判断
+        limit = max(1.0, max_time_limit)
+        max_time = limit if max_time is None else min(max_time, limit)
 
     async def _on_backoff(ctx: BackoffContext) -> None:
         MQ_logger.warning(
@@ -136,6 +161,14 @@ def build_consume_backoff_config(
             if inspect.isawaitable(result):
                 await result
             return
+        if is_llm_unavailable(ctx.exception):
+            # 槽位不可用 = 「换槽位 / 等冷却」的信号，不是消费失败：
+            # 不推送「MQ消费失败」告警（避免与冷却告警重复刷屏），只留一条明细
+            MQ_logger.warning(
+                f"【{module_name}】LLM 槽位不可用，提前结束本轮重试并交还槽位重新抢："
+                f"{ctx.exception}"
+            )
+            return
         await default_error_callback(module_name, params, ctx)
 
     return BackoffConfig(
@@ -147,6 +180,9 @@ def build_consume_backoff_config(
             max_value=settings.mq_consume_backoff_max_wait,
         ),
         jitter=full_jitter,
+        # 槽位不可用时立刻放弃本轮：冷却中的槽位再重试多少次都不会变好，
+        # 交给外层释放槽位后重新抢（可能换到健康槽位，或等到冷却结束）
+        giveup=is_llm_unavailable,
         on_backoff=_on_backoff,
         on_giveup=_on_giveup,
     )
