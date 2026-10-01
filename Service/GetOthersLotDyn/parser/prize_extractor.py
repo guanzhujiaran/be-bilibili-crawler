@@ -237,21 +237,29 @@ def _repair_structured_output(
 # ================================================================
 
 
-async def _push_cloud_unavailable_error(exc: Exception) -> None:
-    """云端 LLM 全部不可用/失败时推送错误告警（由 PushMe 内部限流/去重）"""
+async def _push_no_llm_configured_error(exc: Exception) -> None:
+    """未配置任何云端 LLM 时推送告警（「全都不能用」的终态之一）。
+
+    只有两种「全都不能用了」才推送（见计划书第 10 节）：
+    1. 全部槽位因不可恢复错误被删除（``_push_all_llms_disabled_error``）；
+    2. 未配置任何云端 LLM（本函数）。
+
+    单轮失败、部分不可用、以及冷却期（cooling / quota_wait / suspended）
+    **一律不推送**，避免对「会自己好」的情况刷告警。
+    """
     try:
         await a_push_error(
-            subject="云端LLM抽奖判断不可用（重试中）",
+            subject="云端LLM未配置（抽奖判断已中断）",
             content=(
-                "云端 LLM 当前全部不可用，抽奖判断（含大奖判断）将持续等比退避重试，"
-                f"等待上限 {_RETRY_MAX_DELAY}s，不会跳过保存。请检查云端 LLM 配置或可用性。\n"
+                "当前未配置任何云端 LLM（llm_apis 为空），抽奖判断（含大奖判断）已中断，"
+                "不会跳过保存，需补回 llm_apis 配置后才能恢复。\n"
                 f"错误类型：{type(exc).__name__}\n"
                 f"错误信息：{exc}\n"
                 f"错误堆栈：\n{traceback.format_exc()}"
             ),
         )
     except Exception as push_err:
-        logger.exception(f"推送云端不可用告警失败: {push_err}")
+        logger.exception(f"推送云端 LLM 未配置告警失败: {push_err}")
 
 
 def _describe_disabled_llms() -> str:
@@ -265,7 +273,7 @@ def _describe_disabled_llms() -> str:
         return "（当前未记录到不可用实例）"
     lines = [
         f"- {item.get('model')} @ {item.get('base_url')}："
-        f"{item.get('state')}（{item.get('disabled_reason')}）"
+        f"{item.get('state')}（{item.get('reason')}）"
         for item in unavailable
     ]
     return "不可用槽位：\n" + "\n".join(lines)
@@ -329,28 +337,12 @@ async def _await_slot_available(llm: ChatOpenAI, max_wait: float | None) -> None
     )
 
 
-async def _push_llms_cooling_error(exc: Exception) -> None:
-    """全部云端 LLM 都在冷却中时推送告警（可自动恢复，属于「等一等」而不是「坏了」）"""
-    try:
-        await a_push_error(
-            subject="云端LLM全部冷却中（抽奖判断暂停）",
-            content=(
-                "云端 LLM 当前全部处于冷却状态（限流 / 今日额度耗尽 / 欠费 / 连续失败），"
-                "抽奖判断正在等待其自动恢复，不会跳过保存。\n"
-                f"{_describe_disabled_llms()}\n"
-                f"错误信息：{exc}"
-            ),
-        )
-    except Exception as push_err:
-        logger.exception(f"推送云端 LLM 冷却告警失败: {push_err}")
-
-
 async def _push_all_llms_disabled_error(exc: Exception) -> None:
     """全部云端 LLM 均已删除时推送告警（经 message-service 推到 pushplus）。
 
-    与「本轮全部失败、仍在等比退避重试」不同：不可恢复错误
-    （鉴权失败 / 模型下线 / 模型不存在）会让该条配置被**直接删除**，本次不会再重试，
-    只能在补回 llm_apis 配置后恢复，因此单独告警。
+    这是「全都不能用」的不可恢复终态：不可恢复错误（鉴权失败 / 模型下线 / 模型不存在）
+    会让该条配置被**直接删除**，本次不会再重试，只能在补回 llm_apis 配置后恢复，
+    因此单独告警。与之相对，冷却中的槽位会自己好，**不推送**。
     """
     try:
         await a_push_error(
@@ -389,6 +381,10 @@ async def _do_extract(
 
     三种都是 RuntimeError 子类，调用方按类型决定「继续等」还是「放弃并告警」。
 
+    推送策略（计划书第 10 节）：**只有「全都不能用了」才推送** ——
+    全部槽位被删除（不可恢复）与未配置任何 LLM；冷却期（cooling / quota_wait /
+    suspended）与「单轮失败但槽位仍健康」都不推送（会自己好，只记本地日志）。
+
     result_model / system_prompt 由调用方决定：
       - 普通/预约抽奖 → PrizeExtractResult + 完整提示词
       - 官方/充电抽奖 → OfficialPrizeExtractResult + 仅大奖提示词
@@ -418,7 +414,6 @@ async def _do_extract(
     # （示例序列：10s → 20s → 40s → ... → 300s → 300s → ...）
     last_err: Exception | None = None
     retry_delay = _RETRY_BASE_DELAY
-    alerted = False
     while True:
         if chat_openai_client:
             # 调用方显式指定了客户端：只用它，不再遍历其他实例。
@@ -439,6 +434,7 @@ async def _do_extract(
                 raise
             except AllLLMsCoolingError as e:
                 # 全部槽位在冷却中（限流 / 今日额度 / 欠费）：可自动恢复。
+                # 冷却期内**不推送告警**（只是「等一等」，不是「坏了」），只留日志。
                 wait = _resume_wait(e.resume_at)
                 if max_wait is not None and wait > max_wait:
                     # 需要的等待超过本轮预算：不在这里把预算睡掉，
@@ -448,17 +444,14 @@ async def _do_extract(
                         f"超出本轮剩余预算 {max_wait:.0f}s，交还消息稍后重试：{e}"
                     )
                     raise
-                if not alerted:
-                    await _push_llms_cooling_error(e)
-                    alerted = True
                 logger.warning(
                     f"全部云端 LLM 均在冷却中，{wait:.0f}s 后（最近自动恢复时间）继续重试：{e}"
                 )
                 await asyncio.sleep(wait)
                 continue
             except RuntimeError as e:
-                # 未配置任何云端 LLM：不再回退，直接抛错
-                await _push_cloud_unavailable_error(e)
+                # 未配置任何云端 LLM：全都不能用，推送后直接抛错（不回退）
+                await _push_no_llm_configured_error(e)
                 raise
         for idx, llm in enumerate(all_llms):
             # 统计层实例：bind() 之后拿到的是 RunnableBinding，但最终仍会委托到它
@@ -523,14 +516,11 @@ async def _do_extract(
         # 本轮所有 LLM 均失败：
         # - 调用方指定的客户端本轮失败后被状态机判为「不可用」→ 立刻抛出，交给上层
         #   换一个 / 等冷却，不再对着一个正在冷却的实例按等比退避空转；
-        # - 槽位仍健康（只是单次瞬时失败，未达冷却阈值）→ 告警一次并按等比退避重试。
+        # - 槽位仍健康（只是单次瞬时失败，未达冷却阈值）→ 按等比退避重试。
+        # 两种都**不推送告警**：槽位没坏（未达冷却阈值）或冷却会自己好，
+        # 只有「全都不能用了」（全部删除 / 未配置）才推送（见计划书第 10 节）。
         if chat_openai_client is not None:
             await _await_slot_available(chat_openai_client, max_wait)
-        if not alerted:
-            await _push_cloud_unavailable_error(
-                last_err or RuntimeError("全部免费 LLM 均调用失败")
-            )
-            alerted = True
         logger.warning(
             f"本轮 {len(all_llms)} 个免费 LLM 均失败了，"
             f"{retry_delay}s 后重试（等比退避，上限 {_RETRY_MAX_DELAY}s），"
