@@ -3,6 +3,7 @@ syntax = "proto3";
 package bilibili.app.view.v1;
 
 import "google/protobuf/any.proto";
+import "bilibili/account/service/v1/service.proto";
 import "bilibili/app/archive/middleware/v1/preload.proto";
 import "bilibili/app/archive/v1/archive.proto";
 import "bilibili/pagination/pagination.proto";
@@ -50,6 +51,18 @@ service View {
     rpc GetArcsPlayer(GetArcsPlayerReq) returns (GetArcsPlayerReply);
     //
     rpc GetUser(GetUserReq) returns (GetUserReply);
+    // 点击播放器卡片事件V2
+    rpc ClickPlayerCardV2(ClickPlayerCardReq) returns (ClickPlayerCardReply);
+    // 推荐流视频
+    rpc FeedView(FeedViewReq) returns (FeedViewReply);
+    // 获取三连面板信息
+    rpc TFInfo(TFInfoReq) returns (TFInfoReply);
+}
+
+// 旧版视频页
+service LegacyView {
+    // 点赞
+    rpc Like(LikeReq) returns (LikeReply);
 }
 
 // 活动页资源包
@@ -139,6 +152,24 @@ message ActivitySeason {
     ArcExtra arc_extra = 31;
     //
     ReplyStyle reply_preface = 32;
+    //
+    UpLikeImg up_like_img = 33;
+    //
+    repeated SpecialCell special_cell_new = 34;
+    //
+    LikeAnimation like_animation = 35;
+    //
+    UserGarb user_garb = 36;
+    //
+    ControlConfig control_config = 37;
+    //
+    CoinStyle coin_style = 38;
+    //
+    RabbitYear rabbit_year = 39;
+    //
+    ArchiveStat stat_v2 = 40;
+    //
+    ArgueBar argue_bar = 41;
 }
 
 // 点击签订契约-请求
@@ -251,6 +282,8 @@ message BadgeStyle {
     string border_color_night = 7;
     //
     int32 bg_style = 8;
+    //
+    string img = 9;
 }
 
 // 视频引用的bgm音频
@@ -506,6 +539,25 @@ message CmIpad {
     int64 duration = 4;
     //
     int64 aid = 5;
+    //
+    ArchiveStat stat_v2 = 6;
+    //
+    oneof data {
+        //
+        CmIpadLive live = 7;
+    }
+}
+
+//
+message CmIpadLive {
+    //
+    int64 room_id = 1;
+    //
+    int64 live_status = 2;
+    //
+    StatInfo stat_info = 3;
+    //
+    string area_name = 4;
 }
 
 //
@@ -588,6 +640,12 @@ message Config {
     string landscape_icon = 23;
     //
     bool show_listen_button = 24;
+    //
+    int64 valid_show_m = 25;
+    //
+    int64 valid_show_n = 26;
+    //
+    bool dm_treasure_box_control = 27;
 }
 
 //
@@ -692,6 +750,8 @@ message CreativeContent {
 message CustomConfig {
     // 重定向页面url
     string redirect_url = 1;
+    // 文案
+    string text = 2;
 }
 
 // 枚举-文本类型
@@ -763,6 +823,8 @@ message ElecRank {
     int64 count = 2;
     //
     string text = 3;
+    //
+    bool hide_count = 4;
 }
 
 // 充电用户信息
@@ -811,6 +873,24 @@ message Episode {
     bool free_watch = 15;
     //
     string first_frame = 16;
+    //
+    ArchiveStat stat_v2 = 17;
+    //
+    repeated bilibili.app.archive.v1.Page pages = 18;
+    //
+    double progress_percent = 19;
+    //
+    int64 duration = 20;
+    //
+    EpDownload download = 21;
+}
+
+// 剧集下载信息
+message EpDownload {
+    // 是否禁止下载
+    bool disable_download = 1;
+    // 禁止下载提示
+    string disable_toast = 2;
 }
 
 // 播放器卡片曝光-请求
@@ -950,6 +1030,8 @@ message Honor {
     string url = 9;
     // 跳转角标文案
     string url_text = 10;
+    // 荣誉分类
+    string category = 11;
 }
 
 //
@@ -1014,6 +1096,10 @@ message LikeCustom {
     int64 non_full_progress = 3;
     //
     int64 update_count = 4;
+    //
+    bool immediately_upgrade = 5;
+    //
+    LikeComment like_comment = 6;
 }
 
 //
@@ -1062,6 +1148,10 @@ message LiveOrderInfo {
     int64 live_plan_start_time = 3;
     // 是否预约
     bool is_follow = 4;
+    // 预约人数
+    int64 follow_count = 5;
+    // 样式
+    string style = 6;
 }
 
 //
@@ -1091,7 +1181,7 @@ message MaterialRes {
     //
     string url = 3;
     //
-    MaterialSource type = 4;
+    MaterialSource typ = 4;
     //
     string name = 5;
     //
@@ -1160,6 +1250,20 @@ message OnwerExt {
     int64 fans = 5;
     // 总投稿数
     string arc_count = 6;
+    // NFT 头像图标
+    NftFaceIcon nft_face_icon = 7;
+    // 名字渲染
+    bilibili.account.service.v1.NameRender name_render = 8;
+}
+
+// NFT 头像图标
+message NftFaceIcon {
+    // 
+    int32 region_type = 1;
+    // 
+    string icon = 2;
+    // 
+    int32 show_status = 3;
 }
 
 // 老运营卡片
@@ -1300,6 +1404,8 @@ message Order {
     }
     // 合集简介
     string intro = 10;
+    // 合集播放数(VT)
+    StatInfo season_stat_view_vt = 11;
 }
 
 // 游戏礼包信息
@@ -1326,10 +1432,10 @@ message PlayAv {
 
 // 卡片类型
 enum PlayerCardType {
-    PlayerCardTypeNone_VALUE      = 0; //
-    PlayerCardTypeAttention_VALUE = 1; // 关注卡
-    PlayerCardTypeOperation_VALUE = 2; // 运营卡
-    PlayerCardTypeContract_VALUE  = 3; // 契约卡
+    PlayerCardTypeNone      = 0; //
+    PlayerCardTypeAttention = 1; // 关注卡
+    PlayerCardTypeOperation = 2; // 运营卡
+    PlayerCardTypeContract  = 3; // 契约卡
 }
 
 // 进度条动画配置
@@ -1675,6 +1781,36 @@ message Relate {
     RankInfo rank_info_game = 42;
     //
     string first_frame = 43;
+    //
+    string game_recommend_reason = 44;
+    //
+    WikiInfo wiki_info_game = 45;
+    //
+    LiveInfo live_info = 46;
+    //
+    ArchiveStat stat_v2 = 47;
+    //
+    string report_flow_data = 48;
+}
+
+// 直播信息
+message LiveInfo {
+    // 
+    string area_name = 1;
+    // 
+    int64 watched_show = 2;
+    // 
+    int64 live_status = 3;
+    // 
+    int64 icon_type = 4;
+}
+
+// 百科信息
+message WikiInfo {
+    // 
+    string wiki_label = 1;
+    // 
+    string wiki_url = 2;
 }
 
 // 相关推荐内容
@@ -1683,6 +1819,8 @@ message RelateItem {
     string url = 1;
     // 封面
     string cover = 2;
+    // 是否使用默认浏览器
+    bool use_default_browser = 3;
 }
 
 // 播放页推荐IFS-响应
@@ -1767,6 +1905,14 @@ message ReqUser {
     int32 fav_season = 8;
     //
     Button elec_plus_btn = 9;
+    //
+    ELecPlus elec_plus = 10;
+}
+
+// 大会员充电
+message ELecPlus {
+    // 
+    bool state = 1;
 }
 
 //
@@ -1849,6 +1995,10 @@ message SeasonActivityRecordReq {
     int64 scene = 6;
     //
     string spmid = 7;
+    //
+    string from_spmid = 8;
+    //
+    string action_id = 9;
 }
 
 //
@@ -2007,6 +2157,18 @@ message SpecialCell {
     string end_icon_night = 14;
     //
     int64 notes_count = 15;
+    //
+    CellFluid cell_fluid = 16;
+}
+
+// 流体背景色
+message CellFluid {
+    // 
+    string top_base_color = 1;
+    // 
+    string top_split_color = 2;
+    // 
+    string top_text_color = 3;
 }
 
 // 合作成员信息
@@ -2027,6 +2189,8 @@ message Staff {
     int32 attention = 7;
     //
     int32 label_style = 8;
+    //
+    bilibili.account.service.v1.NameRender name_render = 9;
 }
 
 // 标准卡
@@ -2152,7 +2316,7 @@ message User {
     //
     string face = 3;
     //
-    bool isFollow = 4;
+    int64 isFollow = 4;
     //
     int64 isAttention = 5;
     //
@@ -2210,6 +2374,14 @@ message UgcSeason {
     UgcSeasonActivity activity = 21;
     //
     repeated string season_ability = 22;
+    //
+    UgcSeasonStatV2 stat_v2 = 23;
+}
+
+// ugc视频合集状态数v2
+message UgcSeasonStatV2 {
+    // 观看数
+    StatInfo view_vt = 1;
 }
 
 //
@@ -2593,6 +2765,28 @@ message ViewReply {
     RefreshPage refresh_page = 60;
     //
     CoinCustom coin_custom = 61;
+    // 控制配置
+    ControlConfig control_config = 62;
+    // UP主素材
+    UpViewMaterial up_view_material = 63;
+    // 用户关系
+    UserRelation user_relation = 64;
+    // 投币样式
+    CoinStyle coin_style = 65;
+    // 兔年配置
+    RabbitYear rabbit_year = 66;
+    // 稿件统计V2
+    ArchiveStat stat_v2 = 67;
+    // 充电PLUS
+    ChargingPlus charging_plus = 68;
+    // 拒绝页
+    RejectPage reject_page = 69;
+    // 播报toast
+    repeated PlayToast play_toast = 70;
+    // 稿件状态
+    ViewState view_state = 71;
+    // 争议条
+    ArgueBar argue_bar = 72;
 }
 
 // 视频页详情页-请求
@@ -2695,4 +2889,326 @@ message VipLabel {
     string text = 2;
     //
     string label_theme = 3;
+}
+
+// 稿件状态
+enum ViewState {
+    // 默认
+    ViewNone = 0;
+    // 仅UP主自己可见
+    ViewHostOnlySelf = 1;
+}
+
+// 播报toast业务类型
+enum PlayToastEnum {
+    // 未知
+    PLAYTOAST_UNKNOWN = 0;
+    // 充电PLUS
+    PLAYTOAST_CHARGINGPLUS = 1;
+}
+
+// 拒绝页业务类型
+enum RejectPageEnum {
+    // 未知
+    REJECTPAGE_UNKNOWN = 0;
+    // 充电PLUS
+    REJECTPAGE_CHARGINGPLUS = 1;
+}
+
+// 扩展tab类型
+enum ExtType {
+    // 无
+    ExtNone = 0;
+    // 数据中心
+    ExtDataCenter = 1;
+    // 数据收益
+    ExtDataEarnings = 2;
+}
+
+// 控制项
+message Control {
+    // 是否限制
+    bool limit = 1;
+    // 是否禁用
+    bool disable = 2;
+    // 禁用点击提示
+    string disable_click_tip = 3;
+}
+
+// 控制配置
+message ControlConfig {
+    // 点赞
+    Control like_show = 1;
+    // 不感兴趣
+    Control dislike_show = 2;
+    // 投币
+    Control coin_show = 3;
+    // 收藏
+    Control fav_show = 4;
+    // 分享
+    Control share_show = 5;
+    // 播报
+    Control toast_show = 6;
+    // 素材
+    Control material_show = 7;
+    // 弹幕
+    Control danmu_show = 8;
+    // 备注
+    Control remark_show = 9;
+    // 半屏弹幕发送
+    Control half_danmu_send = 10;
+    // UP主
+    Control up_show = 11;
+}
+
+// 互动区域
+message InteractArea {
+    // 用户列表
+    repeated User list = 1;
+    // 文案
+    string text = 2;
+}
+
+// 扩展tab
+message ExtTab {
+    // 扩展类型
+    ExtType ext_type = 1;
+    // 数据
+    string data = 2;
+}
+
+// tab模块
+message TabModule {
+    // 扩展tab
+    repeated ExtTab ext_tabs = 1;
+    // 索引
+    int32 idx = 2;
+    // 跳转链接
+    string protocol_url = 3;
+}
+
+// UP主素材
+message UpViewMaterial {
+    // 点赞信息
+    InteractArea like_info = 1;
+    // 数据中心信息
+    string data_center_info = 2;
+    // tab模块
+    TabModule tab_module = 3;
+}
+
+// 用户关系
+message UserRelation {
+    // 点赞信息
+    InteractArea like_info = 1;
+}
+
+// 投币样式
+message CoinStyle {
+    // 投币动画压缩包
+    string coin_app_zip_icon = 1;
+    // 投币动画1
+    string coin_app_icon_1 = 2;
+    // 投币动画2
+    string coin_app_icon_2 = 3;
+    // 投币动画3
+    string coin_app_icon_3 = 4;
+    // 投币动画4
+    string coin_app_icon_4 = 5;
+}
+
+// 弹幕拼手气
+message DmSummon {
+    // 标题
+    repeated string title = 1;
+    // 跳转链接
+    string url = 2;
+    // 错误信息
+    string err_msg = 3;
+    // 长文案
+    string long_content = 4;
+    // 短文案
+    string short_content = 5;
+}
+
+// 半屏
+message HalfScreen {
+    // 每日上限
+    int64 daily_max = 1;
+    // 跳转链接
+    string url = 2;
+}
+
+// 播放器自动化
+message PlayerAutomate {
+    // 每日上限
+    int64 daily_max = 1;
+    // 跳转链接
+    string url = 2;
+}
+
+// 特殊弹幕
+message SpecialDm {
+    // 开始时间
+    int64 start = 1;
+    // 结束时间
+    int64 end = 2;
+    // 是否展示
+    bool is_display = 3;
+}
+
+// 兔年配置
+message RabbitYear {
+    // 播放器自动化
+    PlayerAutomate player_automate = 1;
+    // 弹幕拼手气
+    DmSummon dm_summon = 2;
+    // 半屏
+    HalfScreen half_screen = 3;
+    // 特殊弹幕
+    SpecialDm special_dm = 4;
+}
+
+// 统计信息
+message StatInfo {
+    // 图标
+    int32 icon = 1;
+    // 文案
+    string text = 2;
+    // 纯文本
+    string pure_text = 3;
+}
+
+// 稿件统计
+message ArchiveStat {
+    // 播放量
+    StatInfo view_vt = 11;
+}
+
+// 充电PLUS
+message ChargingPlus {
+    // 是否通过
+    bool pass = 1;
+}
+
+// 拒绝页
+message RejectPage {
+    // 业务类型
+    RejectPageEnum business = 1;
+    // 图片
+    string pic = 2;
+    // 主文案
+    string primary_text = 3;
+    // 副文案
+    string secondary_text = 4;
+    // 按钮
+    Button button = 5;
+}
+
+// 播报toast
+message PlayToast {
+    // 业务类型
+    PlayToastEnum business = 1;
+    // 图标
+    string icon_url = 2;
+    // 文案
+    string text = 3;
+}
+
+// 争议条
+message ArgueBar {
+    // 背景色
+    string bg_color = 1;
+    // 文字颜色
+    string text_color = 2;
+    // 图标颜色
+    string icon_color = 3;
+    // 文案
+    string msg = 4;
+    // 夜间背景色
+    string bg_color_night = 5;
+    // 夜间文字颜色
+    string text_color_night = 6;
+    // 夜间图标颜色
+    string icon_color_night = 7;
+}
+
+// 跳转展示类型
+enum JumpShowType {
+    // 默认
+    JST_DEFAULT = 0;
+    // 全屏
+    JST_FULLSCREEN = 1;
+    // 半屏
+    JST_HALFSCREEN = 2;
+}
+
+// 三连面板信息请求
+message TFInfoReq {
+}
+
+// 三连面板提示
+message TFToast {
+    // 按钮文案
+    string btn_text = 1;
+    // 按钮链接
+    string btn_link = 2;
+    // 标题
+    string title = 3;
+    // 描述
+    string description = 4;
+}
+
+// 三连面板信息
+message TFInfoReply {
+    // 提示ID
+    int64 tips_id = 1;
+    // 提示
+    TFToast tf_toast = 2;
+    // 面板自定义信息
+    TFPanelCustomized tf_panel_customized = 3;
+    // 用户是否为新人
+    bool user_flag_new = 4;
+}
+
+// 点赞请求
+message LikeReq {
+    // 稿件avid
+    int64 aid = 1;
+    // OGV类型
+    int64 ogv_type = 2;
+    // 来源
+    string from = 3;
+    // 当前页面spmid
+    string spmid = 4;
+    // 上一页面spmid
+    string from_spmid = 5;
+    // 追踪ID
+    string track_id = 6;
+    // 跳转类型
+    string goto = 7;
+    // 点赞状态 0-取消 1-点赞
+    int32 like = 8;
+    // 来源
+    string source = 9;
+    // 令牌
+    string token = 10;
+    // 行为ID
+    string action_id = 11;
+}
+
+// 点赞回复
+message LikeReply {
+    // 提示文案
+    string toast = 1;
+    // 稍后再看凭证
+    string v_voucher = 2;
+}
+
+// 点赞评论
+message LikeComment {
+    // 回复
+    string reply = 1;
+    // 标题
+    string title = 2;
 }

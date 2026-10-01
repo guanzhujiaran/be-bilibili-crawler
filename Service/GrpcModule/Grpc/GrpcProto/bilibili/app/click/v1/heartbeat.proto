@@ -55,8 +55,10 @@ message HeartBeatReq {
     PreProcessResult pre_process_result = 9;
     // 
     repeated PlayerStatus player_status = 10;
-    // 
+    //
     VideoInfo video_info = 11;
+    //
+    Extra extra = 12;
 }
 
 // 

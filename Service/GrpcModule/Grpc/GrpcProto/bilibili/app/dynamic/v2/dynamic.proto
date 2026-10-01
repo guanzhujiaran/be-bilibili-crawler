@@ -260,6 +260,13 @@ enum AdditionalType {
     additional_type_up_rcmd = 6;        // 附加UP主推荐卡
     additional_type_ugc = 7;            // 附加卡-ugc
     additional_type_up_reservation = 8; // UP主预约卡
+    additional_type_article = 9;        // 附加卡-文章
+    additional_type_live_room = 10;     // 附加卡-直播间
+    additional_type_music = 11;         // 附加卡-音乐
+    additional_type_content_opus = 12;  // 附加卡-opus内容
+    additional_type_content_video = 13; // 附加卡-视频内容
+    additional_type_content_comment = 14; // 附加卡-评论内容
+    additional_type_content_up = 15;    // 附加卡-up主内容
 }
 
 // 动态-附加卡-专栏
@@ -302,6 +309,8 @@ message AdditionCommon {
     string type = 10;
     // 附加卡类型
     string card_type = 11; // ogv manga
+    // 角标
+    string badge = 12;
 }
 
 // 动态-附加卡-电竞卡
@@ -540,6 +549,30 @@ message AdditionVote2 {
     int32 choice_cnt = 19;
     // 是否默认选中分享到动态
     bool defaule_select_share = 20;
+    // 付费投票属性
+    OnlyFansVoteProperty only_fans_vote = 21;
+    // 投票发起者mid
+    int64 vote_owner_mid = 22;
+    // 角标
+    string badge = 23;
+    // 描述
+    string desc = 24;
+}
+
+// 付费投票属性
+message OnlyFansVoteProperty {
+    // 是否为付费投票
+    bool is_only_fans_vote = 1;
+    // 是否有投票权限
+    bool has_vote_permission = 2;
+    // 投票按钮文案
+    string vote_btn_text = 3;
+    // 投票按钮链接
+    string vote_btn_uri = 4;
+    // 投票注释1
+    string vote_annotation_part1 = 5;
+    // 投票注释2
+    string vote_annotation_part2 = 6;
 }
 
 // 外露投票
@@ -1330,6 +1363,8 @@ message CardParagraph {
     string biz_id = 3;
     // 
     LinkNodeType biz_type = 2;
+    // 
+    int32 card_style = 4;
 }
 
 // 动态卡片列表
@@ -1429,10 +1464,12 @@ message CommentDetail {
 
 // 
 message Config {
-    // 
+    //
     bool story_vertical_exp = 1;
-    // 
+    //
     int64 detail_view_bits = 2;
+    // 路由扩展参数
+    map<string, string> extra_router_kvs = 3;
 }
 
 //
@@ -1618,6 +1655,8 @@ message DynAllReply {
     DynRegionRcmd region_rcmd = 5;
     // 
     Config config = 6;
+    // 排序配置
+    FeedSortConfig sort_config = 7;
 }
 
 // 动态综合页-请求
@@ -1647,9 +1686,15 @@ message DynAllReq {
     // 秒开参数
     bilibili.app.archive.middleware.v1.PlayerArgs player_args = 12;
     //
-    int64 tab_recall_uid = 13;
-    //
     int32 tab_recall_type = 14;
+    // tab撤回扩展
+    string tab_recall_extra = 15;
+    // 请求排序选项
+    int32 req_sort_option = 16;
+    // 展示时气泡撤回扩展
+    string bubble_recall_extra_when_show = 17;
+    // 会话id
+    string session_id = 18;
 }
 
 // 最近访问-标记已读-请求
@@ -1927,6 +1972,10 @@ enum DynModuleType {
     module_author_slim = 42;
     module_manga_collection = 43;
     module_cooperation = 44;
+    module_head_resource = 45;     // 头部资源模块
+    module_recommend_cards = 46;   // 推荐卡片模块
+    module_rcmd_reason = 47;       // 推荐理由模块
+    module_paywall = 48;           // 付费墙模块
     UNRECOGNIZED = -1;
 }
 
@@ -2031,6 +2080,8 @@ message DynServerDetailsReply {
 //
 message DynServerDetailsReq {
     //
+    repeated int64 dynamic_ids = 1;
+    //
     int32 local_time = 2;
     //
     bilibili.app.archive.middleware.v1.PlayerArgs player_args = 3;
@@ -2087,6 +2138,8 @@ message DynSpaceSearchDetailsReply {
 //
 message DynSpaceSearchDetailsReq {
     //
+    repeated int64 dynamic_ids = 1;
+    //
     repeated string search_words = 2;
     //
     int32 local_time = 3;
@@ -2140,6 +2193,8 @@ message DynTab {
     int32 type = 12;
     //
     DynTab back_up = 13;
+    //
+    string jump_home_pop = 14;
 }
 
 //
@@ -2148,6 +2203,8 @@ message DynTabReply {
     repeated DynTab dyn_tab = 1;
     // 
     repeated DynScreenTab screen_tab = 2;
+    // AB实验变量
+    map<string, string> ab_test_vars = 3;
 }
 
 //
@@ -2156,6 +2213,16 @@ message DynTabReq {
     int32 teenagers_mode = 1;
     // 
     CampusReqFromType from_type = 2;
+    // 上一次筛选tab
+    DynScreenTabReq last_screen_tab = 3;
+}
+
+// 筛选tab请求
+message DynScreenTabReq {
+    // tab名
+    string name = 1;
+    // 排序类型
+    string sort_type = 2;
 }
 
 // 动态点赞-请求
@@ -2226,6 +2293,8 @@ message DynVideoReply {
     CardVideoUpList video_up_list = 2;
     // 视频页-我的追番
     CardVideoFollowList video_follow_list = 3;
+    // 排序配置
+    FeedSortConfig sort_config = 4;
 }
 
 // 动态视频页-请求
@@ -2249,6 +2318,10 @@ message DynVideoReq {
     string from = 8;
     // 秒开参数
     bilibili.app.archive.middleware.v1.PlayerArgs player_args = 9;
+    // 请求排序选项
+    int32 req_sort_option = 10;
+    // 会话id
+    string session_id = 11;
 }
 
 // 最近访问-标记已读-请求
@@ -2311,6 +2384,18 @@ message EmoteNode {
     bool is_inline_img = 4;
     //
     WordNode raw_text = 1;
+    // 是否允许动图
+    bool allow_animated = 6;
+    // 点击行为
+    int32 click_action = 7;
+    // 预览名
+    string preview_name = 8;
+    // 预览名跳转链接
+    string preview_name_jump_uri = 9;
+    // 暗色表情url
+    string emote_url_dark = 10;
+    // 是否为头像
+    bool is_avatar = 11;
 }
 
 // 
@@ -2376,6 +2461,66 @@ message Extend {
     bool is_in_audit = 23;
     // 
     map<string, string> history_report = 24;
+    // 上报指标数据
+    string report_metric_data = 25;
+    // 正文文本（opus）
+    TextParagraph desc_text_opus = 26;
+    // 是否仅预览
+    bool is_preview_only = 27;
+    // 转发额外信息
+    RepostExtraInfo repost_extra_info = 28;
+    // 漫画属性
+    MangaProperty manga_property = 29;
+    // up主昵称
+    string up_name = 30;
+    // up主头像
+    string up_face = 31;
+    // 期望可见状态
+    int32 desired_visibility_status = 32;
+    // 上报字段
+    map<string, string> report = 33;
+    // 创作激励id
+    int64 tribee_id = 34;
+    // 创作激励扩展信息
+    TribeeExtendInfo tribee_info = 35;
+    // 翻译状态
+    int32 translate_state = 36;
+}
+
+// 转发额外信息
+message RepostExtraInfo {
+    // 广告id
+    string adcm_id = 1;
+}
+
+// 漫画属性
+message MangaProperty {
+    // 漫画id
+    int64 manga_id = 1;
+    // 章节id
+    int64 ep_id = 2;
+    // 是否付费内容
+    bool is_payment_needed = 3;
+    // 是否会员内容
+    bool is_premium_content = 4;
+}
+
+// 创作激励扩展信息
+message TribeeExtendInfo {
+    // 创作激励id
+    int64 tribee_id = 1;
+    // 创作激励名
+    string tribee_name = 2;
+    // 分类id
+    int64 category_id = 3;
+    // 分类名
+    string category_name = 4;
+    // 是否展示申请审核按钮
+    bool show_entry_apply_audit_button = 5;
+    // 申请通过图标
+    string entry_apply_approve_icon = 6;
+    // 申请驳回图标
+    string entry_apply_reject_icon = 7;
 }
 
 // 评论扩展
@@ -2567,6 +2712,12 @@ message GoodsItem {
     string app_name = 14;
     // 
     GoodsJumpType jump_type = 15;
+    // 广告缓存透传
+    string cm_cache_passthrough = 16;
+    // 价格后缀
+    string price_suffix = 17;
+    // 商品类型
+    int32 goods_item_type = 18;
 }
 
 // 
@@ -2649,6 +2800,8 @@ message IconButton {
     string icon_tail = 3;
     //
     string jump_uri = 4;
+    // 路由行为
+    int32 router_action = 5;
 }
 
 // 
@@ -2719,6 +2872,12 @@ message InteractionItem {
     InteractionStat stat = 8;
     //
     string icon = 9;
+    // 尾部图标
+    string tail_icon = 10;
+    // 尾部描述
+    repeated Description tail_desc = 11;
+    // 扩展点击参数
+    map<string, string> extend_click_param = 12;
 }
 
 //
@@ -2861,14 +3020,16 @@ message LikeUser {
 
 // 
 message LineParagraph {
-    // 
+    //
     MdlDynDrawItem pic = 1;
+    // 线条类型
+    int32 line_type = 2;
 }
 
 // 
 message LinkNode {
-    // 
-    string show_text = 1;
+    // 展示文本（APK: WordNode showText_）
+    WordNode show_text = 1;
     // 
     string link = 2;
     // 
@@ -2887,6 +3048,22 @@ message LinkNode {
     GoodsItem goods_item = 9;
     // 
     NoteVideoTS note_video_ts = 10;
+    // 业务数据
+    google.protobuf.Any biz_data = 11;
+    // 链接图片
+    MdlDynDraw link_pics = 12;
+    // 点击气泡
+    ClickBubble link_click_bubble = 13;
+    // 展示类型
+    int32 show_type = 14;
+    // 富文本展示
+    repeated LinkNodeRich show_rich = 15;
+    // 定时发布信息
+    VideoTs video_ts = 16;
+    // 富文本背景色
+    Colors rich_bg_color = 17;
+    // 引用数
+    int64 reference_number = 18;
 }
 
 // 
@@ -2920,6 +3097,24 @@ enum LinkNodeType {
     MEMBER_GOODS = 26;
     OPENMALL_UP_ITEMS = 27;
     SEARCH = 28;
+    MUSIC = 29;
+    GPT_RCMD_QUESTION = 30;
+    MEMBER_TICKET = 31;
+    REPOST_PIC_URL = 32;
+    REPOST_PIC_DYN_URL = 33;
+    OGV_FOLLOW_CARD = 34;
+    ARTICLE_GOODS = 35;
+    ARTICLE_TAG = 36;
+    NICK_NAME = 37;
+    RECALL_MESSAGE = 38;
+    CONTENT_OPUS = 39;
+    CONTENT_VIDEO = 41;
+    CONTENT_COMMENT = 42;
+    IM_PUSH_INFO_MORE = 43;
+    CONTENT_UP = 44;
+    REFERENCE_COMMENT = 45;
+    MULTIPLE_RESOURCES = 46;
+    REFERENCE = 47;
 }
 
 // 直播信息
@@ -3236,6 +3431,8 @@ message MdlDynDraw {
     bool is_big_cover = 5;
     // 
     bool is_article_cover = 6;
+    // 是否展开全部
+    bool unfold_all = 7;
 }
 
 // 动态列表渲染部分-详情模块-图文
@@ -3250,6 +3447,66 @@ message MdlDynDrawItem {
     float size = 4;
     // 图片标签
     repeated MdlDynDrawTag tags = 5;
+    // 暗色图片链接
+    string src_dark = 6;
+    // 是否为live图
+    bool is_live_photo = 7;
+    // live图视频链接
+    string live_video_url = 8;
+    // live图视频大小
+    double live_video_size = 9;
+    // 图片角标
+    MdlDynDrawBadge badge = 10;
+    // 是否来自评论
+    bool is_from_comment = 11;
+    // 评论来源
+    CommentSource comment_source = 12;
+    // 对齐方式
+    int32 align = 13;
+    // 图片标注
+    MdlDynDrawAnnotation annotation = 14;
+}
+
+// 图片角标
+message MdlDynDrawBadge {
+    // 文本
+    string text = 1;
+    // 图标
+    string icon = 2;
+}
+
+// 评论来源
+message CommentSource {
+    // 类型
+    int32 type = 1;
+    // 标题
+    string title = 2;
+    // 描述
+    string desc = 3;
+    // 跳转链接
+    string jump_url = 4;
+    // 评论区id
+    int64 oid = 5;
+    // 评论业务类型
+    int64 reply_biz_type = 6;
+    // 资源id
+    int64 resource_id = 7;
+    // 封面
+    string cover = 8;
+    // 资源类型
+    int32 resource_type = 9;
+}
+
+// 图片标注
+message MdlDynDrawAnnotation {
+    // 文本
+    string text = 1;
+    // 字号
+    double font_size = 2;
+    // 日间颜色
+    string color_day = 3;
+    // 夜间颜色
+    string color_night = 4;
 }
 
 // 动态列表渲染部分-详情模块-图文-标签
@@ -3354,6 +3611,8 @@ message MdlDynMedialist {
     int32 cover_type = 6;
     // 角标
     VideoBadge badge = 7;
+    // 封面右下角图标
+    string cover_bottom_right_icon = 8;
 }
 
 // 动态列表渲染部分-详情模块-音频模块
@@ -3506,6 +3765,8 @@ message MdlDynUGCSeason {
     int64 duration = 14;
     // 跳转地址
     string jump_url = 15;
+    // 角标
+    repeated VideoBadge badge = 16;
 }
 
 // 播放器类型
@@ -3646,7 +3907,181 @@ message Module {
         ModuleMangaCollection module_manga_collection = 43;
         //
         ModuleCooperation module_cooperation = 44;
+        // 头部资源模块
+        ModuleHeadResource module_head_resource = 45;
+        // 推荐卡片模块
+        ModuleRecommendCards module_recommend_cards = 46;
+        // 推荐理由模块
+        ModuleRcmdReason module_rcmd_reason = 47;
+        // 付费墙模块
+        ModulePaywall module_paywall = 48;
     }
+}
+
+// 头部资源模块
+message ModuleHeadResource {
+    // 图标
+    string icon = 1;
+    // 主文本
+    LinkText text = 2;
+    // 后缀文案
+    string suffix = 3;
+    // 副文本
+    LinkText sub_text = 4;
+    // 类型
+    int32 type = 5;
+    // 模块id
+    int64 module_id = 6;
+    // 子模块id
+    int64 sub_module_id = 7;
+    // 模块类型
+    string module_type = 8;
+    // 创作激励头部信息列表
+    repeated TribeeHeadInfo tribee_head_infos = 9;
+    // 链接文本
+    message LinkText {
+        // 文本
+        string text = 1;
+        // 跳转链接
+        string url = 2;
+    }
+}
+
+// 创作激励头部信息
+message TribeeHeadInfo {
+    // 用户id
+    int64 id = 1;
+    // 名称
+    string name = 2;
+    // 图标
+    string icon = 3;
+    // 跳转链接
+    string uri = 4;
+    // 是否为主要贡献者
+    bool is_primary = 5;
+    // 分类名
+    string category_name = 6;
+    // 分类链接
+    string category_uri = 7;
+}
+
+// 推荐卡片模块
+message ModuleRecommendCards {
+    // 推荐卡片
+    RecommendCard item = 1;
+    // 上报参数
+    map<string, string> report = 2;
+}
+
+// 推荐卡片
+message RecommendCard {
+    // 封面
+    string cover = 1;
+    // 封面宽高比
+    double cover_wh_ratio = 2;
+    // 角标
+    string badge = 3;
+    // 标题
+    string title = 4;
+    // up主名
+    string up_name = 5;
+    // 推荐理由
+    string rcmd_reason = 6;
+    // 画质信息列表
+    repeated CoverIconWithText quality_infos = 7;
+    // 尾部文案
+    string tail_text = 8;
+    // 三点列表
+    repeated ThreePointItem tp_list = 9;
+    // 跳转链接
+    string jump_url = 10;
+    // 卡片类型
+    int32 card_type = 11;
+    // 业务id
+    int64 biz_id = 12;
+    // 关联业务id
+    int64 attached_biz_id = 13;
+}
+
+// 推荐理由模块
+message ModuleRcmdReason {
+    // 图标id
+    int32 icon = 1;
+    // 理由文案
+    string reason = 2;
+}
+
+// 付费墙模块
+message ModulePaywall {
+    // 样式
+    int32 style = 1;
+    // 预览比例
+    int32 preview_ratio = 2;
+    // 提示文案
+    string hint_text = 3;
+    // 阻断信息
+    ModuleBlocked blocked = 4;
+    // 推荐列表
+    ModulePaywallRecommendList recommend_list = 5;
+    // 提示文案链接
+    string hint_text_url = 6;
+}
+
+// 付费墙推荐列表
+message ModulePaywallRecommendList {
+    // opus卡片列表
+    repeated ContentOpusCard recommend_opus_cards = 1;
+}
+
+// opus内容卡片
+message ContentOpusCard {
+    // opus id
+    int64 opus_id = 1;
+    // 标题
+    string title = 2;
+    // 内容
+    string content = 3;
+    // 跳转链接
+    string jump_url = 4;
+    // 作者名
+    string author_name = 5;
+    // 发布文案
+    string publish_text = 6;
+    // 播放数文案
+    string view = 7;
+    // 评论数文案
+    string reply = 8;
+    // 图片列表
+    repeated MdlDynDrawItem pics = 9;
+    // 角标
+    string badge = 10;
+    // 卡片类型
+    string card_type = 11;
+    // 链接展示文案
+    string link_show_text = 12;
+    // 是否为付费内容
+    bool is_only_fans = 13;
+    // 卡片角标
+    CardBadge card_badge = 14;
+    // 阻断信息
+    OnlyFansBlock block = 15;
+    // 点赞文案
+    string like = 16;
+    // 摘要
+    string summary = 17;
+    // 卡片角标
+    message CardBadge {
+        // 图标角标
+        IconBadge icon_badge = 1;
+    }
+}
+
+// 付费内容阻断信息
+message OnlyFansBlock {
+    // 图片
+    ImageSet imgs = 1;
+    // 按钮
+    IconButton btn = 2;
 }
 
 // 动态列表-用户模块-广告卡
@@ -3690,6 +4125,18 @@ message ModuleAdditional {
         AdditionArticle article = 12;
         // 
         AdditionLiveRoom live = 13;
+        // 音乐卡
+        AdditionMusic music = 14;
+        // opus内容卡
+        ContentOpusCard opus = 15;
+        // 视频内容卡
+        ContentVideoCard video = 16;
+        // 评论内容卡
+        ContentCommentCard comment = 17;
+        // up主内容卡
+        ContentUpCard contentup = 18;
+        // 多资源卡
+        MultipleResourcesCard multiple_resources = 19;
     }
     // 附加卡物料ID
     int64 rid = 7;
@@ -3732,6 +4179,22 @@ message ModuleAuthor {
     bool show_level = 15;
     // 
     OnlyFans only_fans = 16;
+    // 作者角标
+    AuthorBadge author_badge = 17;
+    // 处理后的时间文案
+    OneLineText handle_ptime_text = 18;
+    // 创作激励身份角标列表
+    repeated TribeeIdentityBadge identity_badges = 19;
+    // 上报参数
+    map<string, string> report = 20;
+}
+
+// 作者角标
+message AuthorBadge {
+    // 角标样式
+    int32 badge_style = 1;
+    // 角标
+    IconBadge badge = 2;
 }
 
 // 动态列表渲染部分-用户模块-按钮
@@ -3985,6 +4448,10 @@ message ModuleDynamic {
         MdlDynCourUp dyn_cour_batch_up = 18;
         //话题集合
         MdlDynTopicSet dyn_topic_set = 19;
+        //充电稿件卡
+        MdlDynChargingArchive dyn_charging_archive = 20;
+        //充电问答分享卡
+        MdlDynShareChargingQA dyn_share_charging_qa = 21;
     }
 }
 
@@ -4008,6 +4475,8 @@ enum ModuleDynamicType {
     mdl_dyn_subscription_new = 15; // 订阅卡
     mdl_dyn_cour_batch_up = 16;    // 课程
     mdl_dyn_topic_set = 17;        // 话题集合
+    mdl_dyn_charging_archive = 18; // 充电稿件卡
+    mdl_dyn_share_charging_qa = 19; // 充电问答分享卡
 }
 
 // 动态-小卡模块
@@ -4138,6 +4607,8 @@ message BasicUserInfoV2 {
     string name_sub_text = 10;
     //
     bilibili.account.service.v1.NameRender name_render = 11;
+    //
+    string handle = 12;
 }
 
 message CooperationUpInfo {
@@ -4287,6 +4758,8 @@ message ModuleOpusSummary {
     string summary_jump_btn_text = 3;
     // 
     repeated MdlDynDrawItem covers = 4;
+    // 摘要段落列表
+    repeated Paragraph summaries = 5;
 }
 
 // 
@@ -4359,6 +4832,34 @@ message ModuleStat {
     string no_comment_text = 8;
     // 禁转文案
     string no_forward_text = 9;
+    // 收藏数
+    int64 favorite = 10;
+    // 是否已收藏
+    bool is_favorite = 11;
+    // 禁赞
+    bool no_like = 12;
+    // 禁赞文案
+    string no_like_text = 13;
+    // 投币信息
+    CoinInfo coin = 14;
+}
+
+// 投币信息
+message CoinInfo {
+    // 投币数
+    int64 count = 1;
+    // 是否已投币
+    bool is_coin = 2;
+    // 用户可用硬币数
+    int64 user_coin_count = 3;
+    // 是否隐藏
+    bool hidden = 4;
+    // 是否禁用
+    bool disabled = 5;
+    // 投币业务
+    string coin_business = 6;
+    // 评论区id
+    int64 oid = 7;
 }
 
 //
@@ -4405,6 +4906,8 @@ message ModuleTop {
     ModuleAuthor author = 3;
     // 
     bool hidden_nav_bar = 4;
+    // 订阅式发布人模块
+    ModuleAuthorForSubscribe subscribe_author = 5;
 }
 
 //
@@ -4734,12 +5237,40 @@ message Paragraph {
         MIDDLE = 1;
         RIGHT = 2;
     }    
+    // 缩进格式
+    message IndentFormat {
+        // 缩进
+        double indent = 1;
+        // 首行缩进
+        double first_line_indent = 2;
+    }
+    // 基础样式
+    message ParagraphBaseStyle {
+        // 字号
+        double font_size = 1;
+        // 字重
+        int32 font_weight = 2;
+        // 字体颜色
+        Colors font_color = 3;
+    }
     // 
     message ParagraphFormat {
         // 
         ParagraphAlign align = 1;
         // 
         ListFormat list_format = 2;
+        // 最大行数
+        int32 max_lines = 3;
+        // 缩进格式
+        IndentFormat indent = 4;
+        // 基础样式
+        ParagraphBaseStyle base_style = 5;
+        // 合并话题
+        string combine_hash = 6;
+        // 标题类型
+        int32 heading_type = 7;
+        // 引用间距
+        double blockquote_gap = 8;
     }
     // 
     enum ParagraphType {
@@ -4762,7 +5293,13 @@ message Paragraph {
         PicParagraph pic = 4;
         LineParagraph line = 5;
         CardParagraph link_card = 6;
+        // 代码段落
+        CodeParagraph code = 7;
+        // 表格段落
+        TableParagraph table = 9;
     }
+    // 跳转链接
+    string jump_url = 8;
 }
 
 // 
@@ -4849,6 +5386,12 @@ message RcmdArchive {
     int32 cover_left_icon3 = 11;
     //
     string cover_left_text3 = 12;
+    // 描述
+    string desc = 13;
+    // 埋点id
+    string track_id = 14;
+    // 推荐理由
+    string rcmd_reason = 15;
 }
 
 // 推荐UP主用户模块
@@ -5268,6 +5811,8 @@ message TextNode {
         WordNode word = 3;
         EmoteNode emote = 4;
         LinkNode link = 5;
+        // 公式
+        FormulaNode formula = 6;
     }
 }
 
@@ -5308,6 +5853,8 @@ message ThreePointAttention {
     string not_attention_text = 4;
     // 当前关注状态
     ThreePointAttentionStatus status = 5;
+    // 订阅oid
+    string subscribe_oid = 6;
 }
 
 // 枚举-三点关注状态
@@ -5380,6 +5927,8 @@ message ThreePointDislike {
     string icon = 1;
     // 标题
     string title = 2;
+    // 反馈业务值
+    string feedback_biz_value = 3;
 }
 
 // 三点-收藏
@@ -5451,7 +6000,139 @@ message ThreePointItem {
         ThreePointHide hide = 11;
         //
         ThreePointTopicIrrelevant topic_irrelevant = 12;
+        // 编辑动态
+        ThreePointDynEdit dyn_edit = 13;
+        // 投币
+        ThreePointDynCoin coin = 14;
+        // 可见性调整
+        ThreePointVisibilityChange visibility_change = 15;
+        // 话题置顶
+        ThreePointTopicTop topic_top = 16;
+        // 翻译
+        ThreePointTranslate translate = 17;
+        // 转发创作激励
+        ThreePointRepostTribee repost_tribee = 18;
+        // 创作激励精选
+        ThreePointTribeeFeatured tribee_featured = 19;
     }
+    // 是否为管理员操作
+    bool is_admin_operation = 20;
+    // 创作激励通过
+    ThreePointTribeeApprovedThread tribee_approved_thread = 21;
+    // 移除推荐
+    ThreePointDefault recommend_remove = 22;
+}
+
+// 三点-编辑动态
+message ThreePointDynEdit {
+    // 动态id
+    int64 dyn_id = 1;
+    // 原id
+    int64 origin_id = 2;
+    // 原稿是否已删除
+    bool is_origin_deleted = 3;
+    // 跳转链接
+    string url = 4;
+    // 引导toast
+    string guide_toast = 5;
+}
+
+// 三点-投币
+message ThreePointDynCoin {
+    // 是否已投币
+    bool had_coin = 1;
+    // 投币数
+    int64 coin_num = 2;
+    // 投币业务
+    string coin_business = 3;
+    // 评论区id
+    int64 oid = 4;
+}
+
+// 三点-可见性调整
+message ThreePointVisibilityChange {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 选项列表
+    repeated ThreePointVisibilityChangeItem item_list = 3;
+    // 对象id
+    string obj_id = 4;
+}
+
+// 三点-可见性调整选项
+message ThreePointVisibilityChangeItem {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 副标题
+    string sub_title = 3;
+    // 是否选中
+    bool is_selected = 4;
+    // 未选中的提示
+    string visibility_change_action_unselected = 5;
+}
+
+// 三点-话题置顶
+message ThreePointTopicTop {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 类型
+    int32 type = 3;
+    // 话题id
+    int64 topic_id = 4;
+}
+
+// 三点-翻译
+message ThreePointTranslate {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 开关状态
+    int32 switch = 3;
+}
+
+// 三点-转发创作激励
+message ThreePointRepostTribee {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 跳转链接
+    string url = 3;
+    // 次数用尽
+    bool no_remain_times = 4;
+    // 次数用尽提示
+    string no_remain_times_toast = 5;
+}
+
+// 三点-创作激励精选
+message ThreePointTribeeFeatured {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 是否已精选
+    bool is_featured = 3;
+    // 提示
+    string toast = 4;
+}
+
+// 三点-创作激励通过
+message ThreePointTribeeApprovedThread {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 提示标题
+    string toast_title = 3;
+    // 提示描述
+    string toast_desc = 4;
 }
 
 // 三点-分享
@@ -5521,6 +6202,23 @@ enum ThreePointType {
     hide = 12;             //
     campus_delete = 13;    //
     topic_irrelevant = 14; //
+    batch_cancel = 15;           //
+    topic_set_cancel = 16;       //
+    dynamic_edit = 17;           // 编辑动态
+    create_video = 18;           // 创建视频
+    coin = 19;                   // 投币
+    ogv_subscribe = 20;          // OGC订阅
+    visibility_change = 21;      // 可见性调整
+    topic_top = 22;              // 话题置顶
+    translate = 23;              // 翻译
+    repost_tribee = 24;          // 转发创作激励
+    tribee_remove_thread = 25;   // 创作激励移除
+    tribee_featured = 26;        // 创作激励精选
+    tribee_modify_category = 27; // 创作激励修改分类
+    tribee_invite_code = 28;     // 创作激励邀请码
+    tribee_approved_thread = 29; // 创作激励通过
+    recommend_remove = 30;       // 移除推荐
+    tribee_reject_thread = 31;   // 创作激励拒绝
 }
 
 // 三点-稍后在看
@@ -6012,4 +6710,412 @@ message WordNode {
     Colors color = 3;
     // 
     WordNodeStyle style = 4;
+    // 
+    UnderlineStyle underline_style = 5;
+    // 字号等级
+    string font_level = 7;
+    // 字重
+    int32 font_weight = 8;
+    // 
+    BgStyle bg_style = 9;
+    // 
+    BgStyle pressed_bg_style = 10;
+    // 
+    message UnderlineStyle {
+        // 
+        double underline_width = 1;
+        // 
+        Colors underline_color = 2;
+    }
+}
+
+// 背景样式
+message BgStyle {
+    // 样式
+    int32 style = 1;
+    // 颜色
+    Colors color = 2;
+}
+
+// 音乐附加卡
+message AdditionMusic {
+    // 音乐卡数据
+    MdlDynMusic music_card = 1;
+    // 卡片类型
+    string card_type = 2;
+    // 描述文案
+    CoverIconWithText desc_text_upper = 3;
+    // 角标
+    string badge = 4;
+}
+
+// 充电稿件卡
+message MdlDynChargingArchive {
+    // 稿件信息
+    MdlDynArchive archive_info = 1;
+    // 是否有权限
+    bool has_permission = 2;
+    // 是否可inline播放
+    bool can_inline = 3;
+    // 充电包名
+    string charging_bundle_name = 4;
+    // 预览结束toast倒计时配置
+    int64 cfg_preview_end_toast_countdown = 5;
+    // 普通inline提示时长配置
+    int64 cfg_normal_inline_toast_duration = 6;
+    // 视频底部文案(上)
+    OneLineText video_bottom_text_upper = 7;
+    // 视频底部文案(下)
+    OneLineText video_bottom_text_lower = 8;
+    // 稿件封面
+    string archive_cover = 9;
+    // 稿件标题
+    string archive_title = 10;
+    // 操作按钮
+    IconButton act_btn = 11;
+    // 普通inline提示文案
+    OneLineText text_normal_inline_toast = 12;
+    // 预览结束toast追加文案
+    OneLineText text_append_preview_end_toast = 13;
+}
+
+// 充电问答分享卡
+message MdlDynShareChargingQA {
+    // 背景图
+    ImageSet background_img = 1;
+    // 左侧图标
+    ImageSet left_icon_img = 2;
+    // 标题
+    string title = 3;
+    // 跳转按钮
+    IconButton jump_button = 4;
+    // 跳转链接
+    string uri = 5;
+    // 分享卡元信息
+    CommonShareCardInfo share_card_meta_info = 6;
+    // 标题前缀(加粗)
+    string title_prefix_bold = 7;
+}
+
+// 通用分享卡元信息
+message CommonShareCardInfo {
+    // 镜像数据id
+    int64 sketch_id = 1;
+    // 业务类型
+    int64 biz_type = 2;
+    // 业务id
+    int64 biz_id = 3;
+}
+
+// 创作激励身份角标
+message TribeeIdentityBadge {
+    // 类型
+    int32 type = 1;
+    // 是否可见
+    bool visible = 2;
+    // 文本
+    string text = 3;
+    // 图标链接
+    string icon_url = 4;
+    // 主题色
+    Color theme_color = 5;
+    // 文本色
+    Color text_color = 6;
+    // 图标色
+    Color icon_color = 7;
+    // 角标详情
+    oneof detail {
+        // 创作者身份角标
+        TribeeCreatorIdentityBadge creator = 8;
+    }
+    // 上报参数
+    map<string, string> report = 9;
+    // 颜色
+    message Color {
+        // 亮色
+        string light = 1;
+        // 暗色
+        string dark = 2;
+    }
+}
+
+// 创作者身份角标
+message TribeeCreatorIdentityBadge {
+    // 标题
+    string title = 1;
+    // 副标题
+    string subtitle = 2;
+    // 描述
+    string description = 3;
+    // 底部文案
+    string bottom_text = 4;
+    // 用户头像链接
+    string user_avatar_url = 5;
+    // 用户名
+    string user_name = 6;
+    // 左侧图标
+    string left_icon = 7;
+    // 右侧图标
+    string right_icon = 8;
+    // 结算周期
+    int32 settlement_cycle = 9;
+    // 周期id
+    string period_id = 10;
+}
+
+// 视频内容卡
+message ContentVideoCard {
+    // avid
+    int64 avid = 1;
+    // cid
+    int64 cid = 2;
+    // epid
+    int64 epid = 3;
+    // bvid
+    string bvid = 4;
+    // 封面
+    string cover = 5;
+    // 跳转地址
+    string uri = 6;
+    // 跳转链接
+    string jump_url = 7;
+    // 标题
+    string title = 8;
+    // 描述
+    string desc = 9;
+    // 统计信息列表
+    repeated StatInfo stat_infos = 10;
+    // 角标
+    VideoBadge badge = 11;
+    // 媒体类型
+    int32 media_type = 12;
+    // 定时发布信息
+    VideoTs video_ts = 13;
+    // 播放按钮
+    string play_icon = 14;
+    // 卡片类型
+    string card_type = 15;
+    // 尺寸信息
+    Dimension dimension = 16;
+    // 番剧ssid
+    int64 ssid = 17;
+    // 是否为付费内容
+    bool is_only_fans = 18;
+    // 作者名
+    string author_name = 19;
+    // 发布文案
+    string publish_text = 20;
+    // 摘要
+    string summary = 21;
+    // 统计信息
+    message StatInfo {
+        // 文案
+        string text = 1;
+        // 数量
+        int64 count = 2;
+        // 类型
+        int32 type = 3;
+    }
+}
+
+// 定时发布信息
+message VideoTs {
+    // 开始时间
+    int64 start_time = 1;
+    // 开始时间文案
+    string start_time_text = 2;
+    // 开始图标
+    string start_icon = 3;
+    // 时长
+    int64 duration = 4;
+    // 时长文案
+    string duration_text = 5;
+}
+
+// 评论内容卡
+message ContentCommentCard {
+    // 评论id
+    int64 id = 1;
+    // 评论来源
+    CommentSource source = 2;
+    // 评论内容
+    TextParagraph content = 3;
+    // 链接
+    string link = 4;
+    // 父评论
+    CommentSimpleInfo parent_comment = 5;
+    // 用户信息
+    BasicUserInfoV2 user = 6;
+    // 点赞内容
+    ThumbUpContent thumbup = 7;
+    // 图片列表
+    repeated MdlDynDrawItem pics = 8;
+    // 卡片类型
+    string card_type = 9;
+    // 默认展示行数
+    int32 default_show_lines = 10;
+    // 链接展示文案
+    string link_show_text = 11;
+    // 图片模式
+    MdlDynDrawItem pic_mode = 12;
+    // 点赞内容
+    message ThumbUpContent {
+        // 点赞数
+        int64 count = 1;
+        // 文案
+        string text = 2;
+        // 是否已点赞
+        bool is_thumbup = 3;
+        // up主是否点赞
+        bool is_up_thumbup = 4;
+    }
+}
+
+// 评论简要信息
+message CommentSimpleInfo {
+    // 评论id
+    int64 id = 1;
+    // 评论内容
+    TextParagraph content = 2;
+    // 用户名
+    string user_name = 3;
+    // 评论来源
+    CommentSource source = 4;
+    // 链接
+    string link = 5;
+}
+
+// up主内容卡
+message ContentUpCard {
+    // 用户信息
+    BasicUserInfoV2 user = 1;
+    // 粉丝数文案
+    string follower = 2;
+    // 点赞数文案
+    string like = 3;
+    // 描述
+    string desc = 4;
+    // 卡片类型
+    string card_type = 5;
+    // 是否移除账号
+    bool is_remove_account = 6;
+}
+
+// 多资源卡
+message MultipleResourcesCard {
+    // 资源列表
+    repeated Resource resources = 1;
+    // 资源
+    message Resource {
+        // 资源内容
+        oneof content {
+            // opus卡片
+            ContentOpusCard opus = 1;
+            // 视频卡片
+            ContentVideoCard video = 2;
+        }
+    }
+}
+
+// feed排序配置
+message FeedSortConfig {
+    // 标题
+    string title = 1;
+    // 排序选项列表
+    repeated FeedSortOption sort_options = 2;
+}
+
+// feed排序选项
+message FeedSortOption {
+    // 排序名
+    string sort_name = 1;
+    // 排序类型
+    string sort_type = 2;
+    // 是否选中
+    bool is_selected = 3;
+    // 不满足时是否禁止自动翻页
+    bool no_auto_next_page_when_unsatisfied = 4;
+}
+
+// 代码段落
+message CodeParagraph {
+    // 代码语言
+    string code_lang = 1;
+    // 代码内容
+    string code_content = 2;
+    // 弹窗链接
+    string popup_link = 3;
+    // 栏图标
+    string bar_icon = 4;
+    // 栏提示
+    string bar_notice = 5;
+    // 按钮文案
+    string btn_text = 6;
+}
+
+// 表格段落
+message TableParagraph {
+    // 列定义列表
+    repeated ColumnDef columns = 1;
+    // 行列表
+    repeated TableRow rows = 2;
+}
+
+// 列定义
+message ColumnDef {
+    // 水平对齐
+    int32 horizontal_align = 1;
+}
+
+// 表格行
+message TableRow {
+    // 是否为表头
+    bool is_header = 1;
+    // 单元格列表
+    repeated TableCell cells = 2;
+}
+
+// 表格单元格
+message TableCell {
+    // 段落列表
+    repeated Paragraph paragraphs = 1;
+    // 背景色
+    string background_color = 2;
+}
+
+// 公式节点
+message FormulaNode {
+    // latex内容
+    WordNode latex_content = 1;
+    // 图片规格
+    ImgInlineCfg image_spec = 2;
+    // 图片链接
+    string img_url = 3;
+}
+
+// 链接富文本
+message LinkNodeRich {
+    // 内容
+    oneof content {
+        // 文本
+        WordNode word = 1;
+        // 表情
+        EmoteNode emote = 2;
+    }
+}
+
+// 点击气泡
+message ClickBubble {
+    // 文本
+    string text = 1;
+    // 按钮
+    string button = 2;
+    // 图标
+    string icon = 3;
+    // 链接
+    string url = 4;
+    // 气泡类型
+    int32 bubble_type = 5;
+    // 业务id
+    string biz_id = 6;
 }

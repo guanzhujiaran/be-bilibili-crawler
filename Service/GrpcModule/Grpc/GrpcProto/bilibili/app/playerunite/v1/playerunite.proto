@@ -4,12 +4,38 @@ package bilibili.app.playerunite.v1;
 
 import "bilibili/playershared/playershared.proto";
 
+import "bilibili/app/overseas/ad/v1/ad.proto";
+
 import "google/protobuf/any.proto";
 
 // 统一视频url
 service Player {
     // 视频地址
     rpc PlayViewUnite (PlayViewUniteReq) returns (PlayViewUniteReply);
+    // 播放附加信息
+    rpc PlayAddition (PlayAdditionReq) returns (PlayAdditionReply);
+    // 播放半屏频道
+    rpc PlayHalfChannels (PlayHalfChannelsReq) returns (PlayHalfChannelsReply);
+    // 清晰度切换事件
+    rpc PlayQnEvent (PlayQnEventReq) returns (PlayQnEventReply);
+}
+
+// 附加信息类型
+enum AdditionType {
+    // 未知
+    ADDITION_TYPE_UNKNOWN = 0;
+    // ugc 视频详情物料
+    ADDITION_TYPE_UGC_VIEW_INFO_MATERIAL = 1;
+    // 翻译引导
+    ADDITION_TYPE_TRANSLATION_INTRO = 2;
+}
+
+// 资源类型
+enum ResourceType {
+    // 默认
+    RESOURCE_TYPE_DEFAULT = 0;
+    // 图文
+    RESOURCE_TYPE_OPUS = 1;
 }
 
 // 
@@ -34,6 +60,12 @@ message PlayViewUniteReply {
     bilibili.playershared.ViewInfo view_info = 9;
     // 
     bilibili.playershared.FragmentVideo fragment_video = 10;
+    // 视频控制信息
+    bilibili.playershared.VideoCtrl video_ctrl = 11;
+    // 多语言信息
+    bilibili.playershared.Language language = 12;
+    // 海外广告信息
+    bilibili.app.overseas.ad.v1.OverseasAdInfo overseas_ad_info = 13;
 }
 
 // 
@@ -54,4 +86,89 @@ message PlayViewUniteReq {
     bilibili.playershared.Fragment fragment = 7;
     // 
     string from_scene = 8;
+    // 播放控制
+    bilibili.playershared.PlayCtrl play_ctrl = 9;
+}
+
+// 播放附加信息请求
+message PlayAdditionReq {
+    // 附加信息类型
+    repeated AdditionType types = 1;
+}
+
+// 播放附加信息回复
+message PlayAdditionReply {
+    // ugc 视频详情物料
+    UgcViewInfoMaterial ugc_view_info_material = 1;
+    // 翻译引导
+    TranslationIntro translation_intro = 2;
+}
+
+// 播放半屏频道请求
+message PlayHalfChannelsReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 视频cid
+    int64 cid = 2;
+    // 补充信息
+    map<string, string> extra_content = 3;
+    // 来源场景
+    string from_scene = 4;
+    // 资源类型
+    ResourceType resource_type = 5;
+    // 播放模式
+    string play_mode = 6;
+}
+
+// 播放半屏频道回复
+message PlayHalfChannelsReply {
+    // 半屏设置组
+    repeated bilibili.playershared.SettingGroup groups = 1;
+}
+
+// 清晰度切换事件请求
+message PlayQnEventReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 视频cid
+    int64 cid = 2;
+    // 清晰度
+    int64 qn = 3;
+    // 可看清晰度原因
+    bilibili.playershared.CanWatchQnReason reason = 4;
+    // 上报参数
+    map<string, string> report_params = 5;
+}
+
+// 清晰度切换事件回复
+message PlayQnEventReply {}
+
+// ugc 视频详情物料
+message UgcViewInfoMaterial {
+    // 标题
+    string title = 1;
+    // 按钮文案
+    string btn_text = 2;
+    // 按钮跳转链接
+    string btn_url = 3;
+    // 按钮跳转类型
+    int32 btn_jump_type = 4;
+    // 描述文案
+    string desc_text = 5;
+    // 描述跳转链接
+    string desc_url = 6;
+    // 上报参数
+    map<string, string> track = 7;
+    // 角标文案
+    string badge_text = 8;
+    // ab 实验参数
+    map<string, string> ab_parameter = 9;
+}
+
+// 翻译引导
+message TranslationIntro {
+    // ai 翻译引导
+    string ai_translation_intro = 1;
+    // 多语言翻译引导
+    string multi_translation_intro = 2;
 }

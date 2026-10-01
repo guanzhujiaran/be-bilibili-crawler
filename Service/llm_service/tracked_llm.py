@@ -19,13 +19,11 @@ TrackedChatOpenAI 在 invoke / ainvoke 时自动记录：
 ``set_state_change_handler`` 注入的回调交给实例池处理 —— 统计层不认识池，
 池也不需要知道统计口径，各管一件事。
 
-进程内并发控制按「槽位」粒度：槽位 = 一条云端 LLM 配置
-（base_url + model_name + token），同一槽位同时最多 1 个在途请求，
-不同槽位互不阻塞 —— 见 :class:`_SlotLockRegistry`。
-跨进程的同一约束由 redis 槽位租约（``Service/llm_service/slot.py``）承担。
+请求节流不做任何加锁：每个实例构建时挂一个 langchain 的
+``InMemoryRateLimiter``（见 ``pool.py``），``invoke`` / ``ainvoke`` 会自动先取令牌、
+超速时阻塞等待，因此并发控制交给 langchain 自己的限流器。
 """
 
-import asyncio
 import hashlib
 import time
 from collections import deque
@@ -67,38 +65,12 @@ def slot_fingerprint(
 ) -> str:
     """槽位指纹：``sha256("base_url|model_name|token")`` 取前 16 位十六进制。
 
-    槽位 = 一条云端 LLM 配置；指纹是它在 redis key / 进程内锁里的身份。
-    刻意用 sha256 而不是明文拼接：apikey 不能落到 redis key、日志或报错信息里。
+    槽位 = 一条云端 LLM 配置；指纹是它的运行时身份（删除配置、统计观测等按它定位）。
+    刻意用 sha256 而不是明文拼接：apikey 不能落到日志或报错信息里。
     """
     raw = f"{base_url or ''}|{model_name or ''}|{_secret_value(token)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
-
-class _SlotLockRegistry:
-    """按槽位指纹维护进程内调用锁：同一槽位串行，不同槽位互不阻塞。
-
-    替代原先「所有 LLM 共享一把全局锁」的做法 —— 那把锁把多配置并行彻底抹平
-    （配置再多也只有 1 个在途请求）。槽位粒度才与「同一 (base_url, model, token)
-    同时最多 1 个请求」的约束精确对应。
-
-    线程/协程安全：本服务运行在 asyncio 单线程事件循环中，``lock_for`` 内无 await，
-    读写不会被其他协程打断。
-    """
-
-    __slots__ = ("_locks",)
-
-    def __init__(self) -> None:
-        self._locks: dict[str, asyncio.Lock] = {}
-
-    def lock_for(self, fingerprint: str) -> asyncio.Lock:
-        lock = self._locks.get(fingerprint)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[fingerprint] = lock
-        return lock
-
-
-_slot_locks = _SlotLockRegistry()
 
 #: 健康状态迁移回调：入参为「实例、迁移前状态、迁移后状态」。
 #: 统计层不负责「不可恢复 → 删除配置」这类副作用，统一交给实例池注入的处理函数。
@@ -416,9 +388,10 @@ class TrackedChatOpenAI(ChatOpenAI):
 
     @property
     def slot_fingerprint(self) -> str:
-        """本实例对应槽位的指纹（base_url + model_name + token），用于进程内锁。
+        """本实例对应槽位的指纹（base_url + model_name + token）。
 
-        与 ``Service/llm_service/pool.py`` 计算槽位指纹的口径保持一致。
+        与 ``Service/llm_service/pool.py`` 计算槽位指纹的口径保持一致，
+        用于「不可恢复 → 删除配置」时定位实例。
         """
         return slot_fingerprint(
             self.openai_api_base, self.model_name, self.openai_api_key
@@ -521,8 +494,7 @@ class TrackedChatOpenAI(ChatOpenAI):
         self._stats.record_start()
         start = time.monotonic()
         try:
-            # 同步 invoke 路径无法 await 锁，且本服务 LLM 调用均为异步，
-            # 故同步路径直接发起请求（全局锁仅作用于异步 ainvoke）。
+            # 不加锁：请求节流由实例自身的 langchain rate limiter 负责。
             result = super().invoke(input, config, stop=stop, **kwargs)
         except Exception as e:
             self._record_call_failure(
@@ -544,13 +516,12 @@ class TrackedChatOpenAI(ChatOpenAI):
     ) -> AIMessage:
         self._stats.record_start()
         start = time.monotonic()
-        # 按槽位加锁：同一 (base_url, model, token) 同时最多 1 个在途请求，
-        # 不同槽位可以并行（多配置的吞吐才是 ×N 而不是被全局锁压成 1）。
+        # 不加锁：请求节流由实例自身的 langchain rate limiter 负责，
+        # 超速时它会在取令牌处自动阻塞等待。
         try:
-            async with _slot_locks.lock_for(self.slot_fingerprint):
-                result: AIMessage = await super().ainvoke(
-                    input, config, stop=stop, **kwargs
-                )
+            result: AIMessage = await super().ainvoke(
+                input, config, stop=stop, **kwargs
+            )
         except Exception as e:
             self._record_call_failure(
                 e, elapsed_seconds=time.monotonic() - start, level="ERROR"

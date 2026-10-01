@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package bilibili.app.coldstart.v1;
+
+import "google/protobuf/any.proto";
+
+// 冷启动（来自 APK com.bapis.bilibili.app.coldstart.v1）
+//
+// 说明：x-bili-metadata-recent-region 首次就是在本接口
+// （bilibili.app.coldstart.v1.ColdStart/GetColdStartDeferredData）的响应里下发的，
+// 客户端只做"读取 + 缓存 + 回带"，自身不生成（详见 Utils/GrpcUtils/metadata/region_store.py）。
+service ColdStart {
+    // 冷启动延迟数据（一次请求批量拉取多个业务的开屏数据）
+    rpc GetColdStartDeferredData (GetColdStartDataReq) returns (GetColdStartDataResp);
+}
+
+// 冷启动数据 - 请求
+message GetColdStartDataReq {
+    // 各业务的请求项
+    repeated ColdStartBizReq req_list = 1;
+    // HTTP 公共参数
+    HttpCommon http_common = 2;
+}
+
+// 冷启动数据 - 响应
+message GetColdStartDataResp {
+    // 各业务的响应项
+    repeated ColdStartBizResp resp_list = 1;
+}
+
+// 单个业务的请求项
+message ColdStartBizReq {
+    // 业务标识
+    string biz_key = 1;
+    // 业务参数
+    google.protobuf.Any biz_param = 2;
+}
+
+// 单个业务的响应项
+message ColdStartBizResp {
+    // 业务标识
+    string biz_key = 1;
+    // 业务响应数据
+    google.protobuf.Any biz_resp = 2;
+    // 状态
+    oneof status {
+        // gRPC 状态
+        GrpcStatus grpc_status = 3;
+        // HTTP 状态
+        HttpStatus http_status = 4;
+    }
+}
+
+// gRPC 状态
+message GrpcStatus {
+    // 状态码
+    int32 code = 1;
+    // 状态信息
+    string message = 2;
+}
+
+// HTTP 状态
+message HttpStatus {
+    // 状态码
+    int32 code = 1;
+    // 状态信息
+    string message = 2;
+}
+
+// HTTP 公共参数
+message HttpCommon {
+    // 请求头
+    map<string, string> headers = 1;
+    // 请求参数
+    map<string, string> params = 2;
+}

@@ -182,6 +182,14 @@ message CommandDm {
     string extra = 9;
     // 弹幕id str类型
     string idStr = 10;
+    // 类型
+    int32 type = 11;
+    // 属性位
+    int32 attr = 12;
+    // 是否自动创建
+    bool auto_create = 13;
+    // 倒计时
+    int32 countdown = 14;
 }
 
 // 弹幕ai云屏蔽列表
@@ -223,6 +231,16 @@ message DanmakuElem {
     string animation = 22;
     // 大会员专属颜色
     DmColorfulType colorful = 24;
+    // 高赞数
+    int64 like_count = 14;
+    // 扩展json数据
+    string extra = 23;
+    // 弹幕类型
+    int32 type = 25;
+    // 评论区id
+    int64 oid = 26;
+    // 弹幕来源
+    int32 dm_from = 27;
 }
 
 // 弹幕ai云屏蔽条目
@@ -415,6 +433,10 @@ message DmSegMobileReply {
     // 弹幕云屏蔽ai评分值
     DanmakuAIFlag ai_flag = 3;
     repeated DmColorful colorfulSrc = 5;
+    // 分段规则
+    repeated int64 segment_rules = 4;
+    // 上下文来源
+    string context_src = 6;
 }
 
 // 获取弹幕-请求
@@ -525,6 +547,106 @@ message DmViewReply {
     repeated string activity_meta = 18;
     //
     repeated PostPanelV2 post_panel2 = 19;
+    // 弹幕蒙版墙
+    repeated DmMaskWall dm_mask_wall = 20;
+    // 应援弹幕
+    DmHerdView dm_herd = 21;
+    // 互动弹幕
+    Command command = 22;
+    // 扩展kv
+    string kv = 23;
+    // 子视图
+    repeated DmSubView sub_views = 24;
+    // QoE信息
+    QoeInfo qoe = 25;
+    // 弹幕限制
+    DMRestrict dm_restrict = 26;
+}
+
+// 互动弹幕集合
+message Command {
+    // 互动弹幕列表
+    repeated CommandDm command_dms = 1;
+}
+
+// 应援弹幕视图
+message DmHerdView {
+    // 展示应援弹幕数
+    int32 display_herd_dm_num = 1;
+    // 应援弹幕列表
+    repeated ViewHerdDmElem herd_dms = 2;
+}
+
+// 应援弹幕条目
+message ViewHerdDmElem {
+    // 起始进度
+    int32 start_progress = 1;
+    // 结束进度
+    int32 end_progress = 2;
+    // 起始数量
+    int32 herd_start_cnt = 3;
+    // 结束数量
+    int32 herd_end_cnt = 4;
+    // 应援文案
+    string herd_msg = 5;
+    // 正则规则
+    string regex_rule = 6;
+}
+
+// 弹幕蒙版墙
+message DmMaskWall {
+    // 起始时间
+    int64 start = 1;
+    // 结束时间
+    int64 end = 2;
+    // 业务类型
+    int32 biz_type = 3;
+    // 内容类型
+    int32 content_type = 4;
+    // 内容
+    string content = 5;
+    // 内容列表
+    repeated DmMaskWallContent contents = 6;
+}
+
+// 蒙版墙内容
+message DmMaskWallContent {
+    // 类型
+    int32 type = 1;
+    // 内容
+    string content = 2;
+}
+
+// 弹幕限制
+message DMRestrict {
+    // 限制时间段列表
+    repeated DMRestrictPeriod periods = 1;
+}
+
+// 限制时间段
+message DMRestrictPeriod {
+    // 起始时间
+    int64 start = 1;
+    // 结束时间
+    int64 end = 2;
+}
+
+// 子视图
+message DmSubView {
+    // 评论区id
+    int64 oid = 1;
+    // 父id
+    int64 pid = 2;
+    // 类型
+    int32 type = 3;
+    // 二期弹幕面板
+    repeated PostPanelV2 post_panel2 = 4;
+}
+
+// QoE信息
+message QoeInfo {
+    // 信息
+    string info = 1;
 }
 
 // 客户端弹幕元数据-请求
@@ -574,6 +696,18 @@ message DmWebViewReply {
     repeated PostPanel post_panel = 13;
     //
     repeated string activity_meta = 14;
+    //
+    repeated PostPanelV2 post_panel2 = 15;
+    //
+    repeated DmSubView sub_views = 16;
+    //
+    QoeInfo qoe = 17;
+    //
+    repeated DmMaskWall mask_walls = 18;
+    //
+    DMRestrict dm_restrict = 19;
+    //
+    VideoSubtitle subtitle = 20;
 }
 
 //

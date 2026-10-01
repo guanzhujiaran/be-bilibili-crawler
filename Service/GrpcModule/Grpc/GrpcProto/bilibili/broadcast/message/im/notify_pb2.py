@@ -22,28 +22,37 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
+from bilibili.app.im.v1 import im_pb2 as bilibili_dot_app_dot_im_dot_v1_dot_im__pb2
 from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n*bilibili/broadcast/message/im/notify.proto\x12\x1d\x62ilibili.broadcast.message.im\x1a\x1bgoogle/protobuf/empty.proto\"s\n\tNotifyRsp\x12\x0b\n\x03uid\x18\x01 \x01(\x04\x12\x0b\n\x03\x63md\x18\x02 \x01(\x04\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12;\n\x0cpayload_type\x18\x04 \x01(\x0e\x32%.bilibili.broadcast.message.im.PLType\"\xd8\x02\n\x03Msg\x12\x12\n\nsender_uid\x18\x01 \x01(\x04\x12\x15\n\rreceiver_type\x18\x02 \x01(\x05\x12\x13\n\x0breceiver_id\x18\x03 \x01(\x04\x12\x12\n\ncli_msg_id\x18\x04 \x01(\x04\x12\x10\n\x08msg_type\x18\x05 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\x11\n\tmsg_seqno\x18\x07 \x01(\x04\x12\x11\n\ttimestamp\x18\x08 \x01(\x04\x12\x0f\n\x07\x61t_uids\x18\t \x03(\x04\x12\x12\n\nrecver_ids\x18\n \x03(\x04\x12\x0f\n\x07msg_key\x18\x0b \x01(\x04\x12\x12\n\nmsg_status\x18\x0c \x01(\r\x12\x12\n\nsys_cancel\x18\r \x01(\x08\x12\x15\n\ris_multi_chat\x18\x0e \x01(\r\x12\x16\n\x0ewithdraw_seqno\x18\x0f \x01(\x04\x12\x13\n\x0bnotify_code\x18\x10 \x01(\t\x12\x12\n\nmsg_source\x18\x11 \x01(\r\"G\n\nNotifyInfo\x12\x10\n\x08msg_type\x18\x01 \x01(\r\x12\x11\n\ttalker_id\x18\x02 \x01(\x04\x12\x14\n\x0csession_type\x18\x03 \x01(\r\"\xa1\x01\n\x0fReqServerNotify\x12\x15\n\rlastest_seqno\x18\x01 \x01(\x04\x12\x37\n\x0binstant_msg\x18\x02 \x01(\x0b\x32\".bilibili.broadcast.message.im.Msg\x12>\n\x0bnotify_info\x18\x03 \x01(\x0b\x32).bilibili.broadcast.message.im.NotifyInfo*6\n\x06PLType\x12\x15\n\x11\x45N_PAYLOAD_NORMAL\x10\x00\x12\x15\n\x11\x45N_PAYLOAD_BASE64\x10\x01*P\n\x05\x43mdId\x12\x15\n\x11\x45N_CMD_ID_INVALID\x10\x00\x12\x18\n\x14\x45N_CMD_ID_MSG_NOTIFY\x10\x01\x12\x16\n\x12\x45N_CMD_ID_KICK_OUT\x10\x02\x32[\n\x06Notify\x12Q\n\x0bWatchNotify\x12\x16.google.protobuf.Empty\x1a(.bilibili.broadcast.message.im.NotifyRsp0\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n*bilibili/broadcast/message/im/notify.proto\x12\x1d\x62ilibili.broadcast.message.im\x1a\x1b\x62ilibili/app/im/v1/im.proto\x1a\x1bgoogle/protobuf/empty.proto\"s\n\tNotifyRsp\x12\x0b\n\x03uid\x18\x01 \x01(\x04\x12\x0b\n\x03\x63md\x18\x02 \x01(\x04\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12;\n\x0cpayload_type\x18\x04 \x01(\x0e\x32%.bilibili.broadcast.message.im.PLType\"\xd8\x02\n\x03Msg\x12\x12\n\nsender_uid\x18\x01 \x01(\x04\x12\x15\n\rreceiver_type\x18\x02 \x01(\x05\x12\x13\n\x0breceiver_id\x18\x03 \x01(\x04\x12\x12\n\ncli_msg_id\x18\x04 \x01(\x04\x12\x10\n\x08msg_type\x18\x05 \x01(\x05\x12\x0f\n\x07\x63ontent\x18\x06 \x01(\t\x12\x11\n\tmsg_seqno\x18\x07 \x01(\x04\x12\x11\n\ttimestamp\x18\x08 \x01(\x04\x12\x0f\n\x07\x61t_uids\x18\t \x03(\x04\x12\x12\n\nrecver_ids\x18\n \x03(\x04\x12\x0f\n\x07msg_key\x18\x0b \x01(\x04\x12\x12\n\nmsg_status\x18\x0c \x01(\r\x12\x12\n\nsys_cancel\x18\r \x01(\x08\x12\x15\n\ris_multi_chat\x18\x0e \x01(\r\x12\x16\n\x0ewithdraw_seqno\x18\x0f \x01(\x04\x12\x13\n\x0bnotify_code\x18\x10 \x01(\t\x12\x12\n\nmsg_source\x18\x11 \x01(\r\"G\n\nNotifyInfo\x12\x10\n\x08msg_type\x18\x01 \x01(\r\x12\x11\n\ttalker_id\x18\x02 \x01(\x04\x12\x14\n\x0csession_type\x18\x03 \x01(\r\"\xa1\x01\n\x0fReqServerNotify\x12\x15\n\rlastest_seqno\x18\x01 \x01(\x04\x12\x37\n\x0binstant_msg\x18\x02 \x01(\x0b\x32\".bilibili.broadcast.message.im.Msg\x12>\n\x0bnotify_info\x18\x03 \x01(\x0b\x32).bilibili.broadcast.message.im.NotifyInfo\"H\n\x13\x46\x65tchMessageCommand\x12\x31\n\nsession_id\x18\x01 \x01(\x0b\x32\x1d.bilibili.app.im.v1.SessionId\"L\n\x17UpdateSessionOneCommand\x12\x31\n\nsession_id\x18\x01 \x01(\x0b\x32\x1d.bilibili.app.im.v1.SessionId\"J\n\x15UpdateChatInfoCommand\x12\x31\n\nsession_id\x18\x01 \x01(\x0b\x32\x1d.bilibili.app.im.v1.SessionId\"c\n\x1d\x43hatPushSettingChangedCommand\x12\x31\n\nsession_id\x18\x01 \x01(\x0b\x32\x1d.bilibili.app.im.v1.SessionId\x12\x0f\n\x07setting\x18\x02 \x01(\x08*6\n\x06PLType\x12\x15\n\x11\x45N_PAYLOAD_NORMAL\x10\x00\x12\x15\n\x11\x45N_PAYLOAD_BASE64\x10\x01*P\n\x05\x43mdId\x12\x15\n\x11\x45N_CMD_ID_INVALID\x10\x00\x12\x18\n\x14\x45N_CMD_ID_MSG_NOTIFY\x10\x01\x12\x16\n\x12\x45N_CMD_ID_KICK_OUT\x10\x02\x32[\n\x06Notify\x12Q\n\x0bWatchNotify\x12\x16.google.protobuf.Empty\x1a(.bilibili.broadcast.message.im.NotifyRsp0\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.broadcast.message.im.notify_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PLTYPE']._serialized_start=807
-  _globals['_PLTYPE']._serialized_end=861
-  _globals['_CMDID']._serialized_start=863
-  _globals['_CMDID']._serialized_end=943
-  _globals['_NOTIFYRSP']._serialized_start=106
-  _globals['_NOTIFYRSP']._serialized_end=221
-  _globals['_MSG']._serialized_start=224
-  _globals['_MSG']._serialized_end=568
-  _globals['_NOTIFYINFO']._serialized_start=570
-  _globals['_NOTIFYINFO']._serialized_end=641
-  _globals['_REQSERVERNOTIFY']._serialized_start=644
-  _globals['_REQSERVERNOTIFY']._serialized_end=805
-  _globals['_NOTIFY']._serialized_start=945
-  _globals['_NOTIFY']._serialized_end=1036
+  _globals['_PLTYPE']._serialized_start=1165
+  _globals['_PLTYPE']._serialized_end=1219
+  _globals['_CMDID']._serialized_start=1221
+  _globals['_CMDID']._serialized_end=1301
+  _globals['_NOTIFYRSP']._serialized_start=135
+  _globals['_NOTIFYRSP']._serialized_end=250
+  _globals['_MSG']._serialized_start=253
+  _globals['_MSG']._serialized_end=597
+  _globals['_NOTIFYINFO']._serialized_start=599
+  _globals['_NOTIFYINFO']._serialized_end=670
+  _globals['_REQSERVERNOTIFY']._serialized_start=673
+  _globals['_REQSERVERNOTIFY']._serialized_end=834
+  _globals['_FETCHMESSAGECOMMAND']._serialized_start=836
+  _globals['_FETCHMESSAGECOMMAND']._serialized_end=908
+  _globals['_UPDATESESSIONONECOMMAND']._serialized_start=910
+  _globals['_UPDATESESSIONONECOMMAND']._serialized_end=986
+  _globals['_UPDATECHATINFOCOMMAND']._serialized_start=988
+  _globals['_UPDATECHATINFOCOMMAND']._serialized_end=1062
+  _globals['_CHATPUSHSETTINGCHANGEDCOMMAND']._serialized_start=1064
+  _globals['_CHATPUSHSETTINGCHANGEDCOMMAND']._serialized_end=1163
+  _globals['_NOTIFY']._serialized_start=1303
+  _globals['_NOTIFY']._serialized_end=1394
 # @@protoc_insertion_point(module_scope)

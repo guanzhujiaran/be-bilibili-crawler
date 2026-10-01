@@ -3,6 +3,8 @@ syntax = "proto3";
 package bilibili.polymer.app.search.v1;
 
 import "bilibili/app/archive/middleware/v1/preload.proto";
+import "bilibili/broadcast/message/main/search.proto";
+import "bilibili/dagw/component/avatar/v1/avatar.proto";
 import "bilibili/pagination/pagination.proto";
 
 //
@@ -531,7 +533,89 @@ message Item {
         SearchBangumiCard bangumi = 38;
         //
         SearchSportInlineCard esports_inline = 39;
+        //
+        SearchHotBannerCard hot_banner = 40;
+        //
+        SearchSubjectCard subject = 41;
+        //
+        SearchDynamicCard dynamic_new = 42;
+        //
+        SearchArticleCard article_new = 43;
+        //
+        SearchPediaPicCard pedia_card_pic = 44;
+        //
+        SearchNPSCard nps_card = 45;
+        //
+        SearchChatGPTCard chat_gpt = 46;
+        //
+        SearchHotRecommend hot_recommend = 47;
+        //
+        SearchLiveMaster live_master = 48;
+        //
+        SearchLiveRoomTitle live_room_title = 49;
+        //
+        SearchLiveRoom live_room = 50;
+        //
+        SearchCheese cheese = 51;
+        //
+        SearchRelatedSearch related_search = 52;
+        //
+        SearchQACard qa_card = 53;
+        //
+        SearchDoubleColumnCard double_column = 54;
+        //
+        SearchUPRecommend up_recommend = 55;
     }
+    // 分发id
+    int64 spread_id = 56;
+    oneof card_item2 {
+        //
+        SearchCommentCard comment_card = 57;
+        //
+        SearchPlayListCard play_list_card = 58;
+        //
+        SearchSeriesCard series_card = 59;
+        //
+        SearchMusicCard music_card = 60;
+        //
+        SearchCommentClusterCard comment_cluster = 61;
+        //
+        SearchTimeLineCard time_line = 62;
+    }
+    // 用户行为
+    string user_act = 63;
+    oneof card_item3 {
+        //
+        SearchDoubleOpusCard double_opus = 64;
+        //
+        SearchOgvClusterCard ogv_cluster = 65;
+        //
+        SearchDigitalChatCard digital_chat = 66;
+        //
+        SearchAlienationCard alienation_card = 67;
+        //
+        SearchStarBannerCard star_banner = 68;
+        //
+        SearchActivityCard activity_card = 69;
+        //
+        SearchGiantCard article_giant_card = 70;
+        //
+        SearchGiantCard twitter_giant_card = 71;
+    }
+    // 是否横版封面
+    bool is_horizontal_cover = 72;
+    oneof card_item4 {
+        //
+        SearchAIChatCard ai_chat = 73;
+        //
+        SearchTribeeCard tribee_card = 74;
+    }
+    // 卡片分组id
+    int32 card_group_id = 75;
+    // 原始goto
+    string origin_goto = 76;
+    // 上报扩展
+    map<string, string> report_extra = 77;
 }
 
 //
@@ -924,6 +1008,22 @@ message SearchAllResponse {
     DisplayOption app_display_option = 12;
     //
     map<string, string> annotation = 13;
+    //
+    int64 page = 14;
+    // 宽屏自动填充
+    bool has_wide_auto_fill = 15;
+    // 是否新用户
+    int32 is_new_user = 16;
+    // OGV改版实验组
+    int32 ogv_revamp_exp_group = 17;
+    // 实际曝光比例
+    double real_exposure_ratio = 18;
+    // 筛选器
+    SearchFilter search_filter = 19;
+    // 全部双列
+    int64 all_double_column = 20;
+    // 卡片分组规则
+    map<int32, CardGroupRule> card_group_rules = 21;
 }
 
 //
@@ -1134,6 +1234,14 @@ message SearchByTypeRequest {
     bilibili.pagination.Pagination pagination = 7;
     //
     bilibili.app.archive.middleware.v1.PlayerArgs player_args = 8;
+    // 来源
+    string from_source = 9;
+    // 来源seid
+    string from_seid = 10;
+    // 筛选map
+    map<string, string> filter_map = 11;
+    // 用户行为
+    string user_act = 12;
 }
 
 //
@@ -2327,4 +2435,1032 @@ message WatchLater {
     int64 aid = 1;
     //
     string bvid = 2;
+}
+
+// 热门横幅卡
+message SearchHotBannerCard {
+    // 标题
+    string title = 1;
+    // 描述
+    string description = 2;
+    // 图标
+    string icon = 3;
+    // 夜间图标
+    string icon_night = 4;
+    // 查看更多文案
+    string more_text = 5;
+    // 查看更多链接
+    string more_url = 6;
+}
+
+// 话题卡
+message SearchSubjectCard {
+    // id
+    int64 id = 1;
+    // 标题
+    string title = 2;
+    // 描述
+    string desc = 3;
+    // 封面
+    string cover = 4;
+    // 角标列表
+    repeated ReasonStyle badges = 5;
+    // 按钮
+    WatchButton button = 6;
+    // 条目列表
+    repeated TopicItem items = 7;
+    // 热门文案
+    string hot_text = 8;
+    // 卡片布局
+    CardLayout card_layout = 9;
+    // 反馈
+    Feedback feedback = 10;
+    // 查看更多文案
+    string more_text = 11;
+    // 查看更多链接
+    string more_url = 12;
+    // 话题类型
+    string topic_type = 13;
+}
+
+// 百科图片卡
+message SearchPediaPicCard {
+    // 封面
+    string cover = 1;
+    // 封面类型
+    int32 cover_type = 2;
+    // 百科卡片UI
+    PediaCardUI pedia_card_ui = 3;
+    // 图片导航列表
+    repeated PicNavigation pic_navigation = 4;
+    // 卡片布局
+    CardLayout card_layout = 5;
+}
+
+// NPS卡
+message SearchNPSCard {
+    // 标题
+    string title = 1;
+    // 选项列表
+    repeated Option options = 2;
+    // 卡片布局
+    CardLayout card_layout = 3;
+    // 选项
+    message Option {
+        // 选项文本
+        string text = 1;
+        // 选项分值
+        int32 score = 2;
+    }
+}
+
+// ChatGPT卡
+message SearchChatGPTCard {
+    // 标题
+    string title = 1;
+    // 会话id
+    string session_id = 2;
+    // 是否自动展开
+    bool auto_expand = 3;
+    // 免责声明
+    Disclaimer disclaimer = 4;
+    // Beta文本
+    string beta_text = 5;
+    // Beta文本颜色
+    Colors beta_text_color = 6;
+    // 日间背景
+    string background_light = 7;
+    // 夜间背景
+    string background_night = 8;
+    // 日间加载图标列表
+    repeated string loading_icon_light = 9;
+    // 夜间加载图标列表
+    repeated string loading_icon_night = 10;
+    // 反馈
+    Feedback feedback = 11;
+}
+
+// 热门推荐卡
+message SearchHotRecommend {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+}
+
+// 直播主卡
+message SearchLiveMaster {
+    // 房间号
+    int64 roomid = 1;
+    // 用户mid
+    int64 mid = 2;
+    // 名称
+    string name = 3;
+    // 标题
+    string title = 4;
+    // 翻译标题
+    string translated_title = 5;
+    // 翻译状态
+    int64 translation_status = 6;
+    // 封面
+    string cover = 7;
+    // 用户封面
+    string ucover = 8;
+    // 跳转链接
+    string uri = 9;
+    // 直播链接
+    string live_link = 10;
+    // 直播状态
+    int32 live_status = 11;
+    // 在线人数
+    int32 online = 12;
+    // 分类名
+    string cate_name = 13;
+    // 父分类名
+    string cate_parent_name = 14;
+    // 关注数
+    int64 attentions = 15;
+    // 是否关注
+    int32 is_atten = 16;
+    // 等级
+    int32 level = 17;
+    // 等级颜色
+    int32 level_color = 18;
+    // 认证类型
+    int32 verify_type = 19;
+    // 认证描述
+    string verify_desc = 20;
+    // 角标
+    ReasonStyle badge = 21;
+    // 荣耀信息
+    GloryInfo glory_info = 22;
+    // 观看展示
+    WatchedShow watched_show = 23;
+    // 三点列表
+    repeated ThreePoint three_point = 24;
+    // NFT暗标
+    string nft_damrk = 25;
+    // NFT头像(新)
+    bool face_nft_new = 26;
+    // 头像
+    bilibili.dagw.component.avatar.v1.AvatarItem avatar_info = 27;
+}
+
+// 直播间标题卡
+message SearchLiveRoomTitle {
+    // 总数
+    int32 total_count = 1;
+}
+
+// 直播间卡
+message SearchLiveRoom {
+    // 房间号
+    int64 roomid = 1;
+    // 用户mid
+    int64 mid = 2;
+    // 名称
+    string name = 3;
+    // 标题
+    string title = 4;
+    // 翻译标题
+    string translated_title = 5;
+    // 翻译状态
+    int64 translation_status = 6;
+    // 封面
+    string cover = 7;
+    // 跳转链接
+    string uri = 8;
+    // 直播链接
+    string live_link = 9;
+    // 直播状态
+    int32 live_status = 10;
+    // 在线人数
+    int32 online = 11;
+    // 分区名
+    string area_v2_name = 12;
+    // 短号
+    int64 short_id = 13;
+    // goto
+    string goto = 14;
+    // 参数
+    string param = 15;
+    // 角标
+    ReasonStyle badge = 16;
+    // 观看展示
+    WatchedShow watched_show = 17;
+    // 三点列表
+    repeated ThreePoint three_point = 18;
+}
+
+// 课程卡
+message SearchCheese {
+    // 课程id
+    int64 season_id = 1;
+    // 标题
+    string title = 2;
+    // 翻译标题
+    string translated_title = 3;
+    // 翻译状态
+    int64 translation_status = 4;
+    // 封面
+    string cover = 5;
+    // 名称
+    string name = 6;
+    // 展示描述1
+    string show_card_desc_1 = 7;
+    // 展示描述2
+    string show_card_desc_2 = 8;
+    // 观看内容
+    string view_content = 9;
+    // 跳转链接
+    string uri = 10;
+    // 角标列表
+    repeated ReasonStyle badges = 11;
+    // 图标类型
+    int32 icon_type = 12;
+    // 分享来源
+    string share_from = 13;
+    // 卡片布局
+    CardLayout card_layout = 14;
+    // 反馈
+    Feedback feedback = 15;
+    // 三点列表
+    repeated ThreePoint three_point = 16;
+}
+
+// 相关搜索卡
+message SearchRelatedSearch {
+    // 标题
+    string title = 1;
+    // 相关查询列表
+    repeated RelatedQuery related_query_list = 2;
+    // 负反馈
+    NegativeFeedback negative_feedback = 3;
+    // 卡片布局
+    CardLayout card_layout = 4;
+}
+
+// 相关查询
+message RelatedQuery {
+    // 查询词
+    string query = 1;
+    // 链接
+    string url = 2;
+    // 图标
+    string icon = 3;
+    // 夜间图标
+    string icon_night = 4;
+    // 图标类型
+    int64 icon_type = 5;
+    // 推荐理由
+    string recommend_reason = 6;
+}
+
+// 负反馈
+message NegativeFeedback {
+    // 反馈标题
+    string feedback_title = 1;
+    // 反馈理由标题
+    string feedback_reason_title = 2;
+    // 提交文案
+    string submit_text = 3;
+    // 提交成功文案
+    string submit_success_text = 4;
+    // 反馈列表
+    repeated NegativeFeedbackItem feedback_list = 5;
+    // 是否展示反馈
+    bool display_feedback = 6;
+    // 吐司时长
+    int64 toast_time = 7;
+    // 默认词反馈标题
+    string default_words_feedback_title = 8;
+    // 反馈标题V2
+    string feedback_title_v2 = 9;
+    // 隐藏搜索发现文案
+    string hide_search_discover_text = 10;
+    // 反馈条目
+    message NegativeFeedbackItem {
+        // 文本
+        string text = 1;
+        // 排序
+        int64 sort_index = 2;
+        // 是否用户填写
+        bool is_user_fill = 3;
+        // 用户填写标题
+        string user_fill_title = 4;
+        // 用户填写限制
+        int64 user_fill_limit = 5;
+    }
+}
+
+// 问答卡
+message SearchQACard {
+    // 标题
+    string title = 1;
+    // 会话id
+    string session_id = 2;
+    // 结果
+    bilibili.broadcast.message.main.ChatResult result = 3;
+    // 是否自动展开
+    bool auto_expand = 4;
+    // 免责声明
+    Disclaimer disclaimer = 5;
+    // Beta文本
+    string beta_text = 6;
+    // Beta文本颜色
+    Colors beta_text_color = 7;
+    // 日间背景
+    string background_light = 8;
+    // 夜间背景
+    string background_night = 9;
+    // 日间加载图标列表
+    repeated string loading_icon_light = 10;
+    // 夜间加载图标列表
+    repeated string loading_icon_night = 11;
+    // 反馈
+    Feedback feedback = 12;
+}
+
+// 免责声明
+message Disclaimer {
+    // 标题
+    string title = 1;
+    // 条目列表
+    repeated Item list = 2;
+    // 条目
+    message Item {
+        // 文本
+        string text = 1;
+    }
+}
+
+// 双列卡
+message SearchDoubleColumnCard {
+    // 标题
+    string title = 1;
+    // 描述
+    string desc = 2;
+    // 封面
+    string cover = 3;
+    // 作者
+    string author = 4;
+    // 用户mid
+    int64 mid = 5;
+    // 头像
+    string face = 6;
+    // 时长
+    string duration_ = 7;
+    // 发布时间
+    int64 ptime = 8;
+    // 播放数
+    int32 play = 9;
+    // 弹幕数
+    int32 danmaku = 10;
+    // 宽高比
+    int32 aspect_ratio = 11;
+    // 展示描述1
+    string show_card_desc_1 = 12;
+    // 展示描述2
+    string show_card_desc_2 = 13;
+    // 观看内容
+    string view_content = 14;
+    // 图标类型
+    int32 icon_type = 15;
+    // 分享
+    Share share = 16;
+    // 反馈
+    Feedback feedback = 17;
+    // 三点列表
+    repeated ThreePoint three_point = 18;
+}
+
+
+// UP推荐卡
+message SearchUPRecommend {
+    // id
+    int64 id = 1;
+    // 标题
+    string title = 2;
+    // 是否展示标题
+    bool show_title = 3;
+    // 条目列表
+    repeated UPRecommendItem items = 4;
+    // 卡片样式
+    int32 card_style = 5;
+    // 查看更多文案
+    string more_text = 6;
+    // 查看更多链接
+    string more_url = 7;
+    // 是否展示关注按钮
+    int32 show_follow_button = 8;
+    // 关注按钮样式
+    int32 follow_button_style = 9;
+}
+
+// UP推荐条目
+message UPRecommendItem {
+    // 用户mid
+    int64 mid = 1;
+    // 名称
+    string name = 2;
+    // 分享来源
+    string share_from = 11;
+    // 分享副标题
+    string share_subtitle = 12;
+    // 短链接
+    string short_link = 13;
+    // 分享目标
+    ShareTo share_to = 14;
+    // 稿件id
+    int64 ep_id = 15;
+    // season_id
+    int32 season_id = 16;
+    // season标题
+    string season_title = 17;
+    // 房间号
+    int64 room_id = 18;
+    // 分区名
+    string area_name = 19;
+}
+
+// 评论卡
+message SearchCommentCard {
+    // 用户mid
+    int64 mid = 1;
+    // 名称
+    string name = 2;
+    // 头像信息
+    bilibili.dagw.component.avatar.v1.AvatarItem avatar_info = 3;
+    // 标题
+    string title = 4;
+    // 内容
+    string content = 5;
+    // 前缀
+    string prefix = 6;
+    // 回复文本
+    string reply_text = 7;
+    // 点赞数
+    int64 like = 8;
+    // 发布时间
+    string pub_time = 9;
+    // 行下标
+    int64 row = 10;
+    // 角标
+    string badge = 11;
+    // UP跳转链接
+    string up_uri = 12;
+    // 图标
+    string icon = 13;
+    // 夜间图标
+    string icon_night = 14;
+}
+
+// 播单卡
+message SearchPlayListCard {
+    // 标题
+    string title = 1;
+    // 稿件列表
+    repeated AvItem av_items = 2;
+    // 底部按钮
+    BottomButton bottom_button = 3;
+    // 展示描述1
+    string show_card_desc_1 = 4;
+    // 展示描述2
+    string show_card_desc_2 = 5;
+    // 是否隐藏标题
+    int32 is_hide_title = 6;
+    // 内联数据
+    SearchInlineData inline_data = 7;
+    // 反馈
+    Feedback feedback = 8;
+}
+
+// 合集卡
+message SearchSeriesCard {
+    // 标题
+    string title = 1;
+    // 稿件列表
+    repeated AvItem av_items = 2;
+    // 底部按钮
+    BottomButton bottom_button = 3;
+    // 展示描述1
+    string show_card_desc_1 = 4;
+    // 展示描述2
+    string show_card_desc_2 = 5;
+    // 是否隐藏标题
+    int32 is_hide_title = 6;
+    // 内联数据
+    SearchInlineData inline_data = 7;
+    // 反馈
+    Feedback feedback = 8;
+}
+
+// 音乐卡
+message SearchMusicCard {
+    // 标题
+    string title = 1;
+    // 作者
+    string author = 2;
+    // 封面
+    string cover = 3;
+    // 描述
+    string desc = 4;
+    // 角标
+    string badge = 5;
+    // 展示描述1
+    string show_card_desc_1 = 6;
+    // 展示描述2
+    string show_card_desc_2 = 7;
+    // 观看按钮
+    WatchButton watch_button = 8;
+    // 新歌标签
+    ReasonStyle new_rec_tag = 9;
+    // 反馈
+    Feedback feedback = 10;
+}
+
+// 评论聚合卡
+message SearchCommentClusterCard {
+    // 标题
+    string title = 1;
+    // 条目列表
+    repeated Comment items = 2;
+    // 是否更多
+    bool is_more = 3;
+    // 更多文案
+    string more_text = 4;
+}
+
+// 评论条目
+message Comment {
+    // 评论id
+    int64 id = 1;
+    // 用户mid
+    int64 mid = 2;
+    // 名称
+    string name = 3;
+    // 头像
+    string face = 4;
+    // 内容
+    string content = 5;
+    // 行下标
+    int64 row = 6;
+    // 点赞数
+    int64 like = 7;
+    // 跳转链接
+    string uri = 8;
+    // UP跳转链接
+    string up_uri = 9;
+}
+
+// 时间线卡
+message SearchTimeLineCard {
+    // 时间线id
+    int64 time_line_id = 1;
+    // 时间线标题
+    string time_line_title = 2;
+    // 开始时间
+    int64 start_time = 3;
+    // 结束时间
+    int64 end_time = 4;
+    // 事件列表
+    repeated TimeLineEvents time_line_events = 5;
+    // 是否更多
+    bool has_more = 6;
+    // 观看按钮
+    WatchButton watch_button = 7;
+}
+
+// 时间线事件
+message TimeLineEvents {
+    // 事件id
+    int64 event_id = 1;
+    // 标题
+    string title = 2;
+    // 时间描述
+    string time_desc = 3;
+    // 跳转链接
+    string jump_link = 4;
+}
+
+// 双列图文卡
+message SearchDoubleOpusCard {
+    // 标题
+    string title = 1;
+    // 条目列表
+    repeated DoubleOpusItem item = 2;
+    // 观看按钮
+    WatchButton watch_button = 3;
+}
+
+// 图文条目
+message DoubleOpusItem {
+    // id
+    int64 id = 1;
+    // 标题
+    string title = 2;
+    // 用户名
+    string uname = 3;
+    // 用户mid
+    int64 mid = 4;
+    // 封面
+    string cover = 5;
+    // 封面数
+    int64 cover_count = 6;
+    // 图片宽
+    int64 img_w = 7;
+    // 图片高
+    int64 img_h = 8;
+    // 跳转链接
+    string jump_url = 9;
+    // 类型
+    int32 type = 10;
+}
+
+// OGV聚合卡
+message SearchOgvClusterCard {
+    // 标题
+    string title = 1;
+    // 单卡
+    Item single_card = 2;
+    // 关联
+    OgvClusterCardRelate relate = 3;
+    // 内联标题样式
+    int32 inline_title_style = 4;
+}
+
+// OGV聚合关联
+message OgvClusterCardRelate {
+    // 标题
+    string title = 1;
+    // 条目列表
+    repeated DetailsRelationItem items = 2;
+    // 展示行数
+    int64 show_lines = 3;
+    // 是否需要排序
+    int32 need_order = 4;
+    // 更多搜索类型
+    int32 more_search_type = 5;
+    // 更多链接
+    string more_url = 6;
+    // 额外词列表
+    repeated ExtraWord extra_word_list = 7;
+}
+
+// 额外词
+message ExtraWord {
+    // 第一词
+    string first_word = 1;
+    // 第二词列表
+    repeated string second_word = 2;
+}
+
+// 数字人聊天卡
+message SearchDigitalChatCard {
+    // 标题
+    string title = 1;
+    // 观看按钮
+    WatchButton watch_button = 2;
+}
+
+// 异化卡
+message SearchAlienationCard {
+    // 封面
+    string cover = 1;
+    // 封面类型
+    int32 cover_type = 2;
+    // 封面图高
+    int64 cover_pic_height = 3;
+    // 折叠标题
+    string fold_title = 4;
+    // 跳转链接
+    string jump_url = 5;
+    // 卡片UI
+    CardUI card_ui = 6;
+    // 倒计时信息
+    CountdownInfo countdown_info = 7;
+}
+
+// 卡片UI
+message CardUI {
+    // 模块颜色
+    string module_color = 1;
+    // 蒙层颜色
+    string mask_color_value = 2;
+    // 蒙层透明度
+    string mask_opacity = 3;
+}
+
+// 倒计时信息
+message CountdownInfo {
+    // 倒计时时间
+    int64 countdown_time = 1;
+    // 倒计时跳转链接
+    string countdown_jump_url = 2;
+    // 倒计时数字颜色
+    string countdown_num_color = 3;
+    // 倒计时数字图片
+    string countdown_num_pic_url = 4;
+    // 倒计时图片
+    string countdown_pic_url = 5;
+    // 倒计时时间颜色
+    string countdown_time_color = 6;
+    // 按钮图片
+    string button_pic_url = 7;
+    // 按钮类型
+    int32 button_type = 8;
+    // 是否关注
+    int64 is_follow = 9;
+    // 状态
+    int64 state = 10;
+    // 预约按钮图片
+    string reserve_button_pic_url = 11;
+    // 预约信息
+    SearchReserveInfo reserve_info = 12;
+}
+
+// 预约信息
+message SearchReserveInfo {
+    // sid
+    int64 sid = 1;
+    // oid
+    string oid = 2;
+    // 类型
+    int32 type = 3;
+}
+
+// 星横幅卡
+message SearchStarBannerCard {
+    // 标题
+    string title = 1;
+    // 卡片描述
+    string card_desc = 2;
+    // 背景图
+    string bg_image = 3;
+    // 封面
+    string cover = 4;
+    // 角标
+    ReasonStyle badge = 5;
+}
+
+// 活动卡
+message SearchActivityCard {
+    // 标题
+    string title = 1;
+    // 描述
+    string desc = 2;
+    // 封面
+    string cover = 3;
+    // 理由
+    string reason = 4;
+    // 角标
+    ReasonStyle corner = 5;
+}
+
+// 巨幕卡
+message SearchGiantCard {
+    // 用户mid
+    int64 mid = 1;
+    // 名称
+    string name = 2;
+    // 头像
+    string face = 3;
+    // 内容
+    string content = 4;
+    // 图片列表
+    repeated string image_urls = 5;
+    // 点赞数
+    int32 like = 6;
+    // 回复数
+    int32 reply = 7;
+    // 播放数
+    int32 view = 8;
+    // 发布时间
+    string pub_time = 9;
+    // 反馈
+    Feedback feedback = 10;
+}
+
+// AI聊天卡
+message SearchAIChatCard {
+    // 标题
+    string title = 1;
+    // 会话id
+    string session_id = 2;
+    // 是否自动展开
+    bool auto_expand = 3;
+    // 反馈
+    Feedback feedback = 4;
+}
+
+// 创作激励卡
+message SearchTribeeCard {
+    // 激励计划id
+    int64 tribee_id = 1;
+    // 激励描述
+    string tribee_desc = 2;
+    // 标题
+    string title = 3;
+    // 展示描述
+    string show_card_desc = 4;
+    // 帖子列表
+    repeated TribeePostItem post_items = 5;
+    // 封面
+    string cover = 6;
+    // 封面样式
+    int32 cover_style = 7;
+    // 角标
+    ReasonStyle badge = 8;
+    // 按钮
+    WatchButton button = 9;
+    // 是否增强
+    bool is_enhanced = 10;
+    // 跳转链接
+    string uri = 11;
+    // 反馈
+    Feedback feedback = 12;
+    // 三点列表
+    repeated ThreePoint three_point = 13;
+}
+
+// 激励帖子条目
+message TribeePostItem {
+    // 标题
+    string title = 1;
+    // 参数
+    string param = 2;
+    // goto
+    string goto = 3;
+    // 跳转链接
+    string uri = 4;
+    // 回复数
+    int64 reply = 5;
+}
+// 卡片布局
+message CardLayout {
+    // 列数
+    int32 column = 1;
+    // 模块间距
+    float module_spacing = 2;
+    // 垂直内边距
+    float vertical_padding = 3;
+    // 紧凑封面宽
+    float compact_cover_width = 4;
+    // 紧凑封面高
+    float compact_cover_height = 5;
+    // 背景封面高
+    float background_cover_height = 6;
+    // 按钮顶部对齐封面
+    bool button_top_equal_cover = 7;
+    // 是否大头像
+    bool is_large_avatar = 8;
+}
+
+// 反馈
+message Feedback {
+    // 区块列表
+    repeated FeedbackSection sections = 1;
+}
+
+// 反馈区块
+message FeedbackSection {
+    // 类型
+    string type = 1;
+    // 标题
+    string title = 2;
+    // 条目列表
+    repeated FeedbackItem items = 3;
+}
+
+// 反馈条目
+message FeedbackItem {
+    // id
+    int32 id = 1;
+    // 文本
+    string text = 2;
+}
+// 话题条目
+message TopicItem {
+    // 话题id
+    int64 id = 1;
+    // 标题
+    string title = 2;
+    // 发布文案
+    string publish_text = 3;
+    // 参数
+    string param = 4;
+    // goto
+    string goto = 5;
+    // 跳转链接
+    string uri = 6;
+    // linktype
+    string linktype = 7;
+    // UP主名
+    string up_name = 8;
+    // 卡片位次
+    int32 position = 9;
+    // trackid
+    string trackid = 10;
+    // 内容类型
+    int32 content_type = 11;
+}
+
+// 百科卡片UI
+message PediaCardUI {
+    // 背景图
+    string background_image = 1;
+    // 封面默认颜色
+    string cover_default_color = 2;
+    // 模块颜色
+    string module_color = 3;
+    // 蒙层颜色
+    string mask_color_value = 4;
+    // 蒙层透明度
+    string mask_opacity = 5;
+    // 高斯模糊值
+    string gaussian_blur_value = 6;
+}
+
+// 图片导航
+message PicNavigation {
+    // 标题
+    string title = 1;
+    // 跳转链接
+    string uri = 2;
+    // 日间封面
+    string cover_sun_url = 3;
+    // 夜间封面
+    string cover_night_url = 4;
+}
+
+// 卡片分组规则
+message CardGroupRule {
+    // 样式
+    int32 style = 1;
+    // 是否合并
+    bool merge = 2;
+}
+
+// 筛选器
+message SearchFilter {
+    // 筛选样式
+    int64 filter_style = 1;
+    // 筛选条目列表
+    repeated FilterEntries filter_entries = 2;
+}
+
+// 筛选条目
+message FilterEntries {
+    // 标题
+    string title = 1;
+    // 副标题
+    string subtitle = 2;
+    // 筛选类型
+    string filter_type = 3;
+    // 是否单选
+    bool single_select = 4;
+    // 神经元区域
+    string area_for_neuron = 5;
+    // 值列表
+    repeated FilterValue values = 6;
+}
+
+// 筛选值
+message FilterValue {
+    // 值
+    string value = 1;
+    // 神经元子模块
+    string sub_module_for_neuron = 2;
+    oneof filter_param {
+        // 分类排序
+        CategorySort category_sort = 3;
+        // 用户类型
+        UserType user_type = 4;
+        // 用户排序
+        UserSort user_sort = 5;
+    }
+}// 颜色组
+message Colors {
+    // 日间
+    string color_day = 1;
+    // 夜间
+    string color_night = 2;
+}
+
+// 荣耀信息
+message GloryInfo {
+    // 标题
+    string title = 1;
+    // 总数
+    int32 total = 2;
+    // 条目列表
+    repeated GloryItem items = 3;
+}
+
+// 荣耀条目
+message GloryItem {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
 }

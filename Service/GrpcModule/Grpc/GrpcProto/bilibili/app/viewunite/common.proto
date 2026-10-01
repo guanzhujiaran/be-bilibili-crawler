@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package bilibili.app.viewunite.common;
 
+import "bilibili/account/service/v1/service.proto";
 import "bilibili/dagw/component/avatar/v1/avatar.proto";
 import "bilibili/pagination/pagination.proto";
 import "google/protobuf/any.proto";
@@ -56,6 +57,8 @@ message ActivityEntrance {
     repeated User upper_list = 9;
     // 
     map<string, string> report = 10;
+    // 
+    map<string, string> order_report_params = 11;
 }
 
 // 
@@ -74,6 +77,10 @@ message ActivityReserve {
     StatInfo danmaku = 3;
     // 
     ReserveButton button = 4;
+    // 
+    string ep_count_desc = 5;
+    // 
+    string pre_title = 6;
 }
 
 // 
@@ -112,6 +119,12 @@ message ActivityTab {
     string act_ext = 12;
     // 
     map<string, string> report = 13;
+}
+
+// 目录 Tab
+message CatalogTab {
+    // 标题
+    string title = 1;
 }
 
 // 
@@ -283,6 +296,24 @@ message CardBasicInfo {
     string from_spmid_suffix = 14;
     // 
     string report_flow_data = 15;
+    // 
+    string cover_right_text = 16;
+    // 
+    CoverDimension dimension = 17;
+    // 
+    string translated_title = 18;
+    // 
+    map<string, string> report = 19;
+    // 
+    TranslationInfo translation_info = 20;
+}
+
+// 封面尺寸
+message CoverDimension {
+    // 
+    float width = 1;
+    // 
+    float height = 2;
 }
 
 // 
@@ -325,6 +356,8 @@ message Celebrity {
     string small_avatar = 14;
     // 
     map<string, string> report = 15;
+    // 
+    OfficialVerify official = 16;
 }
 
 // 
@@ -382,7 +415,22 @@ message CombinationEp {
 }
 
 // 
-message Covenanter {}
+message ContractText {
+    // 
+    string title = 1;
+    // 
+    string subtitle = 2;
+}
+
+// 
+message Covenanter {
+    // 
+    int32 is_follow_display = 1;
+    // 
+    ContractText text = 2;
+    // 
+    int32 is_interact_display = 3;
+}
 
 // 
 message DeliveryData {
@@ -402,11 +450,61 @@ message DeliveryData {
         TheatreHotTopic theatre_hot_topic = 6;
         // 
         AggEps agg_eps = 7;
+        // 
+        ActPageItems act_page_items = 10;
     }
     // 
     int32 id = 8;
     // 
     map<string, string> report = 9;
+}
+
+// 活动页条目集合
+message ActPageItems {
+    // 
+    repeated ActBannerItem item = 1;
+    // 
+    ShowStyle show_style = 2;
+    // 
+    string title = 3;
+}
+
+// 活动页横幅条目
+message ActBannerItem {
+    // 
+    string url = 1;
+    // 
+    string cover = 2;
+    // 
+    JumpType jump_type = 3;
+    // 
+    map<string, string> report = 4;
+}
+
+// 展示样式
+enum ShowStyle {
+    // 
+    SHOW_STYLE_UNKNOWN = 0;
+    // 一行一列
+    ONE_ROW_ONE_COLUMN = 1;
+    // 一行多列
+    ONE_ROW_MULTI_COLUMN = 2;
+    // 一列多行
+    ONE_COLUMN_MULTI_ROW = 3;
+}
+
+// 跳转类型
+enum JumpType {
+    // 
+    JUMP_TYPE_UNKNOWN = 0;
+    // 打开链接
+    OPEN_URL = 1;
+    // 刷新
+    REFRESH = 2;
+    // 半屏
+    HALF_SCREEN = 3;
+    // 外部浏览器打开链接
+    OPEN_URL_BY_OUTER_BROWSER = 4;
 }
 
 // 
@@ -436,6 +534,10 @@ message DescV2 {
     string uri = 3;
     // 
     int64 rid = 4;
+    // 
+    bool need_highlight = 5;
+    // 
+    map<string, string> report = 6;
 }
 
 // 
@@ -518,6 +620,13 @@ message Honor {
     HonorJumpType honor_jump_type = 12;
     // 
     map<string, string> report = 13;
+    // 
+    string end_icon = 14;
+    // 
+    oneof extend {
+        // 
+        ProfessionHonorExtend profession_ext = 15;
+    }
 }
 
 // 荣誉 Banner 跳转类型
@@ -554,6 +663,24 @@ enum HonorType {
     HONOR_MUSIC = 9;
     // 
     HONOR_REPLY = 10;
+}
+
+// 职业荣誉扩展
+message ProfessionHonorExtend {
+    // 
+    int64 count = 1;
+    // 
+    bool self_grant = 2;
+    // 
+    ProfessionPopup popup = 3;
+}
+
+// 职业弹窗
+message ProfessionPopup {
+    // 
+    string title = 1;
+    // 
+    string subtitle = 2;
 }
 
 // 
@@ -597,7 +724,7 @@ message KingPos {
     // 
     string disable_toast = 4;
     // 
-    string checked_post = 5;
+    string checked_toast = 5;
     // 
     oneof extend {
         // 
@@ -612,7 +739,7 @@ message KingPosition {
     // 
     repeated KingPos king_pos = 1;
     // 
-    repeated KingPos extenf = 2;
+    repeated KingPos extend = 2;
 }
 
 // 
@@ -653,6 +780,8 @@ message Label {
     string lottie = 7;
     // 
     string lottie_night = 8;
+    // 
+    map<string, string> report = 9;
 }
 
 // 
@@ -699,6 +828,24 @@ message LiveOrder {
     bool is_follow = 4;
     // 
     int64 follow_count = 5;
+    // 
+    ReserveCalendarInfo reserve_calendar_info = 6;
+    // 
+    string business = 7;
+}
+
+// 预约日历信息
+message ReserveCalendarInfo {
+    // 
+    string title = 1;
+    // 
+    int64 start_ts = 2;
+    // 
+    int64 end_ts = 3;
+    // 
+    string description = 4;
+    // 
+    string business_id = 5;
 }
 
 // 
@@ -897,6 +1044,26 @@ message OgvIntroduction {
     string score = 2;
     // 
     StatInfo play_data = 3;
+    // 
+    string score_color = 4;
+    // 
+    string score_night_color = 5;
+    // 
+    string text_color = 6;
+    // 
+    string text_night_color = 7;
+    // 
+    string season_type_name = 8;
+    // 
+    string areas = 9;
+    // 
+    string styles = 10;
+    // 
+    string alias = 11;
+    // 
+    string overview = 12;
+    // 
+    TranslationInfo translation_info = 13;
 }
 
 // 
@@ -941,6 +1108,8 @@ message OgvLiveReserve {
     string night_bt_text_color = 19;
     // 
     map<string, string> report = 20;
+    // 
+    int32 live_status = 21;
 }
 
 // 
@@ -951,6 +1120,8 @@ message OgvSeasons {
     repeated SerialSeason serial_season = 2;
     // 
     SerialSeasonCoverStyle style = 3;
+    // 
+    TranslationInfo translation_info = 4;
 }
 
 // 
@@ -967,6 +1138,16 @@ message OgvTitle {
     int64 reserve_id = 5;
     // 
     TitleDeliveryButton title_delivery_button = 6;
+    // 
+    TitleDeliveryButton channel_redirect_entry_button = 7;
+    // 
+    string title_img = 8;
+    // 
+    string title_img_night = 9;
+    // 
+    int32 webp_dynamic_pic_title_cycle_num = 10;
+    // 
+    TranslationInfo translation_info = 11;
 }
 
 // 
@@ -1002,6 +1183,12 @@ message Owner {
     int64 fans_num = 15;
     // 
     repeated int64 assists = 16;
+    // 
+    string season_count = 17;
+    // 
+    bilibili.account.service.v1.NameRender name_render = 18;
+    // 
+    string handle = 19;
 }
 
 // 
@@ -1116,6 +1303,10 @@ message RelateAVCard {
     bool show_up_name = 6;
     // 
     BadgeInfo rcmd_reason = 7;
+    // 
+    string duration_text = 8;
+    // 
+    bool show_rcmd_style = 9;
 }
 
 // 视频详情下方推荐卡子类型: 番剧(小卡?)
@@ -1126,6 +1317,10 @@ message RelateBangumiAvCard {
     Stat stat = 2;
     // 
     Rating rating = 3;
+    // 
+    string cover_right_text = 4;
+    // 
+    bool show_rcmd_style = 5;
 }
 
 // 视频详情下方推荐卡子类型: 番剧(大卡?)
@@ -1214,6 +1409,12 @@ message RelateCard {
         RelateBangumiUgcCard bangumi_ugc = 13;
         // 
         RelateSpecial special = 14;
+        // 
+        RelateCourseCard course = 15;
+        // 
+        RelateMiniProgramCard mini_program = 16;
+        // 
+        RelateHistoryAVCard history_av = 17;
     }
     // 
     RelateThreePoint three_point = 10;
@@ -1221,6 +1422,8 @@ message RelateCard {
     google.protobuf.Any cm_stock = 11;
     // 
     CardBasicInfo basic_info = 12;
+    // 
+    RelateThreePointNf three_point_nf = 18;
 }
 
 // 视频详情下方推荐卡子类型
@@ -1259,6 +1462,22 @@ message RelateCMCard {
     int64 duration = 3;
     // 
     Stat stat = 4;
+    // 
+    int32 nature_ad = 5;
+    // 
+    RelateCMLive live = 6;
+}
+
+// 广告推广卡直播信息
+message RelateCMLive {
+    // 
+    int64 room_id = 1;
+    // 
+    string area_name = 2;
+    // 
+    int64 live_status = 3;
+    // 
+    StatInfo stat_info = 4;
 }
 
 // 视频详情下方推荐配置
@@ -1271,6 +1490,8 @@ message RelateConfig {
     bilibili.pagination.Pagination pagination = 3;
     // 
     bool can_load_more = 4;
+    // 
+    CoverDimension dimension = 5;
 }
 
 // 视频详情下方推荐卡子类型: AI 推荐?
@@ -1357,6 +1578,14 @@ message RelateLiveCard {
     int64 watched_show = 3;
     // 
     int64 live_status = 4;
+    // 
+    BadgeInfo rcmd_reason = 5;
+    // 
+    string live_new_style = 6;
+    // 
+    StatInfo stat_info = 7;
+    // 
+    bool show_rcmd_style = 8;
 }
 
 // 视频下方推荐区
@@ -1365,6 +1594,16 @@ message Relates {
     repeated RelateCard cards = 1;
     // 
     RelateConfig config = 2;
+    // 
+    repeated RelateTab tab = 3;
+}
+
+// 推荐区 tab 分类
+message RelateTab {
+    // 
+    int64 tab_category = 1;
+    // 
+    string title = 2;
 }
 
 // 视频详情下方推荐卡子类型: 其他特殊
@@ -1373,6 +1612,46 @@ message RelateSpecial {
     BadgeInfo badge = 1;
     // 
     BadgeInfo rcmd_reason = 2;
+}
+
+// 视频详情下方推荐卡子类型: 课程
+message RelateCourseCard {
+    // 
+    int64 duration = 1;
+    // 
+    Stat stat = 2;
+    // 
+    BadgeInfo rcmd_reason = 3;
+    // 
+    BadgeInfo badge_info = 4;
+    // 
+    int32 style = 5;
+    // 
+    bool show_rcmd_style = 6;
+}
+
+// 视频详情下方推荐卡子类型: 小程序
+message RelateMiniProgramCard {
+    // 
+    Stat stat = 1;
+}
+
+// 视频详情下方推荐卡子类型: 历史记录
+message RelateHistoryAVCard {
+    // 
+    int64 duration = 1;
+    // 
+    int64 progress = 2;
+    // 
+    int64 unix = 3;
+    // 
+    string icon = 4;
+}
+
+// 视频详情下方推荐卡右上角三点(新版)
+message RelateThreePointNf {
+    // 
+    RelateThreePoint nf = 1;
 }
 
 // 视频详情下方推荐卡右上角三点的内容
@@ -1385,6 +1664,26 @@ message RelateThreePoint {
     bool watch_later = 3;
     // 
     string dislike_report_data = 4;
+    // 
+    TranslateButton translate_button = 5;
+}
+
+// 翻译按钮
+message TranslateButton {
+    // 
+    string button_status = 1;
+    // 
+    repeated ButtonMeta button_metas = 2;
+}
+
+// 翻译按钮元数据
+message ButtonMeta {
+    // 
+    string icon = 1;
+    // 
+    string text = 2;
+    // 
+    string button_status = 3;
 }
 
 // 
@@ -1432,6 +1731,10 @@ message Rights {
     int32 allow_demand = 6;
     // 区域限制
     int32 area_limit = 7;
+    // 
+    int32 cache_auth = 8;
+    // 
+    string cache_auth_reason = 9;
 }
 
 // 
@@ -1499,6 +1802,30 @@ message SectionData {
     int32 type = 13;
     // 
     map<string, string> report = 14;
+    // 
+    EpBgInfo bg_info = 15;
+    // 
+    TranslationInfo translation_info = 16;
+}
+
+// 剧集背景信息
+message EpBgInfo {
+    // 
+    BgInfo float_layer = 1;
+    // 
+    BgInfo no_float_layer = 2;
+}
+
+// 背景图信息
+message BgInfo {
+    // 
+    string light_short_bg = 1;
+    // 
+    string dark_short_bg = 2;
+    // 
+    string light_long_bg = 3;
+    // 
+    string dark_long_bg = 4;
 }
 
 // 
@@ -1525,6 +1852,10 @@ message SerialSeason {
     string resource = 10;
     // 
     NewEp new_ep = 11;
+    // 
+    map<string, string> report = 12;
+    // 
+    TranslationInfo translation_info = 13;
 }
 
 enum SerialSeasonCoverStyle {
@@ -1594,6 +1925,8 @@ message Staff {
     int32 label_style = 8;
     // 
     string fans = 9;
+    // 
+    bilibili.account.service.v1.NameRender name_render = 10;
 }
 
 // 
@@ -1726,6 +2059,36 @@ message UgcEpisode {
     StatInfo vt = 8;
     // 
     StatInfo danmaku = 9;
+    // 
+    string badge = 10;
+    // 
+    repeated Page pages = 11;
+    // 
+    double progress_percent = 12;
+    // 
+    int64 duration = 13;
+    // 
+    Author author = 14;
+    // 
+    int32 biz_type = 15;
+    // 
+    EpDownload download = 16;
+}
+
+// 作者
+message Author {
+    // 
+    int64 mid = 1;
+    // 
+    string name = 2;
+}
+
+// 剧集下载信息
+message EpDownload {
+    // 
+    bool disable_download = 1;
+    // 
+    string disable_toast = 2;
 }
 
 // 
@@ -1746,6 +2109,16 @@ message UgcIntroduction {
     int64 pubdate = 7;
     // 
     repeated DescV2 desc = 8;
+    // 
+    Neutral neutral = 9;
+}
+
+// 中立评价
+message Neutral {
+    // 
+    string icon = 1;
+    // 
+    string title = 2;
 }
 
 // 
@@ -1960,6 +2333,14 @@ message ViewEpisode {
     Stat stat_for_unity = 41;
     // 
     map<string, string> report = 42;
+    // 
+    int32 section_type = 43;
+    // 
+    string show_title = 44;
+    // 
+    string bottom_right_badge = 45;
+    // 
+    TranslationInfo translation_info = 46;
 }
 
 // 
@@ -2004,6 +2385,254 @@ message VipLabel {
 message WikiInfo {
     // 
     string wiki_label = 1;
-    // 
+    //
     string wiki_url = 2;
+}
+
+// AI相关异步参数
+message RelateAsync {
+    // 是否需要异步
+    bool need_async = 1;
+    // AI参数
+    string ai_param = 2;
+    // UP主mid
+    int64 up_mid = 3;
+    // 页面类型
+    int64 page_type = 4;
+    // UP主是否蓝标
+    int32 is_up_blue = 5;
+    // 额外内容
+    map<string, string> extra = 6;
+}
+
+// 负面反馈信息
+message Nf {
+    // 不喜欢信息
+    string dislike_info = 1;
+    // 目标id
+    int64 id = 2;
+    // 跳转类型
+    string goto = 3;
+    // 来源
+    int64 from = 4;
+}
+
+// 翻译状态
+enum TranslationStatus {
+    // 无需翻译
+    TRANSLATION_STATUS_UNNEEDED = 0;
+    // 已翻译
+    TRANSLATION_STATUS_TRANSLATED = 1;
+    // 未翻译
+    TRANSLATION_STATUS_UNTRANSLATED = 2;
+}
+
+// 翻译信息
+message TranslationInfo {
+    // 翻译状态
+    TranslationStatus status = 1;
+    // 已翻译字段
+    map<string, string> translated_fields = 2;
+}
+
+// 提及卡片基础信息
+message MentionBase {
+    // 卡片ID
+    int64 id = 1;
+    // 是否隐藏
+    int32 is_hide = 2;
+    // 卡片ID类型
+    string card_id_type = 3;
+}
+
+// 游戏信息
+message VideoGame {
+    // 标题
+    string title = 1;
+    // 图片
+    string image = 2;
+    // 描述
+    string desc = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 卡片标签
+    string card_tag = 5;
+    // 卡片信息
+    string card_info = 6;
+}
+
+// 玩具信息
+message Toy {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+    // UP主名称
+    string up_name = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 按钮
+    string button = 5;
+    // 内容
+    string content = 6;
+    // 副标题
+    string sub_title = 7;
+}
+
+// 主播信息
+message VideoStreamer {
+    // UP主mid
+    int64 uid = 1;
+    // 名称
+    string name = 2;
+    // 头像
+    string face = 3;
+    // 描述
+    string desc = 4;
+    // 直播状态
+    int32 live_status = 5;
+    // 分区标签
+    string area_tag = 6;
+    // 卡片链接
+    string card_link = 7;
+    // 按钮
+    StreamerButton button = 8;
+    // 额外信息
+    string ext_info = 9;
+}
+
+// 抽奖信息
+message VideoLottery {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+    // UP主名称
+    string up_name = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 按钮
+    string button = 5;
+    // 内容
+    string content = 6;
+}
+
+// 主播按钮
+message StreamerButton {
+    // 文本
+    string text = 1;
+    // 跳转链接
+    string jump_url = 2;
+}
+
+// 稿件信息
+message VideoArchive {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+    // UP主名称
+    string up_name = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 按钮
+    string button = 5;
+}
+
+// 课程信息
+message VideoCourse {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+    // UP主名称
+    string up_name = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 按钮
+    string button = 5;
+}
+
+// 剧集信息
+message VideoSeason {
+    // 标题
+    string title = 1;
+    // 封面
+    string cover = 2;
+    // 分类
+    string category = 3;
+    // 卡片链接
+    string card_link = 4;
+    // 按钮
+    string button = 5;
+    // 样式
+    string style = 6;
+}
+
+// 提及类型
+enum MentionType {
+    // 默认
+    MENTION_TYPE_DEFAULT = 0;
+    // 游戏
+    MENTION_TYPE_GAME = 1;
+    // 主播
+    MENTION_TYPE_STREAMER = 2;
+    // 充电UGC
+    MENTION_TYPE_CHARGE_UGC = 3;
+    // 充电番剧
+    MENTION_TYPE_CHARGE_MANJU = 4;
+    // OGV
+    MENTION_TYPE_OGV = 5;
+    // 课程
+    MENTION_TYPE_COURSE = 6;
+    // 抽奖
+    MENTION_TYPE_LOTTERY = 7;
+    // 玩具
+    MENTION_TYPE_TOY = 8;
+}
+
+// 提及卡片
+message MentionCard {
+    // 基础信息
+    MentionBase base = 1;
+    oneof data {
+        // 游戏
+        VideoGame game = 2;
+        // 主播
+        VideoStreamer streamer = 3;
+        // 充电UGC
+        VideoArchive charge_ugc = 4;
+        // 充电番剧
+        VideoArchive charge_manju = 5;
+        // OGV
+        VideoSeason ogv = 6;
+        // 课程
+        VideoCourse course = 7;
+        // 抽奖
+        VideoLottery lottery = 8;
+        // 玩具
+        Toy toy = 9;
+    }
+}
+
+// 提及信息
+message Mention {
+    // 标题
+    string title = 1;
+    // 卡片列表
+    repeated MentionCard cards = 2;
+    // 提及类型
+    MentionType m_type = 3;
+}
+
+// 广告素材(直播)
+message SourceContentLive {
+    // 直播间id
+    int64 room_id = 1;
+    // 直播状态
+    int64 live_status = 2;
+    // 统计信息
+    StatInfo stat_info = 3;
+    // UP主名称
+    string up_name = 4;
 }

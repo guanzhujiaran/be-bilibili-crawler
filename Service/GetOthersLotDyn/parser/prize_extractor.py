@@ -291,12 +291,15 @@ def _resume_wait(resume_at: float | None) -> float:
 
 
 async def _await_slot_available(llm: ChatOpenAI, max_wait: float | None) -> None:
-    """锁定槽位不可用时按健康状态处理，保证返回时槽位可用（或抛出让上层换槽位/重投）。
+    """调用方指定的 LLM 不可用时按健康状态处理，保证返回时它可用（或抛出让上层处理）。
 
-    - 已删除（不可恢复错误）→ 立刻抛 :class:`AllLLMsDisabledError`，必须换槽位；
+    仅在调用方显式传入 ``chat_openai_client``（如手搓客户端的脚本）时用到；
+    MQ 消费路径不传，由 ``get_all_free_llms`` 内部逐个尝试可用实例。
+
+    - 已删除（不可恢复错误）→ 立刻抛 :class:`AllLLMsDisabledError`，必须换一个；
     - 冷却中且剩余冷却时间在 ``max_wait`` 预算内 → 就地睡到冷却结束（「休息一会儿再用」）；
     - 冷却中但等不起（超预算，例如「今日额度」要等次日）→ 抛
-      :class:`AllLLMsCoolingError`，由上层释放槽位换一个 / 把消息交还队列重投。
+      :class:`AllLLMsCoolingError`，由上层换一个 / 把消息交还队列重投。
 
     非 :class:`TrackedChatOpenAI`（例如脚本里手搓的 ChatOpenAI）没有健康状态，视为可用。
     """
@@ -418,12 +421,11 @@ async def _do_extract(
     alerted = False
     while True:
         if chat_openai_client:
-            # 指定槽位（MQ 消费者用槽位租约锁定了某条 LLM 配置）：锁定哪个槽位就只用哪个，
-            # 不再遍历其他实例，否则会出现「锁着 A 槽位、请求打到 B」——锁形同虚设。
-            # 槽位不可用时按状态处理，让上层释放槽位后重新抢一个 / 等冷却结束：
+            # 调用方显式指定了客户端：只用它，不再遍历其他实例。
+            # 它不可用时按状态处理，让上层换一个 / 等冷却结束：
             #   - removed（不可恢复，配置已删除）→ AllLLMsDisabledError
             #   - cooling / quota_wait / suspended 且冷却在预算内 → 就地等到恢复
-            #   - 冷却超出预算 → AllLLMsCoolingError（交给上层换槽位 / 交还消息重投）
+            #   - 冷却超出预算 → AllLLMsCoolingError（交给上层换一个 / 交还消息重投）
             await _await_slot_available(chat_openai_client, max_wait)
             all_llms = [chat_openai_client]
         else:
@@ -519,8 +521,8 @@ async def _do_extract(
                 continue
 
         # 本轮所有 LLM 均失败：
-        # - 锁定槽位本轮失败后被状态机判为「不可用」→ 立刻抛出，交给上层换槽位 / 等冷却，
-        #   不再对着一个正在冷却的槽位按等比退避空转；
+        # - 调用方指定的客户端本轮失败后被状态机判为「不可用」→ 立刻抛出，交给上层
+        #   换一个 / 等冷却，不再对着一个正在冷却的实例按等比退避空转；
         # - 槽位仍健康（只是单次瞬时失败，未达冷却阈值）→ 告警一次并按等比退避重试。
         if chat_openai_client is not None:
             await _await_slot_available(chat_openai_client, max_wait)

@@ -169,6 +169,8 @@ message ReqGetSessions {
     uint32 teenager_mode = 8;
     // 课堂模式
     uint32 lessons_mode = 9;
+    // AI用户id
+    uint64 ai_uid = 10;
 }
 
 // -请求
@@ -505,6 +507,18 @@ message RspTotalUnread {
     SysMsgInterfaceLastMsgRsp sys_msg_interface_last_msg = 3;
     //
     int32 total_unread = 4;
+    //
+    NewTotalUnread new_total_unread = 5;
+    //
+    int64 custom_unread = 6;
+}
+
+// 新版总未读数
+message NewTotalUnread {
+    // 未读类型
+    int32 unread_type = 1;
+    // 未读数
+    int32 unread_count = 2;
 }
 
 //

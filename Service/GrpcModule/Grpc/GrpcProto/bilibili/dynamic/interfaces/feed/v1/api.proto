@@ -369,6 +369,54 @@ message GetEditDynInfoRsp {
     int64 only_fans = 11;
     // 
     string edit_alert_msg = 12;
+    // 剩余编辑次数
+    int64 remain_edit_times = 13;
+    // 商业推广信息
+    CreatePageCommercialInfo commercial = 14;
+    // 创作激励发布配置
+    TribeePublishConfig tribee_setting = 15;
+    // 图文内容
+    bilibili.dynamic.common.Opus opus = 16;
+    // 动态类型
+    int64 dyn_type = 17;
+    // 图片模式
+    int32 pic_mode = 18;
+    // 激励分类列表
+    repeated bilibili.dynamic.common.TribeeCategory tribee_categories = 19;
+    // 签证激励列表
+    repeated TribeeVisaInfo visa_tribees = 20;
+    // 激励图标
+    string tribee_icon = 21;
+}
+
+// 创作激励发布配置
+message TribeePublishConfig {
+    // 标题最小长度
+    int64 title_min_length = 1;
+    // 标题最大长度
+    int64 title_max_length = 2;
+    // 内容最小长度
+    int64 content_min_length = 3;
+    // 内容最大长度
+    int64 content_max_length = 4;
+    // 图片最大数
+    int64 pic_max_num = 5;
+}
+
+// 创作激励签证信息
+message TribeeVisaInfo {
+    // 来源激励id
+    int64 source_tribee_id = 1;
+    // 目标激励id
+    int64 target_tribee_id = 2;
+    // 名称
+    string name = 3;
+    // 简介
+    string summary = 4;
+    // 头像url
+    string face_url = 5;
+    // 横幅url
+    string banner_url = 6;
 }
 
 // 

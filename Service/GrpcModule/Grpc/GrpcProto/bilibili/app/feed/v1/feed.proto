@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package bilibili.app.feed.v1;
+
+option java_multiple_files = true;
+
+// QoE表单
+message QoeForm {
+    // 类型
+    int32 type = 1;
+    // 选项列表
+    repeated QoeOption options = 2;
+    // 是否有二级
+    bool has_second_layer = 3;
+    // 确认文案
+    string confirm_text = 4;
+}
+
+// QoE选项
+message QoeOption {
+    // 标题
+    string title = 1;
+    // 分数
+    float score = 2;
+    // 描述列表
+    repeated string desc = 3;
+    // 描述标题
+    string desc_title = 4;
+}
+
+// QoE-请求
+message QoeReq {
+    // QoE信息
+    string qoe_info = 1;
+    // 评论区id
+    int64 oid = 2;
+    // UP主mid
+    int64 up_mid = 3;
+}

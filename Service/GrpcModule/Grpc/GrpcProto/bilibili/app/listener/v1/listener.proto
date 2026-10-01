@@ -359,6 +359,10 @@ message FavFolder {
     int32 stat_reply_cnt = 17;
     //
     int32 fav_state = 18;
+    //
+    bool use_view_vt = 19;
+    //
+    string view_vt_text = 20;
 }
 
 //

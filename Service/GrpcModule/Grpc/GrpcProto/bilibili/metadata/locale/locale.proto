@@ -13,6 +13,18 @@ message Locale {
     string sim_code = 3;
     // 时区
     string timezone = 4;
+    // 时区偏移, 如 +08:00
+    string utc_offset = 5;
+    // 是否夏令时
+    bool is_daylight_time = 6;
+    // 是否总是翻译
+    bool always_translate = 7;
+    // 商店国家
+    string store_country = 8;
+    // 商店货币
+    string store_currency = 9;
+    // 商店支付渠道
+    string store_pay_channel = 10;
 }
 
 // Defined by https://developer.apple.com/library/archive/documentation/MacOSX/Conceptual/BPInternational/LanguageandLocaleIDs/LanguageandLocaleIDs.html

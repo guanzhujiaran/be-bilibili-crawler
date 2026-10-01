@@ -3,110 +3,94 @@ syntax = "proto3";
 package bilibili.dagw.component.avatar.v1;
 
 import "bilibili/dagw/component/avatar/common/common.proto";
-import "bilibili/dagw/component/avatar/v1/plugin.proto";
 
-//
+option java_multiple_files = true;
+
+// 头像条目
 message AvatarItem {
-    //
+    // 容器尺寸
     bilibili.dagw.component.avatar.common.SizeSpec container_size = 1;
-    //
+    // 层组列表
     repeated LayerGroup layers = 2;
-    //
+    // 兜底层组
     LayerGroup fallback_layers = 3;
-    //
+    // 用户mid
     int64 mid = 4;
 }
 
-//
-message BasicLayerResource {
-    //
-    int32 res_type = 1;
-    //
-    oneof payload {
-        //
-        ResImage res_image = 2;
-        //
-        ResAnimation res_animation = 3;
-        ///
-        ResNativeDraw res_native_draw = 4;
-    };
-}
-
-//
-message GeneralConfig {
-    //
-    map<string, string> web_css_style = 1;
-}
-
-//
-message Layer {
-    //
-    string layer_id = 1;
-    //
-    bool visible = 2;
-    //
-    bilibili.dagw.component.avatar.common.LayerGeneralSpec general_spec = 3;
-    //
-    LayerConfig layer_config = 4;
-    //
-    BasicLayerResource resource = 5;
-}
-
-//
-message LayerConfig {
-    //
-    map<string, LayerTagConfig> tags = 1;
-    //
-    bool is_critical = 2;
-    //
-    bool allow_over_paint = 3;
-    //
-    bilibili.dagw.component.avatar.common.MaskProperty layer_mask = 4;
-}
-
-//
+// 层组
 message LayerGroup {
-    //
+    // 组id
     string group_id = 1;
-    //
+    // 层列表
     repeated Layer layers = 2;
-    //
+    // 组蒙版
     bilibili.dagw.component.avatar.common.MaskProperty group_mask = 3;
-    //
+    // 是否关键组
     bool is_critical_group = 4;
 }
 
-//
-message LayerTagConfig {
-    //
-    int32 config_type = 1;
-    //
-    oneof config {
-        //
-        GeneralConfig general_config = 2;
-        //
-        bilibili.dagw.component.avatar.v1.plugin.GyroConfig gyro_config = 3;
-        //
-        bilibili.dagw.component.avatar.v1.plugin.CommentDoubleClickConfig comment_doubleClick_config = 4;
-        //
-        bilibili.dagw.component.avatar.v1.plugin.LiveAnimeConfig live_anime_config = 5;
-    };
+// 层
+message Layer {
+    // 层id
+    string layer_id = 1;
+    // 可见性
+    bool visible = 2;
+    // 通用规格
+    bilibili.dagw.component.avatar.common.LayerGeneralSpec general_spec = 3;
+    // 层配置
+    LayerConfig layer_config = 4;
+    // 层资源
+    BasicLayerResource resource = 5;
 }
 
-//
-message ResAnimation {
-    //
-    bilibili.dagw.component.avatar.common.ResourceSource webp_src = 1;
+// 基础层资源
+message BasicLayerResource {
+    // 资源类型
+    int32 res_type = 1;
+    // 资源内容（oneof）
+    oneof payload {
+        // 图片资源
+        ResImage res_image = 2;
+        // 动画资源
+        ResAnimation res_animation = 3;
+        // 原生绘制资源
+        ResNativeDraw res_native_draw = 4;
+    }
 }
 
-//
+// 图片资源
 message ResImage {
-    //
+    // 图片源
     bilibili.dagw.component.avatar.common.ResourceSource image_src = 1;
 }
 
-//
+// 动画资源
+message ResAnimation {
+    // webp 源
+    bilibili.dagw.component.avatar.common.ResourceSource webp_src = 1;
+}
+
+// 原生绘制资源
 message ResNativeDraw {
-    //
+    // 绘制源
     bilibili.dagw.component.avatar.common.ResourceSource draw_src = 1;
+}
+
+// 层配置
+message LayerConfig {
+    // 标签配置
+    map<string, LayerTagConfig> tags = 1;
+    // 是否关键层
+    bool is_critical = 2;
+    // 是否允许溢出绘制
+    bool allow_over_paint = 3;
+    // 层蒙版
+    bilibili.dagw.component.avatar.common.MaskProperty layer_mask = 4;
+}
+
+// 层标签配置
+message LayerTagConfig {
+    // 配置类型
+    int32 config_type = 1;
 }

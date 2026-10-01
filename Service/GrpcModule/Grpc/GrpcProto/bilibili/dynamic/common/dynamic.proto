@@ -291,8 +291,10 @@ message CreateDynVideo {
     int64 topic_id = 30;
     // 
     string upload_id = 31;
-    // 
+    //
     DynVideoTopic topic_detail = 32;
+    //
+    repeated int64 follow_mids = 33;
 }
 
 // 创建动态视频的应答包（透传给客户端）
@@ -354,8 +356,26 @@ message CreateOption {
     int32 limit_search = 13;
     // 定时发布
     int64 timer_pub_time = 14;
-    // 
+    //
     int64 only_fans_dnd = 15;
+    //
+    int64 only_fans_level = 17;
+    //
+    int32 private_pub = 19;
+    // 直播水印
+    LiveWaterMark live_water_mark = 20;
+    //
+    bool sync_dynamic_enable = 22;
+    //
+    int32 aigc = 23;
+}
+
+// 直播水印
+message LiveWaterMark {
+    // 水印状态
+    int32 state = 1;
+    // 水印位置
+    int32 position = 2;
 }
 
 // 创建图文动态时的图片信息
@@ -875,11 +895,115 @@ message Opus {
     repeated OpusTag tags = 7;
     // 
     PubInfo pub_info = 8;
-    // 
+    //
     Article article = 9;
+    //
+    Version version = 10;
+    //
+    int64 music_id = 11;
+    //
+    OpusAttachments attachments = 12;
+    //
+    TranslateResult translate_result = 13;
+    //
+    string translated_title = 14;
 }
 
-// 
+// 版本信息
+message Version {
+    // 专栏id
+    int64 cvid = 1;
+    // 版本id
+    int64 version_id = 2;
+}
+
+// 图文附加信息
+message OpusAttachments {
+    // 置顶内容
+    TopContent top_content = 1;
+    // 创作激励
+    Tribee tribee = 2;
+    // 海报图
+    repeated Pic poster = 3;
+    // 海报开关
+    int32 poster_switch = 4;
+    // 海报来源
+    int32 poster_source = 5;
+    // 是否AIGC
+    int32 is_aigc = 6;
+    // 仅粉丝预览
+    OnlyFansPreview only_fans_preview = 7;
+}
+
+// 仅粉丝预览
+message OnlyFansPreview {
+    // 截断段落下标
+    int32 cutoff_paragraph_index = 1;
+    // 预览比例
+    int32 preview_ratio = 2;
+    // 摘要截断段落下标
+    int32 summary_cutoff_paragraph_index = 3;
+    // 线性截断段落下标
+    int32 linear_cutoff_paragraph_index = 4;
+    // 总等效字数
+    int32 total_equivalent_words = 5;
+    // 预览等效字数
+    int32 preview_equivalent_words = 6;
+}
+
+// 置顶内容
+message TopContent {
+    // 业务类型
+    int32 biz_type = 1;
+    // 业务id
+    string biz_id = 2;
+    // 置顶视频
+    ContentVideo top_content_video = 3;
+}
+
+// 置顶视频
+message ContentVideo {
+    // cid
+    int64 cid = 1;
+    // 番剧epid
+    int64 epid = 2;
+    // 视频类型
+    int32 video_type = 3;
+    // 起播时间
+    int64 play_from_time = 4;
+}
+
+// 翻译结果
+message TranslateResult {
+    // 状态
+    int32 state = 1;
+    // 语言匹配结果
+    int32 lang_match_result = 2;
+}
+
+// 创作激励
+message Tribee {
+    // 创作激励id
+    int64 tribee_id = 1;
+    // 是否展示转载来源
+    bool show_reprint_source = 2;
+}
+
+// 创作激励分类
+message TribeeCategory {
+    // 分类id
+    int64 category_id = 1;
+    // 名称
+    string name = 2;
+    // 是否可切换
+    int32 switchable = 3;
+    // 是否选中
+    bool is_selected = 4;
+    // 是否允许外人发布
+    int32 allow_outsider_pub = 5;
+}
+
+//
 enum OpusBizType {
     DEFAULT = 0;
     VIDEO = 1;
@@ -1156,6 +1280,8 @@ message ShareReserve {
     ShareReservePoster poster = 8;
     //
     ShareReserveLottery reserve_lottery = 9;
+    //
+    string badge_text = 10;
 }
 
 //

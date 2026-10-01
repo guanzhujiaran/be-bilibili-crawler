@@ -173,6 +173,9 @@ enum CornerType {
     corner_type_none      = 0;  //
     corner_type_text      = 1;  //
     corner_type_animation = 2;  //
+    corner_type_static    = 3;  //
+    corner_type_red_dot   = 4;  //
+    corner_type_number    = 5;  //
 }
 
 // 粉丝样式
@@ -466,6 +469,12 @@ message DynRedReply {
     string default_tab = 3;
     //
     DynRedStyle red_style = 4;
+    // tab撤回扩展
+    string tab_recall_extra = 5;
+    // 气泡信息
+    BubbleInfo bubble_info = 6;
+    // 状态文案
+    string status_text = 7;
 }
 
 // 动态红点接口-请求
@@ -488,6 +497,99 @@ message DynRedStyle {
     DynRedStyleUp up = 5;
     //
     int32 type = 6;
+    // 角标详情
+    CornerInfo corner_info = 7;
+}
+
+// 角标详情
+message CornerInfo {
+    // 角标类型
+    int32 corner_type = 1;
+    // 角标文本
+    string corner_text = 2;
+    // 角标文本颜色
+    Color corner_text_color = 3;
+    // 角标文本背景色
+    Color corner_text_bg_color = 4;
+    // 角标图标
+    string corner_icon = 5;
+    // 角标数字
+    int64 corner_number = 6;
+}
+
+// 颜色
+message Color {
+    // 日间颜色
+    string color_day = 1;
+    // 夜间颜色
+    string color_night = 2;
+}
+
+// 气泡信息
+message BubbleInfo {
+    // 气泡模块列表
+    repeated BubbleModule modules = 1;
+    // 埋点id
+    string track_id = 2;
+    // 展示时气泡撤回扩展
+    string bubble_recall_extra_when_show = 3;
+}
+
+// 气泡模块
+message BubbleModule {
+    // 模块类型
+    int32 module_type = 1;
+    // 模块内容
+    oneof module {
+        // 用户模块
+        BubbleModuleUser user = 2;
+        // 文本模块
+        BubbleModuleText text = 3;
+        // 彩色提示模块
+        BubbleModuleColoredTip colored_tip = 4;
+        // 图片模块
+        BubbleModulePic pic = 5;
+    }
+}
+
+// 气泡用户模块
+message BubbleModuleUser {
+    // 用户列表
+    repeated UserInfo users = 1;
+}
+
+// 气泡文本模块
+message BubbleModuleText {
+    // 内容
+    string content = 1;
+}
+
+// 气泡彩色提示模块
+message BubbleModuleColoredTip {
+    // 前缀图标
+    string prefix_icon = 1;
+    // 前缀图标是否为svga
+    bool is_svga_prefix_icon = 2;
+    // 文本
+    string text = 3;
+    // 文本颜色
+    Color text_color = 4;
+}
+
+// 气泡图片模块
+message BubbleModulePic {
+    // 日间图片
+    string pic_day = 1;
+    // 夜间图片
+    string pic_night = 2;
+    // 图片宽
+    int64 pic_width = 3;
+    // 图片高
+    int64 pic_height = 4;
+    // 是否圆角
+    bool rounded_corner = 5;
+    // 圆角半径
+    int64 rounded_corner_radius = 6;
 }
 
 //
@@ -1123,9 +1225,11 @@ message ShareInfo {
 
 //
 enum StyleType {
-    STYLE_TYPE_NONE   = 0; //
-    STYLE_TYPE_LIVE   = 1; //
-    STYLE_TYPE_DYN_UP = 2; //
+    STYLE_TYPE_NONE          = 0; //
+    STYLE_TYPE_LIVE          = 1; //
+    STYLE_TYPE_DYN_UP        = 2; //
+    STYLE_TYPE_OGV_UP        = 3; //
+    STYLE_TYPE_COLLECTION_UP = 4; //
 }
 
 // 小视频卡片项

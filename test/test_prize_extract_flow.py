@@ -51,8 +51,10 @@ from Service.MQ.base.MQClient.PrizeExtract import (
     prize_extract_biliopus, prize_extract_dyndetail,
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import PrizeExtractResp
-from Service.MQ.base.MQClient.consume_budget import ConsumeBudget
-from Service.llm_service import LLMSlotLease, LLMSlotWaitTimeout
+from Service.MQ.base.MQClient.consume_budget import (
+    ConsumeBudget,
+    ConsumeBudgetExceeded,
+)
 
 TEST_REF_ID_BASE = 999990000
 #: 「不会真的落库」的用例用的 ref_id（走的是错误/跳过分支，不写数据库）
@@ -237,18 +239,6 @@ def _case_to_req(case: MockCase, ref_id: int) -> PrizeExtractParams:
     )
 
 
-def _fake_lease() -> LLMSlotLease:
-    """测试用的槽位租约桩：业务代码只用到 fingerprint 与 llm 两个字段，
-    lock / client / notify_key 仅供类型完整（真实释放路径在测试里被 mock 掉）。"""
-    return LLMSlotLease(
-        fingerprint="test-slot",
-        llm=AsyncMock(),
-        lock=AsyncMock(),
-        client=AsyncMock(),
-        notify_key="llm_slot:notify:test-slot",
-    )
-
-
 def _fake_budget(total_seconds: float = 600.0) -> ConsumeBudget:
     """测试用的消息确认预算（足够大，正常路径不会因预算耗尽而重投）"""
     return ConsumeBudget.start(
@@ -292,10 +282,6 @@ async def _enter_patches(stack: AsyncExitStack, case: MockCase, extra: bool = Fa
                   new=AsyncMock(return_value=True)),
             patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
                   new=AsyncMock()),
-            patch("Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.acquire",
-                  new=AsyncMock(return_value=_fake_lease())),
-            patch("Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.release",
-                  new=AsyncMock()),
             patch("Service.MQ.base.MQClient.PrizeExtract._already_stored",
                   new=AsyncMock(return_value=False)),
         ]
@@ -317,7 +303,7 @@ async def test_do_extract_and_store(case: MockCase, test_sqlhelper: TestSqlHelpe
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case)
-        result = await _do_extract_and_store(params, _fake_lease(), _fake_budget())
+        result = await _do_extract_and_store(params, _fake_budget())
 
     assert result is not None
     assert result.is_lot == case.mock_result.is_lot
@@ -441,14 +427,14 @@ async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
 
 
 # ========================================================================
-# 测试 6: 消费任务被取消时仍释放 redis 去重锁与槽位租约（取消安全）
+# 测试 6: 消费任务被取消时仍释放 redis 去重锁（取消安全）
 # ========================================================================
 
 @pytest.mark.asyncio
 async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper):
     """取消恰好落在「释放资源」过程中时（真实日志里的典型形态：连接拆除导致
     在途任务被批量 cancel，CancelledError 被投递到 release 的 await 上），
-    释放动作必须仍然跑完，不能留下泄漏的去重锁/槽位租约。"""
+    释放动作必须仍然跑完，不能留下泄漏的去重锁。"""
     case = BILIOPUS_CASES[0]
     ref_id = TEST_REF_ID_BASE + len(_CASES) * 5
     req = _case_to_req(case, ref_id)
@@ -460,18 +446,15 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
 
     release_started = asyncio.Event()
 
-    async def _slow_release_slot(*args, **kwargs):
+    async def _slow_release_lock(*args, **kwargs):
         # 模拟 redis 往返：取消会在这个 await 上被投递
         release_started.set()
         await asyncio.sleep(0.2)
 
-    release_lock = AsyncMock()
+    release_lock = AsyncMock(side_effect=_slow_release_lock)
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.release",
-            new=_slow_release_slot))
         stack.enter_context(patch(
             "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
             new=release_lock))
@@ -668,10 +651,10 @@ async def test_budget_exhausted_requeues_instead_of_broker_nack(
 
 
 @pytest.mark.asyncio
-async def test_slot_wait_timeout_requeues_message(
+async def test_consume_budget_exceeded_requeues_message(
     monkeypatch, test_sqlhelper: TestSqlHelper
 ):
-    """等槽位超出预算（LLMSlotWaitTimeout）：不 ack，主动交还队列重投。"""
+    """_consume_once 中途报告预算耗尽（ConsumeBudgetExceeded）：不 ack，主动交还队列重投。"""
     case = BILIOPUS_CASES[0]
     params = _case_to_req(case, TEST_REF_ID_ASYNC_ERROR + 4)
     mq_props = prize_extract_biliopus.mq_props
@@ -685,8 +668,8 @@ async def test_slot_wait_timeout_requeues_message(
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
         stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.llm_slot_pool.acquire",
-            new=AsyncMock(side_effect=LLMSlotWaitTimeout("超出预算"))))
+            "Service.MQ.base.MQClient.PrizeExtract._consume_once",
+            new=AsyncMock(side_effect=ConsumeBudgetExceeded("超出预算"))))
         result = await process_prize_extract(mq_props, params, mock_msg)
 
     assert result is None

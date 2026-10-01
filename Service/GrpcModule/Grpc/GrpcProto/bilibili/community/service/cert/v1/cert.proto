@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package bilibili.community.service.cert.v1;
+
+option java_multiple_files = true;
+
+// 认证弹窗行为-请求
+message FieldCertPopActionReq {
+    // 稿件avid
+    int64 avid = 1;
+    // 行为
+    int32 action = 2;
+}
+
+// 认证弹窗行为-响应
+message FieldCertPopActionRsp {
+}
+
+// 认证弹窗记录-请求
+message FieldCertPopRecordReq {
+    // 稿件avid
+    int64 avid = 1;
+}
+
+// 认证弹窗记录-响应
+message FieldCertPopRecordRsp {
+}

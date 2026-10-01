@@ -24,19 +24,27 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n6bilibili/app/playerunite/ugcanymodel/ugcanymodel.proto\x12$bilibili.app.playerunite.ugcanymodel\"T\n\x0b\x42uttonStyle\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x12\n\ntext_color\x18\x02 \x01(\t\x12\x10\n\x08\x62g_color\x18\x03 \x01(\t\x12\x11\n\tjump_link\x18\x04 \x01(\t\"\xb7\x01\n\tPlayLimit\x12\x41\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x33.bilibili.app.playerunite.ugcanymodel.PlayLimitCode\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0bsub_message\x18\x03 \x01(\t\x12\x41\n\x06\x62utton\x18\x04 \x01(\x0b\x32\x31.bilibili.app.playerunite.ugcanymodel.ButtonStyle\"R\n\x0bUGCAnyModel\x12\x43\n\nplay_limit\x18\x01 \x01(\x0b\x32/.bilibili.app.playerunite.ugcanymodel.PlayLimit*\x88\x01\n\rPlayLimitCode\x12\x0f\n\x0bPLC_UNKNOWN\x10\x00\x12\x10\n\x0cPLC_NOTPAYED\x10\x01\x12\x1b\n\x17PLC_ChargingPlusNotPass\x10\x02\x12\x1b\n\x17PLC_ChargingPlusUpgrade\x10\x03\x12\x1a\n\x16PLC_ChargingPlusReject\x10\x04\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n6bilibili/app/playerunite/ugcanymodel/ugcanymodel.proto\x12$bilibili.app.playerunite.ugcanymodel\"T\n\x0b\x42uttonStyle\x12\x0c\n\x04text\x18\x01 \x01(\t\x12\x12\n\ntext_color\x18\x02 \x01(\t\x12\x10\n\x08\x62g_color\x18\x03 \x01(\t\x12\x11\n\tjump_link\x18\x04 \x01(\t\"\xb7\x01\n\tPlayLimit\x12\x41\n\x04\x63ode\x18\x01 \x01(\x0e\x32\x33.bilibili.app.playerunite.ugcanymodel.PlayLimitCode\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0bsub_message\x18\x03 \x01(\t\x12\x41\n\x06\x62utton\x18\x04 \x01(\x0b\x32\x31.bilibili.app.playerunite.ugcanymodel.ButtonStyle\"\xdc\x01\n\x0bUGCAnyModel\x12\x43\n\nplay_limit\x18\x01 \x01(\x0b\x32/.bilibili.app.playerunite.ugcanymodel.PlayLimit\x12\x38\n\x04\x63lip\x18\x03 \x01(\x0b\x32*.bilibili.app.playerunite.ugcanymodel.Clip\x12N\n\x10\x63hariging_extend\x18\x04 \x01(\x0b\x32\x34.bilibili.app.playerunite.ugcanymodel.ChargingExtend\"~\n\x08\x43lipInfo\x12\x41\n\tclip_type\x18\x01 \x01(\x0e\x32..bilibili.app.playerunite.ugcanymodel.ClipType\x12\x13\n\x0bmaterial_no\x18\x02 \x01(\x03\x12\r\n\x05start\x18\x03 \x01(\x03\x12\x0b\n\x03\x65nd\x18\x04 \x01(\x03\"I\n\x04\x43lip\x12\x41\n\tclip_info\x18\x01 \x01(\x0b\x32..bilibili.app.playerunite.ugcanymodel.ClipInfo\"}\n\x0e\x43hargingExtend\x12\x1b\n\x13\x61\x64_unlock_time_once\x18\x01 \x01(\x03\x12\x0e\n\x06is_iaa\x18\x02 \x01(\x08\x12\x1e\n\x16\x66ull_screen_panel_link\x18\x03 \x01(\t\x12\x1e\n\x16half_screen_panel_link\x18\x04 \x01(\t*\xa0\x01\n\rPlayLimitCode\x12\x0f\n\x0bPLC_UNKNOWN\x10\x00\x12\x13\n\x0fPLC_UGCNOTPAYED\x10\x01\x12\x1b\n\x17PLC_ChargingPlusNotPass\x10\x02\x12\x1b\n\x17PLC_ChargingPlusUpgrade\x10\x03\x12\x1a\n\x16PLC_ChargingPlusReject\x10\x04\x12\x13\n\x0fPLC_COMMON_CODE\x10\x05*7\n\x08\x43lipType\x12\x19\n\x15\x43LIP_TYPE_UNSPECIFIED\x10\x00\x12\x10\n\x0c\x43LIP_TYPE_HE\x10\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.app.playerunite.ugcanymodel.ugcanymodel_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PLAYLIMITCODE']._serialized_start=453
-  _globals['_PLAYLIMITCODE']._serialized_end=589
+  _globals['_PLAYLIMITCODE']._serialized_start=922
+  _globals['_PLAYLIMITCODE']._serialized_end=1082
+  _globals['_CLIPTYPE']._serialized_start=1084
+  _globals['_CLIPTYPE']._serialized_end=1139
   _globals['_BUTTONSTYLE']._serialized_start=96
   _globals['_BUTTONSTYLE']._serialized_end=180
   _globals['_PLAYLIMIT']._serialized_start=183
   _globals['_PLAYLIMIT']._serialized_end=366
-  _globals['_UGCANYMODEL']._serialized_start=368
-  _globals['_UGCANYMODEL']._serialized_end=450
+  _globals['_UGCANYMODEL']._serialized_start=369
+  _globals['_UGCANYMODEL']._serialized_end=589
+  _globals['_CLIPINFO']._serialized_start=591
+  _globals['_CLIPINFO']._serialized_end=717
+  _globals['_CLIP']._serialized_start=719
+  _globals['_CLIP']._serialized_end=792
+  _globals['_CHARGINGEXTEND']._serialized_start=794
+  _globals['_CHARGINGEXTEND']._serialized_end=919
 # @@protoc_insertion_point(module_scope)

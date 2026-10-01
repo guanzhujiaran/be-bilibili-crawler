@@ -38,6 +38,9 @@ node_modules
 # Runtime / build artifacts
 volumes/
 
+# gRPC 抓包解析测试的产物（可随时重新生成）
+test/grpc_capture/captures/_parsed/
+
 # Project-specific
 Service/PlayWright/user_data
 Service/toutiao/src/Tools/Enc/node_modules

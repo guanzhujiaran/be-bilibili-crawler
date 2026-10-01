@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package bilibili.ad.v1;
 
+import "bilibili/app/viewunite/v1/viewunite.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/wrappers.proto";
 
@@ -213,6 +214,86 @@ message AdCardDto {
     NotClickableArea not_clickable_area = 60;
     //
     ForwardReply forward_reply = 61;
+    // AV内容
+    string av_content = 62;
+    // 入场动画开关
+    int32 anim_in_enable = 63;
+    // 扩展参数
+    string extra_params = 64;
+    // 商品id
+    int64 goods_item_id = 65;
+    // 卡片样式
+    int32 card_style = 66;
+    // 游戏信息
+    GameInfo game_info = 67;
+    // 左封面新角标样式
+    LeftCoverBadgeNewStyle left_cover_badge_new_style = 68;
+    // 游戏排名
+    GameRank game_rank = 69;
+    // 游戏评分
+    string game_rating = 70;
+    // 推荐理由样式
+    FeedsRcmdReasonStyle rcmd_reason_style = 71;
+    // 底框卡片样式
+    int32 underframe_card_style = 72;
+    // 抽奖文案
+    string lottery_text = 73;
+    // 日历信息
+    AdCardCalenderInfo calender_info = 74;
+    // 半屏交互样式
+    int32 half_panel_interaction_style = 75;
+    // 半屏内容类型
+    int32 half_panel_content_type = 76;
+    // 情景锚点
+    StoryAnchor story_anchor = 77;
+    // 跳转交互样式
+    int32 jump_interaction_style = 78;
+    // 预热文案
+    string warm_up_text = 79;
+    // 直播页类型
+    int32 live_page_type = 80;
+    // 播放页卡片样式
+    int32 playpage_card_style = 81;
+    // 应用下载样式
+    AppDownloadStyle app_download_style = 82;
+    // 描述列表
+    repeated Text desc_list = 83;
+    // 商品来源
+    string product_source = 84;
+    // 优惠券描述
+    string coupon_desc = 85;
+    // 优惠券价格
+    string coupon_price = 86;
+    // 音量描述
+    string volume_desc = 87;
+    // 标签列表
+    repeated string labels = 88;
+    // 条目来源
+    int32 item_source = 89;
+    // 底框图标类型
+    int32 underframe_icon_type = 90;
+    // 全屏广告标样式
+    AdBusinessMarkDto ad_tag_style_full_screen = 91;
+    // 权益图标
+    string benefit_icon = 92;
+    // 关联交互样式
+    int32 related_interaction_style = 93;
+    // 是否有防爬价格
+    bool has_anti_sniping_price = 94;
+    // 防爬文案
+    string anti_sniping_text = 95;
+    // 直播间链接
+    string liveroom_url = 96;
+    // 假按钮
+    FakeButtonDto fake_button = 97;
+    // 中间页
+    MidPageDto mid_page = 98;
+    // iOS游戏页资源
+    IosGamePageRes ios_game_page_res = 99;
+    // 半屏非模态
+    bool half_panel_non_modal = 100;
+    // 品牌热趋势
+    BrandTrending trending = 101;
 }
 
 // 额外广告数据
@@ -305,6 +386,28 @@ message AdContentExtraDto {
     string h5_pre_load_url = 42;
     //
     string cm_from_track_id = 43;
+    string abtest = 44;
+    int32 download_url_type = 45;
+    int32 enable_auto_callup = 46;
+    string external_link_warning = 47;
+    int64 live_booking_id = 48;
+    string store_dplink_xiaomi = 49;
+    int64 lottery_id = 50;
+    bool enable_openapk_dialog = 51;
+    repeated LiveBookInfoDto live_booking_infos = 52;
+    int32 user_cancel_jump_type = 53;
+    string user_cancel_jump_url = 54;
+    string app_exp_params = 55;
+    PauseAdLandingPage pause_ad_landingpage = 56;
+    string pause_page_type = 57;
+    BrandPausePageDto brand_pause_page = 58;
+    PausedDynamicPage dynamic_page = 59;
+    PauseAdLandingPage end_page_ad_landingpage = 60;
+    bilibili.app.viewunite.v1.PauseBar end_page_bar = 61;
+    string end_page_pause_page_type = 62;
+    PausedDynamicPage end_page_dynamic_page = 63;
+    bool enable_open_danmuku = 64;
+    bool miniapp_video_coexist = 65;
 }
 
 // 广告卡片封面数据
@@ -1008,4 +1111,316 @@ message WxProgramInfo {
     string name = 2;
     //
     string path = 3;
+}
+
+// 游戏信息
+message GameInfo {
+    // 游戏名
+    string game_name = 1;
+    // 游戏logo
+    string game_logo = 2;
+    // 游戏描述
+    string game_desc = 3;
+}
+
+// 游戏排名
+message GameRank {
+    // 排名内容
+    string rank_content = 1;
+    // 排名链接
+    string rank_link = 2;
+    // 日间背景色
+    string bkg_day_color = 3;
+    // 夜间背景色
+    string bkg_night_color = 4;
+    // 日间文字颜色
+    string font_day_color = 5;
+    // 夜间文字颜色
+    string font_night_color = 6;
+    // 图标
+    string icon_url = 7;
+    // 夜间图标
+    string night_icon_url = 8;
+}
+
+// 左封面新角标样式
+message LeftCoverBadgeNewStyle {
+    // 图标
+    string icon_url = 1;
+    // 夜间图标
+    string icon_night_url = 2;
+    // 宽
+    int32 icon_width = 3;
+    // 高
+    int32 icon_height = 4;
+}
+
+// 推荐理由样式
+message FeedsRcmdReasonStyle {
+    // 文本
+    string text = 1;
+    // 日间文字颜色
+    string text_color = 2;
+    // 夜间文字颜色
+    string text_color_night = 3;
+    // 日间背景色
+    string bg_color = 4;
+    // 夜间背景色
+    string bg_color_night = 5;
+    // 边框颜色
+    string border_color = 6;
+    // 夜间边框颜色
+    string border_color_night = 7;
+    // 样式
+    int32 bg_style = 8;
+    // 图标
+    string icon_url = 9;
+    // 夜间图标
+    string icon_night_url = 10;
+}
+
+// 日历信息
+message AdCardCalenderInfo {
+    // 日历id
+    int32 calender_id = 1;
+    // 日历id str
+    string calendar_id_str = 2;
+    // 开始时间
+    int64 start_time = 3;
+    // 结束时间
+    int64 end_time = 4;
+    // 标题
+    string title = 5;
+    // 评论
+    string comment = 6;
+}
+
+// 情景锚点
+message StoryAnchor {
+    // 类型
+    int32 type = 1;
+    // 标题
+    string title = 2;
+    // 描述
+    string desc = 3;
+    // 购物车图标
+    StoryCartIcon story_cart_icon = 4;
+}
+
+// 购物车图标
+message StoryCartIcon {
+    // 图标
+    string icon_url = 1;
+    // 标题
+    string icon_title = 2;
+    // 文本
+    string icon_text = 3;
+}
+
+// 应用下载样式
+message AppDownloadStyle {
+    // 样式
+    int32 style = 1;
+    // 引导文案
+    string guide_text = 2;
+    // 头部图列表
+    repeated string head_imgs = 3;
+    // 详情图布局
+    int32 detail_img_layout = 4;
+    // 详情图列表
+    repeated string detail_imgs = 5;
+    // 详情文案
+    string detail_text = 6;
+    // 标签列表
+    repeated string tags = 7;
+}
+
+// 富文本
+message Text {
+    // 文本
+    string text = 1;
+    // 字号
+    int64 font_size = 2;
+    // 日间颜色
+    string day_color = 3;
+    // 夜间颜色
+    string night_color = 4;
+    // 图片
+    string img = 5;
+    // 夜间图片
+    string night_img = 6;
+    // 图片宽
+    int32 img_width = 7;
+    // 图片高
+    int32 img_height = 8;
+    // 左边距
+    int32 left_margin = 9;
+    // 文本装饰
+    int32 text_decoration = 10;
+}
+
+// 假按钮
+message FakeButtonDto {
+    // 文本
+    string text = 1;
+    // 展示箭头
+    bool show_arrow = 2;
+    // 中间页
+    MidPageDto mid_page = 3;
+    // 空白点击禁用
+    bool blank_click_disable = 4;
+}
+
+// 中间页
+message MidPageDto {
+    // 类型
+    int32 type = 1;
+    // 交互样式
+    int32 interaction_style = 2;
+    // H5页面url
+    string h5_page_url = 3;
+    // 按钮
+    AdButtonDto button = 4;
+    // 下一页按钮
+    NextPageButtonDto next_page_button = 5;
+    // 展示播放图标
+    bool show_play_icon = 6;
+    // 空白可点击
+    bool blank_clickable = 7;
+    // 日间主主题
+    string main_theme_day = 8;
+    // 夜间主主题
+    string main_theme_night = 9;
+    // 日间按钮主题
+    string button_theme_day = 10;
+    // 夜间按钮主题
+    string button_theme_night = 11;
+}
+
+// 下一页按钮
+message NextPageButtonDto {
+    // 类型
+    int32 type = 1;
+    // 文本
+    string text = 2;
+    // 交互样式
+    int32 interaction_style = 3;
+    // H5页面url
+    string h5_page_url = 4;
+    // 按钮
+    AdButtonDto button = 5;
+}
+
+// 品牌热趋势
+message BrandTrending {
+    // 分数
+    int64 score = 1;
+    // 标题
+    string title = 2;
+    // 分数图
+    string score_img = 3;
+    // 活动id
+    int64 activity_id = 4;
+    // 自身分数
+    int64 own_score = 5;
+}
+
+// 直播预约信息
+message LiveBookInfoDto {
+    // 预约id
+    int64 live_booking_id = 1;
+    // 直播页类型
+    int32 live_page_type = 2;
+    // 日历信息
+    AdCardCalenderInfo calender_info = 3;
+}
+
+// 暂停页落地页
+message PauseAdLandingPage {
+    // 背景色
+    PauseAdBackgroundColor background_color = 1;
+    // 模块列表
+    repeated PauseAdLandingPageModule modules = 2;
+    // 底部组件
+    PauseAdBottomComponent bottom_component = 3;
+    // 可点击区域
+    repeated string clickable_areas = 4;
+    // 可上报区域
+    repeated string reportable_areas = 5;
+    // 自定义展示url
+    CustomShowUrlInfo custom_show_urls = 6;
+    // 是否开启滑动上报
+    bool enable_slide_report = 7;
+}
+
+// 品牌暂停页
+message BrandPausePageDto {
+    oneof card {
+        // 轮播卡
+        LoopCard loop_card = 1;
+    }
+}
+
+// 轮播卡
+message LoopCard {
+    // 卡片列表
+    repeated LoopCardItem items = 1;
+}
+
+// 轮播卡条目
+message LoopCardItem {
+    // 图片
+    string img = 1;
+    // 跳转链接
+    string jump_url = 2;
+}
+
+// 动态暂停页
+message PausedDynamicPage {
+    // 相关稿件
+    repeated int64 related_aids = 1;
+    oneof page {
+        // BX页
+        BxPage bx_page = 2;
+    }
+}
+
+// BX页
+message BxPage {
+    // 页面id
+    string page_id = 1;
+}
+
+// 暂停页背景色
+message PauseAdBackgroundColor {
+    // 日间颜色
+    string color_day = 1;
+    // 夜间颜色
+    string color_night = 2;
+}
+
+// 暂停页落地页模块
+message PauseAdLandingPageModule {
+    // 模块类型
+    int32 module_type = 1;
+    // 图片
+    string img = 2;
+    // 跳转链接
+    string jump_url = 3;
+}
+
+// 暂停页底部组件
+message PauseAdBottomComponent {
+    // 文本
+    string text = 1;
+    // 跳转链接
+    string jump_url = 2;
+}
+
+// 自定义展示url
+message CustomShowUrlInfo {
+    // 展示url列表
+    repeated string show_urls = 1;
+    // 点击url列表
+    repeated string click_urls = 2;
 }

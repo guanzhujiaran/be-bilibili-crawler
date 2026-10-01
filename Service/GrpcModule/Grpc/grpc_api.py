@@ -21,11 +21,13 @@ from httpx import ProxyError, RemoteProtocolError, ConnectError, ConnectTimeout,
 from python_socks._errors import ProxyConnectionError, ProxyTimeoutError, ProxyError as SocksProxyError
 from socksio import ProtocolError
 from CONFIG import CONFIG
+from Utils.GrpcUtils.CONST import AppChannels
 from Utils.GrpcUtils.GrpcMsgTools import raw_resp_content_2_dict
 from Utils.推送.PushMe import a_push_error
 from log.base_log import BiliGrpcApi_logger, Voucher352_logger
 from Service.GrpcModule.Models.CustomRequestErrorModel import Request352Error
 from Service.GrpcModule.Models.GrpcApiBaseModel import MetaDataWrapper
+from Utils.GrpcUtils.metadata.device_pool import get_pool
 from Utils.GrpcUtils.metadata.makeMetaData import make_metadata, is_useable_Dalvik, gen_trace_id
 from Utils.GrpcUtils.极验.极验点击验证码 import geetest_v3_breaker
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_latest_version_builds, resource_abtest_abserver
@@ -121,8 +123,8 @@ class BiliGrpc:
                 :70]  # 获取最新的build
         except Exception as e:
             self.grpc_api_any_log.exception(e)
-        self.channel_list = ['master', '360',
-                             'bili', 'xiaomi', 'google']  # 渠道包列表
+        # 安装包渠道列表：与 makeMetaData 共用同一渠道池，随机取用
+        self.channel_list = list(AppChannels)
         with open(os.path.join(
                 CONFIG.root_dir,
                 'Utils/GrpcUtils/user-agents_dalvik_application_2-1.json'
@@ -205,6 +207,23 @@ class BiliGrpc:
                 channel = random.choice(self.channel_list)
                 # self.grpc_api_any_log.debug(
                 #     f'当前metadata池数量：{len(self.metadata_list)}，总共{self.queue_num}个meta信息，前往获取新的metadata')
+                # 设备池：优先复用池里已有的设备（保留其 buvid/指纹/region），没有就新建。
+                # Redis 异常/超时不让爬取挂住：降级为本次新建一台
+                try:
+                    device = await asyncio.wait_for(
+                        get_pool().acquire(
+                            brand=brand,
+                            Dalvik=Dalvik,
+                            version_name=version_name,
+                            build=build,
+                            channel=channel,
+                        ),
+                        timeout=10,
+                    )
+                except Exception as pool_err:
+                    self.grpc_api_any_log.error(
+                        f'设备池取设备失败（降级为新建）：{type(pool_err).__name__} {pool_err}')
+                    device = None
                 md, ticket_resp, metadat_basic_info = await make_metadata(
                     "",
                     brand=brand,
@@ -212,7 +231,8 @@ class BiliGrpc:
                     version_name=version_name,
                     build=build,
                     channel=channel,
-                    proxy=proxy
+                    proxy=proxy,
+                    device=device,
                 )
                 session_id = uuid.uuid4().hex[0:8]
                 md_dict = dict(md)
@@ -247,8 +267,15 @@ class BiliGrpc:
                 version_name=version_name,
                 session_id=session_id,
                 guestid=metadat_basic_info.guestid,
+                device=metadat_basic_info.device,
             )
             self.metadata_list.append(metadata)
+            # 回写设备：本次请求可能让它学到了新的 region 等信息（失败不影响主流程）
+            try:
+                await asyncio.wait_for(get_pool().save(device), timeout=10)
+            except Exception as pool_err:
+                self.grpc_api_any_log.error(
+                    f'设备池回写失败：{type(pool_err).__name__} {pool_err}')
         # self.grpc_api_any_log.debug(f'当前metadata池数量：{len(self.metadata_list)}')
         return metadata
 
@@ -372,10 +399,30 @@ class BiliGrpc:
                 )
                 self.grpc_api_any_log.debug(
                     f'响应url：{url}\n响应body：{resp.text}\n响应headers：{resp.headers}')
+                # 让本次请求所属的设备从响应里学习 region
+                # （APK: kntr.base.region.impl.h.b，先响应头再 trailer）
+                device_env = getattr(md, "device", None)
+                learned_region = (
+                    device_env.learn_region(
+                        resp.headers, getattr(resp, "trailers", None)
+                    )
+                    if device_env
+                    else {}
+                )
+                if learned_region:
+                    self.grpc_api_any_log.debug(f'更新region缓存：{learned_region}')
                 resp.raise_for_status()
                 md.able(num_add=True)
                 if type(resp.headers.get('Grpc-status')) is not str and type(
                         resp.headers.get('Grpc-status')) is not bytes:
+                    # 响应异常同样视为设备有问题，从设备池剔除
+                    if getattr(md, 'device', None):
+                        try:
+                            await asyncio.wait_for(
+                                get_pool().drop(md.device), timeout=10)
+                        except Exception as pool_err:
+                            self.grpc_api_any_log.error(
+                                f'设备池剔除失败：{type(pool_err).__name__} {pool_err}')
                     raise MY_Error(resp.text.replace('\n', ''))
                 if '-352' in str(resp.headers.get('bili-status-code')) or \
                         '-352' in str(resp.headers.get('Grpc-Message')) or \
@@ -453,6 +500,15 @@ class BiliGrpc:
                 )
                 await asyncio.sleep(3)
                 md.times_352 += 1  # -352报错就增加一次352次数，满了之后舍弃
+                # -352/-412 说明这台设备已经不被服务端接受，直接从设备池剔除
+                if getattr(md, 'device', None):
+                    try:
+                        await asyncio.wait_for(get_pool().drop(md.device), timeout=10)
+                        self.grpc_api_any_log.warning(
+                            f'设备 {md.buvid} 触发-352，已从设备池剔除')
+                    except Exception as pool_err:
+                        self.grpc_api_any_log.error(
+                            f'设备池剔除失败：{type(pool_err).__name__} {pool_err}')
                 ipv6_proxy_weights -= 10
                 if proxy:
                     if get_scheme_ip_port_form_proxy_dict(proxy.proxy) == self.my_proxy_addr:

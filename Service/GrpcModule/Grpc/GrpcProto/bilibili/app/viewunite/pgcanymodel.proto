@@ -86,6 +86,14 @@ message OgvData {
     string horizontal_cover1610 = 26;
     // 
     int32 has_can_play_ep = 27;
+    //
+    Skin skin = 28;
+    //
+    map<string, CacheAuthConfig> cache_auth_config = 29;
+    //
+    map<int32, SectionPagination> section_pagination = 30;
+    //
+    bilibili.app.viewunite.common.TranslationInfo translation_info = 31;
 }
 
 // 
@@ -98,6 +106,12 @@ message OgvSwitch {
     int32 merge_preview_section = 3;
     // 
     int32 enable_show_vt_info = 4;
+    //
+    int32 hide_ep_vv_vt_dm = 5;
+    //
+    int32 follow_guide = 6;
+    //
+    int32 hide_post_review = 7;
 }
 
 // 播放器浮层广告(?)
@@ -242,4 +256,92 @@ message WatchProgress {
     string last_ep_index = 2;
     // 
     int64 last_time = 3;
+}
+
+// 皮肤配置
+message Skin {
+    // tab文本颜色
+    string tab_text_color = 1;
+    // tab夜间文本颜色
+    string tab_text_night_color = 2;
+    // 背景图
+    string bg_img = 3;
+    // 夜间背景图
+    string bg_img_night = 4;
+    // 弹幕输入框背景颜色
+    string dm_input_frame_bg_color = 5;
+    // 弹幕输入框夜间背景颜色
+    string dm_input_frame_bg_night_color = 6;
+    // 弹幕输入框颜色
+    string dm_input_frame_color = 7;
+    // 弹幕输入框夜间颜色
+    string dm_input_frame_night_color = 8;
+    // 弹幕按钮背景颜色
+    string dm_btn_bg_color = 9;
+    // 弹幕按钮夜间背景颜色
+    string dm_btn_bg_night_color = 10;
+    // 弹幕按钮图标颜色
+    string dm_btn_icon_color = 11;
+    // 弹幕按钮夜间图标颜色
+    string dm_btn_icon_night_color = 12;
+    // 弹幕输入文本颜色
+    string dm_input_text_color = 13;
+    // 弹幕输入夜间文本颜色
+    string dm_input_text_night_color = 14;
+}
+
+// 缓存授权配置
+message CacheAuthConfig {
+    // 缓存弹窗
+    CacheDialog dialog = 1;
+}
+
+// 缓存弹窗
+message CacheDialog {
+    // 标题
+    string title = 1;
+    // 按钮标题
+    string button_title = 2;
+    // 跳转链接
+    string link = 3;
+    // 背景图
+    string bg_image = 4;
+}
+
+// 分段分页模式
+enum SectionPaginationMode {
+    //
+    SECTION_PAGINATION_MODE_UNKNOWN = 0;
+    //
+    SECTION_PAGINATION_MODE_PAGED = 1;
+    //
+    SECTION_PAGINATION_MODE_PAGED_CURATED = 3;
+}
+
+// 分段页
+message SectionPage {
+    // 页索引
+    int32 page_index = 1;
+    // 起始剧集ID
+    int64 start_ep_id = 2;
+    // 结束剧集ID
+    int64 end_ep_id = 3;
+    // 剧集数量
+    int32 ep_count = 4;
+    // 标题
+    string title = 5;
+    // 稿件标题
+    string arc_title = 6;
+}
+
+// 分段分页
+message SectionPagination {
+    // 分页模式
+    SectionPaginationMode mode = 1;
+    // 页列表
+    repeated SectionPage pages = 2;
+    // 当前页索引
+    int32 current_page_index = 3;
+    // 总数
+    int32 total = 4;
 }

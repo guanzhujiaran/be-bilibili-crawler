@@ -24,13 +24,19 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n0bilibili/app/archive/middleware/v1/preload.proto\x12\"bilibili.app.archive.middleware.v1\"t\n\nPlayerArgs\x12\n\n\x02qn\x18\x01 \x01(\x03\x12\r\n\x05\x66nver\x18\x02 \x01(\x03\x12\r\n\x05\x66nval\x18\x03 \x01(\x03\x12\x12\n\nforce_host\x18\x04 \x01(\x03\x12\x15\n\rvoice_balance\x18\x05 \x01(\x03\x12\x11\n\tvoice_any\x18\x06 \x01(\x03\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n0bilibili/app/archive/middleware/v1/preload.proto\x12\"bilibili.app.archive.middleware.v1\"\xd9\x02\n\nPlayerArgs\x12\n\n\x02qn\x18\x01 \x01(\x03\x12\r\n\x05\x66nver\x18\x02 \x01(\x03\x12\r\n\x05\x66nval\x18\x03 \x01(\x03\x12\x12\n\nforce_host\x18\x04 \x01(\x03\x12\x15\n\rvoice_balance\x18\x05 \x01(\x03\x12?\n\tqn_policy\x18\x06 \x01(\x0e\x32,.bilibili.app.archive.middleware.v1.QnPolicy\x12\x13\n\x0b\x63lient_attr\x18\x07 \x01(\x03\x12W\n\rextra_content\x18\x08 \x03(\x0b\x32@.bilibili.app.archive.middleware.v1.PlayerArgs.ExtraContentEntry\x12\x12\n\nsoft_fnval\x18\t \x01(\x03\x1a\x33\n\x11\x45xtraContentEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01*?\n\x08QnPolicy\x12\x15\n\x11QN_POLICY_DEFAULT\x10\x00\x12\x1c\n\x18QN_POLICY_AUTO_QN_ENABLE\x10\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.app.archive.middleware.v1.preload_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PLAYERARGS']._serialized_start=88
-  _globals['_PLAYERARGS']._serialized_end=204
+  _globals['_PLAYERARGS_EXTRACONTENTENTRY']._loaded_options = None
+  _globals['_PLAYERARGS_EXTRACONTENTENTRY']._serialized_options = b'8\001'
+  _globals['_QNPOLICY']._serialized_start=436
+  _globals['_QNPOLICY']._serialized_end=499
+  _globals['_PLAYERARGS']._serialized_start=89
+  _globals['_PLAYERARGS']._serialized_end=434
+  _globals['_PLAYERARGS_EXTRACONTENTENTRY']._serialized_start=383
+  _globals['_PLAYERARGS_EXTRACONTENTENTRY']._serialized_end=434
 # @@protoc_insertion_point(module_scope)

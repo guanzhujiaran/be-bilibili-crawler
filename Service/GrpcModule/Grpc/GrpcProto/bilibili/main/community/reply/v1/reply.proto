@@ -2,6 +2,9 @@ syntax = "proto3";
 
 package bilibili.main.community.reply.v1;
 
+import "bilibili/app/dynamic/v2/opus.proto";
+import "bilibili/pagination/pagination.proto";
+import "bilibili/vas/garb/model/sailing.proto";
 import "google/protobuf/any.proto";
 
 // 评论区
@@ -115,6 +118,10 @@ message Content {
     RichText rich_text = 8;
     // 评论图片
     repeated  Picture pictures = 9;
+    //
+    double picture_scale = 10;
+    // 商品卡片信息
+    GoodsCardInfo card_info = 11;
 }
 
 // 图片信息
@@ -127,6 +134,66 @@ message Picture {
     double img_height = 3;
     // 图片大小，单位KB
     double img_size = 4;
+    // 右上角图标
+    string top_right_icon = 5;
+    // 是否播放gif缩略图
+    bool play_gif_thumbnail = 6;
+    // 图片角标
+    PictureBadge picture_badge = 7;
+    // 条目id
+    string item_id = 8;
+}
+
+// 图片角标
+message PictureBadge {
+    // 文本
+    string text = 1;
+    // 图标
+    string icon = 2;
+}
+
+// 评论商品卡片信息
+message GoodsCardInfo {
+    // 商品名
+    string name = 1;
+    // 跳转链接
+    string jump_link = 2;
+    // schema链接
+    string schema_url = 3;
+    // 卡片类型
+    int32 card_type = 4;
+    // 交易描述列表
+    repeated string trade_descs = 5;
+    // 来源平台
+    string from_platform = 6;
+    // 描述标签列表
+    repeated string desc_tags = 7;
+    // 现价
+    string current_price = 8;
+    // 原价
+    string ori_price = 9;
+    // 价格符号
+    string price_symbol = 10;
+    // 价格前缀
+    string price_prefix = 11;
+    // 价格后缀
+    string price_suffix = 12;
+    // 购买行为标签列表
+    repeated string purchase_behavior_label = 13;
+    // 来源店铺
+    string source_shop = 14;
+    // 按钮文案
+    string button = 15;
+    // 图片列表
+    repeated string image_list = 16;
+    // 缓存
+    string cache = 17;
+    // 曝光上报
+    string goods_show_report = 18;
+    // 点击上报
+    string goods_click_report = 19;
+    // 打开白名单列表
+    repeated string open_white_list = 20;
 }
 
 // 页面游标回复
@@ -168,6 +235,31 @@ message DetailListReply {
     Activity activity = 4;
     //
     LikeInfo likes = 5;
+    // 排序方式
+    Mode mode = 6;
+    // 排序方式展示文案
+    string mode_text = 7;
+    // 分页信息
+    bilibili.pagination.FeedPaginationReply pagination_reply = 8;
+    // 会话id
+    string session_id = 9;
+    // 主题标题
+    SubjectTitle subject_title = 10;
+    // 混合卡片列表
+    repeated MixedCard mixed_cards = 11;
+    // 主题标题
+    message SubjectTitle {
+        // 左侧图标
+        string left_icon = 1;
+        // 标题
+        string title = 2;
+        // 跳转链接
+        string link = 3;
+        // 静默评论rpid
+        int64 rpid_mute = 4;
+        // 推送开关
+        int32 push_switch = 5;
+    }
 }
 
 // 二级评论明细-请求
@@ -184,6 +276,16 @@ message DetailListReq {
     CursorReq cursor = 5;
     // 来源标识
     DetailListScene scene = 6;
+    // 排序方式
+    Mode mode = 7;
+    // 分页信息
+    bilibili.pagination.FeedPagination pagination = 8;
+    // 扩展数据
+    string extra = 9;
+    // 广告扩展数据
+    string ad_extra = 10;
+    // 是否需要主题标题
+    bool need_subject_title = 11;
 }
 
 // 来源标识
@@ -203,6 +305,10 @@ message DialogListReply {
     repeated ReplyInfo replies = 3;
     // 评论区的活动
     Activity activity = 4;
+    // 分页信息
+    bilibili.pagination.FeedPaginationReply pagination_reply = 5;
+    // 会话id
+    string session_id = 6;
 }
 
 // 对话评论树-请求
@@ -214,9 +320,15 @@ message DialogListReq {
     // 根评论rpid
     int64 root = 3;
     // 对话评论rpid
-    int64 rpid = 4;
+    int64 dialog = 4;
     // 页面游标
     CursorReq cursor = 5;
+    // 分页信息
+    bilibili.pagination.FeedPagination pagination = 6;
+    // 扩展数据
+    string extra = 7;
+    // 广告扩展数据
+    string ad_extra = 8;
 }
 
 // 特效
@@ -244,6 +356,103 @@ message Emote {
     string gif_url = 7;
     //
     string text = 8;
+    //
+    string webp_url = 9;
+}
+
+// 折叠卡片
+message FoldCard {
+    // 底部文案
+    string bottom_text = 1;
+    // 分页信息
+    bilibili.pagination.FeedPagination fold_pagination = 2;
+}
+
+// 热点卡片
+message HotspotCard {
+    // 图标
+    string icon = 1;
+    // 标题
+    string title = 2;
+    // 标题文本
+    string title_text = 3;
+    // 评论rpid
+    int64 rpid = 4;
+    // 评论区id
+    int64 oid = 5;
+    // 评论内容
+    Content content = 6;
+    // 用户信息
+    MemberV2 member = 7;
+    // 热点id
+    int64 hotspot_id = 8;
+    // 评论条目控制字段
+    ReplyControl reply_control = 9;
+    // 点赞数
+    int64 like = 10;
+    // 稿件标题
+    string arc_title = 11;
+    // 来源文案
+    string from_text = 12;
+    // 类型
+    int32 type = 13;
+}
+
+// 混合卡片
+message MixedCard {
+    // 类型
+    int32 type = 1;
+    // 评论区id
+    string oid = 2;
+    // 展示排序
+    int64 display_rank = 3;
+    // 卡片内容
+    oneof item {
+        // 提问卡
+        QuestionCard question = 4;
+        // 折叠卡
+        FoldCard fold = 5;
+        // 热点卡
+        HotspotCard hotspot = 6;
+    }
+}
+
+// 提问卡片
+message QuestionCard {
+    // 问题信息
+    Question question = 1;
+    // 统计信息
+    QuestionCardStat stat = 2;
+    // 底部文案
+    string bottom_text = 3;
+    // 问题信息
+    message Question {
+        // 问题id
+        int64 qid = 1;
+        // 标题
+        string title = 2;
+        // 是否必须答对
+        bool must_right = 3;
+        // 选项列表
+        repeated Option options = 4;
+        // 选项
+        message Option {
+            // 键
+            string key = 1;
+            // 标题
+            string title = 2;
+        }
+    }
+}
+
+// 提问卡片统计
+message QuestionCardStat {
+    // 答对数
+    int64 right_cnt = 1;
+    // 答对用户数
+    int64 right_mid_cnt = 2;
+    // 提交用户数
+    int64 submit_mid_cnt = 3;
 }
 
 // 商品项目
@@ -334,6 +543,30 @@ message MainListReply {
     QoeInfo qoe = 15;
     //
     map<string, int32> callbacks = 16;
+    //
+    OperationV2 operation_v2 = 17;
+    // 排序方式
+    Mode mode = 18;
+    // 排序方式展示文案
+    string mode_text = 19;
+    // 分页信息
+    bilibili.pagination.FeedPaginationReply pagination_reply = 20;
+    // 会话id
+    string session_id = 21;
+    // 上报参数
+    string report_params = 22;
+    // 投票卡片
+    VoteCard vote_card = 23;
+    // 电竞等级卡片
+    ESportsGradeCard esports_grade_card = 24;
+    // 上下文特征
+    string context_feature = 25;
+    // 分页到底文案
+    string pagination_end_text = 26;
+    // 混合卡片列表
+    repeated MixedCard mixed_cards = 27;
+    // 主题顶部卡片列表
+    repeated SubjectTopCards subject_top_cards = 28;
 }
 
 // 主评论列表-请求
@@ -354,6 +587,14 @@ message MainListReq {
     int64 seek_rpid = 7;
     // 评论区筛选类型 取值可为: ["全部" "粉丝评论" "笔记长评"]
     string filter_tag_name = 8;
+    // 排序方式
+    Mode mode = 9;
+    // 分页信息
+    bilibili.pagination.FeedPagination pagination = 10;
+    // 客户端撤回的评论rpid列表
+    repeated int64 client_recall_rpids = 11;
+    // 词搜索参数
+    WordSearchParam word_search_param = 12;
 }
 
 // 用户信息
@@ -616,6 +857,59 @@ message MemberV2 {
     Senior senior = 7;
     // 契约信息
     Contractor contractor = 8;
+    // 装扮信息
+    bilibili.vas.garb.model.UserSailing user_sailing = 9;
+    // 创作激励信息
+    Tribee tribee = 10;
+    // 创作激励信息
+    message Tribee {
+        // 基础信息
+        Base base = 1;
+        // 创作者信息
+        Creator creator = 2;
+        // 基础信息
+        message Base {
+            // 图标
+            string icon = 1;
+            // 文本
+            string text = 2;
+            // 背景色
+            ThemeColor background_color = 3;
+            // 文字颜色
+            ThemeColor text_color = 4;
+            // 图标颜色
+            ThemeColor icon_tint_color = 5;
+        }
+        // 创作者信息
+        message Creator {
+            // 图标
+            string icon = 1;
+            // 标题
+            string title = 2;
+            // 副标题
+            string subtitle = 3;
+            // 用户头像url
+            string user_avatar_url = 4;
+            // 用户名
+            string user_name = 5;
+            // 描述
+            string description = 6;
+            // 底部文案
+            string bottom_text = 7;
+            // 左侧图标
+            string left_icon = 8;
+            // 右侧图标
+            string right_icon = 9;
+        }
+    }
+}
+
+// 主题颜色
+message ThemeColor {
+    // 亮色
+    string light = 1;
+    // 暗色
+    string dark = 2;
 }
 
 // 排序方式
@@ -660,6 +954,153 @@ message OperationTitle {
     string content = 1;
     //
     bool is_highlight = 2;
+}
+
+// 运营位V2
+message OperationV2 {
+    // 类型
+    int32 type = 1;
+    // 前缀文案
+    string prefix_text = 2;
+    // 图标
+    string icon = 3;
+    // 标题
+    string title = 4;
+    // 跳转链接
+    string link = 5;
+    // 上报扩展
+    string report_extra = 6;
+}
+
+// 电竞等级卡片
+message ESportsGradeCard {
+    // 标题
+    string title = 1;
+    // 描述
+    string description = 2;
+    // 图片
+    string image = 3;
+    // 跳转链接
+    string link = 4;
+}
+
+// PGC评分卡片
+message OgvGradeCard {
+    // 标题
+    string title = 1;
+    // 副标题
+    string sub_title = 2;
+    // 按钮文案
+    string button_text = 3;
+    // 跳转链接
+    string goto_url = 4;
+    // 上报参数
+    string report_param = 5;
+}
+
+// UP保护卡片
+message UpProtectionCard {
+    // 文案
+    string text = 1;
+}
+
+// 竞猜卡片
+message QuizCard {
+    // 竞猜id
+    int64 quiz_id = 1;
+    // 标题
+    string title = 2;
+    // 参与人数
+    int64 count = 3;
+    // 总投币数
+    int64 all_coin = 4;
+    // 竞猜文案
+    string quiz_text = 5;
+    // 选项列表
+    repeated Option options = 6;
+    // 我的选项
+    int32 my_option = 7;
+    // UP主选项
+    int32 up_option = 8;
+    // 跳转链接
+    string url = 9;
+    // 状态
+    int32 state = 10;
+    // 获胜选项
+    int32 win_option = 11;
+    // 编辑链接
+    string edit_url = 12;
+    // 竞猜图标
+    string quiz_icon = 13;
+    // 初始奖池金币
+    int64 initial_pool_coin = 14;
+    // 选项
+    message Option {
+        // 选项下标
+        int32 idx = 1;
+        // 描述
+        string desc = 2;
+        // 赔率
+        int32 coin_per = 3;
+        // 前缀文案
+        string prefix_text = 4;
+    }
+}
+
+// 主题顶部卡片
+message SubjectTopCards {
+    // 类型
+    int32 type = 1;
+    // 评论区id
+    string oid = 2;
+    // 卡片内容
+    oneof item {
+        // PGC评分卡
+        OgvGradeCard ogv_grade_card = 3;
+        // UP保护卡
+        UpProtectionCard up_protection_card = 4;
+        // 广告
+        CM cm = 5;
+        // 精选筛选
+        UpSelection up_selection = 6;
+        // 运营位V2
+        OperationV2 operation_v2 = 7;
+        // 投票卡片
+        VoteCard vote_card = 8;
+        // 电竞等级卡片
+        ESportsGradeCard esports_grade_card = 9;
+        // 竞猜卡片
+        QuizCard quiz_card = 10;
+    }
+}
+
+// 投票卡片
+message VoteCard {
+    // 投票id
+    int64 vote_id = 1;
+    // 标题
+    string title = 2;
+    // 参与人数
+    int64 count = 3;
+    // 选项列表
+    repeated Option options = 4;
+    // 我的投票选项
+    int64 my_vote_option = 5;
+    // 选项
+    message Option {
+        // 选项下标
+        int64 idx = 1;
+        // 描述
+        string desc = 2;
+        // 人数
+        int64 count = 3;
+    }
+}
+
+// 词搜索参数
+message WordSearchParam {
+    // 展示数量
+    int64 shown_count = 1;
 }
 
 // PGC视频项目
@@ -714,6 +1155,28 @@ message QoeInfo {
     repeated QoeScoreItem score_items = 6;
     //
     int64 display_rank = 7;
+    //
+    Form form = 8;
+}
+
+//
+message Form {
+    //
+    int32 type = 1;
+    //
+    repeated QoeOption options = 2;
+}
+
+//
+message QoeOption {
+    //
+    string title = 1;
+    //
+    float score = 2;
+    //
+    string img_url = 3;
+    //
+    repeated string desc = 4;
 }
 
 //
@@ -809,6 +1272,80 @@ message ReplyControl {
     string biz_scene = 24;
     // IP属地信息 "IP属地：xxx"
     string location = 25;
+    // 是否折叠图片
+    bool fold_pictures = 26;
+    // 是否是笔记评论V2
+    bool is_note_v2 = 27;
+    // 是否隐藏笔记图标
+    bool hide_note_icon = 28;
+    // 推荐组件文案
+    string cm_recommend_component = 29;
+    // 投票选项
+    VoteOption vote_option = 30;
+    // 充电描述
+    string charged_desc = 31;
+    // 等级记录
+    GradeRecord grade_record = 32;
+    // 预设回复文案
+    string preset_reply_text = 33;
+    // 彩蛋标签
+    EasterEggLabel easter_egg_label = 34;
+    // 上下文特征
+    string context_feature = 35;
+    // 插入特效
+    InsertEffect insert_effect = 36;
+    // 翻译开关
+    int32 translation_switch = 37;
+    // 是否支持分享
+    bool support_share = 38;
+    // 飞行员信息
+    FlyInfo fly_info = 39;
+    // 投票选项
+    message VoteOption {
+        // 标签类型
+        int32 label_kind = 1;
+        // 描述
+        string desc = 2;
+        // 选项下标
+        int64 idx = 3;
+        // 投票id
+        int64 vote_id = 4;
+        // 前缀文案
+        string prefix_text = 5;
+    }
+    // 等级记录
+    message GradeRecord {
+        // 分数
+        int32 score = 1;
+        // 文本列表
+        repeated Text texts = 2;
+        // 文本
+        message Text {
+            // 原始文本
+            string raw = 1;
+            // 样式
+            TextStyle style = 2;
+        }
+    }
+    // 彩蛋标签
+    message EasterEggLabel {
+        // 图片
+        string image = 1;
+        // 跳转链接
+        string jump_url = 2;
+    }
+    // 插入特效
+    message InsertEffect {
+        // 内容
+        string content = 1;
+        // 图标
+        string icon = 2;
+    }
+    // 飞行员信息
+    message FlyInfo {
+        // 订单id
+        string order_id = 1;
+    }
 }
 
 //
@@ -821,6 +1358,20 @@ message ReplyExtra {
     int64 ep_id = 3;
     //
     bool is_story = 4;
+    //
+    string spmid = 5;
+    //
+    string from_spmid = 6;
+    //
+    bool disable_underline = 7;
+    //
+    bool disable_we_search = 8;
+    //
+    bool disable_filter_tag = 9;
+    //
+    bool is_activity_mode = 10;
+    //
+    string track_id = 11;
 }
 
 // 评论条目信息
@@ -855,6 +1406,44 @@ message ReplyInfo {
     ReplyControl reply_control = 14;
     // 发布者信息V2
     MemberV2 member_v2 = 15;
+    // 埋点信息
+    string track_info = 16;
+    // 翻译内容
+    Content translated_content = 17;
+    // 父评论发布者信息
+    ParentReplyMember parent_reply_member = 18;
+    // 热评信息
+    HotReplyInfo hot_info = 19;
+}
+
+// 父评论发布者信息
+message ParentReplyMember {
+    // 用户mid
+    int64 mid = 1;
+    // 用户名
+    string name = 2;
+}
+
+// 热评信息
+message HotReplyInfo {
+    // 稿件标题
+    string arc_title = 1;
+    // 观点下标
+    int32 opinion_idx = 2;
+    // 来源文案
+    string from_text = 3;
+}
+
+// 文本样式
+message TextStyle {
+    // 字号
+    int32 font_size = 1;
+    // 字体样式
+    int32 font_style = 2;
+    // 日间文字颜色
+    string text_day_color = 3;
+    // 夜间文字颜色
+    string text_night_color = 4;
 }
 
 // 查询单条评论-响应
@@ -869,6 +1458,8 @@ message ReplyInfoReq {
     int64 rpid = 1;
     //
     int32 scene = 2;
+    //
+    int32 biz_scene = 3;
 }
 
 // 富文本
@@ -877,6 +1468,8 @@ message RichText {
     oneof item {
         // 笔记
         RichTextNote note = 1;
+        // 图文
+        bilibili.app.dynamic.v2.OpusItem opus = 2;
     }
 }
 
@@ -1101,6 +1694,53 @@ message SubjectControl {
     string empty_background_uri = 23;
     // 评论区筛选类型列表
     repeated FilterTag support_filter_tags = 24;
+    // 截图图标状态
+    int32 screenshot_icon_state = 25;
+    // 上传图片图标状态
+    int32 upload_picture_icon_state = 26;
+    // 空页信息
+    EmptyPage empty_page = 27;
+    // 置顶评论保护
+    CmTopReplyProtection cm_top_reply_protection = 28;
+    // 是否开启充电
+    bool enable_charged = 29;
+    // 置顶评论保护
+    message CmTopReplyProtection {
+        // 受保护的置顶评论rpid
+        int64 protected_top_rpid = 1;
+        // 弹窗文案
+        string popup_message = 2;
+        // 申诉链接
+        string appeal_url = 3;
+    }
+}
+
+// 空页信息
+message EmptyPage {
+    // 图片url
+    string image_url = 1;
+    // 文本列表
+    repeated Text texts = 2;
+    // 左侧按钮
+    Button left_button = 3;
+    // 右侧按钮
+    Button right_button = 4;
+    // 文本
+    message Text {
+        // 原始文本
+        string raw = 1;
+        // 样式
+        TextStyle style = 2;
+        // 行为
+        int32 action = 3;
+    }
+    // 按钮
+    message Button {
+        // 标题
+        string title = 1;
+        // 行为
+        int32 action = 2;
+    }
 }
 
 // 评论表情推荐列表-请求
@@ -1210,6 +1850,8 @@ message UserCallbackReq {
     int64 oid = 4;
     // 目标评论区业务type
     int64 type = 5;
+    // 评论rpid列表
+    repeated int64 rpids = 6;
 }
 
 //

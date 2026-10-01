@@ -1,0 +1,35 @@
+syntax = "proto3";
+
+package bilibili.vas.garb.service;
+
+import "bilibili/vas/garb/model/sailing.proto";
+
+option java_multiple_files = true;
+
+//
+message UserCard {
+    // 装扮id
+    int64 id = 1;
+    // 条目id
+    int64 item_id = 2;
+    // 装扮名
+    string name = 3;
+    // 卡片url
+    string card_url = 4;
+    // 大卡片url
+    string big_card_url = 5;
+    // 卡片类型
+    int64 card_type = 6;
+    // 过期时间
+    int64 expire_time = 7;
+    // 卡片类型名
+    string card_type_name = 8;
+    // 跳转链接
+    string jump_url = 9;
+    // 粉丝勋章信息
+    bilibili.vas.garb.model.UserFanShow fan = 10;
+    // 灰度图url
+    string image_enhance = 12;
+    // 图组
+    bilibili.vas.garb.model.ImageGroup image_group = 13;
+}

@@ -18,6 +18,8 @@ class MetaDataWrapper:
     hash_id: str = field(default_factory=lambda: secrets.token_hex(16))
     used_times: int = 0  # 使用次数
     lastest_used_ts: int = field(default_factory=lambda: int(time.time()))
+    # 该 metadata 所属的设备环境对象（DeviceEnv）：响应侧据此按设备学习 region
+    device: object | None = None
 
     def able(self, num_add=True) -> bool:
         """
@@ -63,6 +65,8 @@ class MetaDataBasicInfo:
     ticket: str
     brand: str
     session_id: str = ''
+    # 该 metadata 所属的设备环境对象（DeviceEnv），随 metadata 一起传下去
+    device: object | None = None
 
 
 if __name__ == '__main__':

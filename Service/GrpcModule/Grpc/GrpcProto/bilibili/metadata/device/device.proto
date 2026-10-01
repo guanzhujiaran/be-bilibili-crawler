@@ -38,4 +38,6 @@ message Device {
     string fp = 14;
     // 首次启动时的毫秒时间戳
     int64 fts = 15;
+    // 游客id
+    string guest_id = 16;
 }

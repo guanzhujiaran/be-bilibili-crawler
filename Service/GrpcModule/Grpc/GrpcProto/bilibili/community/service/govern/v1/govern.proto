@@ -2,36 +2,68 @@ syntax = "proto3";
 
 package bilibili.community.service.govern.v1;
 
-import "google/protobuf/empty.proto";
+option java_multiple_files = true;
 
-//
-service Qoe {
-    //
-    rpc QoeReport (QoeReportReq) returns (google.protobuf.Empty);
+// 设备信息
+message DeviceInfo {
+    // buvid
+    string buvid = 1;
+    // buvid3
+    string buvid3 = 2;
+    // 渠道
+    string channel = 3;
+    // 平台
+    string raw_platform = 4;
+    // 客户端
+    string raw_mobi_app = 5;
+    // 设备
+    string device = 6;
+    // build号
+    int64 build = 7;
+    // UA
+    string user_agent = 8;
 }
 
-//
-message QoeReportReq {
-    //
-    int64 id = 1;
-    //
-    int64 scene = 2;
-    //
-    int32 type = 3;
-    //
-    bool cancel = 4;
-    //
-    string business_type = 5;
-    //
-    int64 oid = 6;
-    //
-    QoeScoreResult score_result = 7;
-    //
-    string business_data = 8;
+// QoE结果
+message QoeResult {
+    // 选项标题
+    string option_title = 1;
+    // 选项标题列表
+    repeated string option_titles = 2;
+    // 选项描述列表
+    repeated string option_descs = 3;
+    // 选项分数
+    float option_score = 4;
+    // 自定义反馈
+    string option_custom_feedback = 5;
 }
 
-//
+// QoE分数结果
 message QoeScoreResult {
-    //
+    // 分数
     float score = 1;
+}
+
+// QoE上报-请求
+message QoeReportReq {
+    // id
+    int64 id = 1;
+    // 评论区id
+    int64 oid = 2;
+    // 类型
+    int32 type = 3;
+    // 场景
+    int64 scene = 4;
+    // 业务类型
+    string business_type = 5;
+    // 业务数据
+    string business_data = 6;
+    // 设备信息
+    DeviceInfo device_info = 7;
+    // 结果
+    QoeResult result = 8;
+    // 分数结果
+    QoeScoreResult score_result = 9;
+    // 是否取消
+    bool cancel = 10;
 }

@@ -13,7 +13,19 @@ message ArcConf {
     // 额外内容
     ExtraContent extra_content = 3;
     // 不支持场景列表
-    repeated int32 unsupport_scene = 4;
+    repeated UnsupportScene unsupport_scene = 4;
+    // 不支持状态
+    UnsupportState unsupport_state = 5;
+}
+
+// 不支持状态
+enum UnsupportState {
+    // 
+    NONE = 0;
+    // 
+    HALF = 1;
+    // 
+    FULL = 2;
 }
 
 // 
@@ -173,6 +185,12 @@ message ButtonInfo {
     string frame_color = 17;
     // 
     string icon = 18;
+    // 字号
+    int32 font_size = 19;
+    // 提示跳转链接
+    string tips_link = 20;
+    // 发货码
+    string deliver_code = 21;
 }
 
 // 视频编码
@@ -181,6 +199,7 @@ enum CodeType {
     CODE264 = 1; // H264
     CODE265 = 2; // H265
     CODEAV1 = 3; // AV1
+    CODE266 = 4; // H266
 }
 
 // 
@@ -240,6 +259,11 @@ enum ConfType {
     RECORDSCREEN = 34;
     DUBBING = 35;
     LISTEN = 36;
+    WATCH_LATER = 37;
+    SYSTEM_RECORD = 38;
+    TRANSLATE = 39;
+    COMMENT = 40;
+    FAVORITE = 41;
 }
 
 // 
@@ -272,6 +296,8 @@ message DashItem {
     string frame_rate = 8;
     // DRM密钥
     string widevine_pssh = 9;
+    // DRM URI
+    string bilidrm_uri = 10;
 }
 
 // 视频流信息: dash流
@@ -300,6 +326,8 @@ message DashVideo {
     int32 height = 11;
     // DRM密钥
     string widevine_pssh = 12;
+    // DRM URI
+    string bilidrm_uri = 13;
 }
 
 // 
@@ -337,17 +365,25 @@ message Dialog {
     LimitActionType limit_action_type = 13;
     // 
     int32 is_hide_more_btn = 14;
+    // 
+    int32 hide_button_on_half = 15;
+    // 
+    string deliver_win_id = 16;
+    // 
+    map<string, string> conditions = 17;
 }
 
 
 // 当前分辨率信息
 message Dimension {
     // 宽
-    int32 width = 1;
+    int64 width = 1;
     // 长
-    int32 height = 2;
+    int64 height = 2;
     // 旋转角度
-    int32 rotate = 3;
+    int64 rotate = 3;
+    // 
+    int64 variable = 4;
 }
 
 // 杜比伴音流信息
@@ -406,6 +442,14 @@ message EpInlineVideoInfo {
 message Event {
     // 震动
     Shake shake = 1;
+    // 清晰度提示
+    QnTip qn_tip = 2;
+}
+
+// 清晰度提示
+message QnTip {
+    // 
+    string msg = 1;
 }
 
 // 
@@ -415,7 +459,29 @@ message ExtData {
     // 
     oneof data {
         PlayListInfo play_list_info = 2;
+        // 
+        Banner banner = 3;
+        // 
+        EpInlineVideoInfo ep_inline_video_info = 4;
+        // 
+        ChargingExt charging_ext = 5;
+        // 
+        QrCode qr_code = 6;
     }
+}
+
+// 充电扩展信息
+message ChargingExt {
+    // 是否隐藏背景图
+    bool hide_bg_img = 1;
+}
+
+// 二维码信息
+message QrCode {
+    // 链接
+    string link = 1;
+    // 链接描述
+    string link_desc = 2;
 }
 
 enum ExtDataType {
@@ -613,6 +679,14 @@ message PlayArc {
     int64 watch_time_length = 10;
     // 
     int64 duration_ms = 11;
+    // 
+    int64 cache_expire = 12;
+    // ASR 语言
+    string asr_language = 13;
+    // OCR 语言
+    string ocr_language = 14;
+    // 字幕速度
+    float script_pace = 15;
 }
 
 // 播放页信息-响应: PlayArcConf
@@ -680,6 +754,8 @@ message PromptBar {
     repeated BenefitInfo benefit_infos = 12;
     // 
     int64 end_time = 13;
+    // 是否在付费墙上展示
+    int32 show_on_paywall = 14;
 }
 
 // 
@@ -713,6 +789,12 @@ message QnTrialInfo {
     Toast end_toast = 6;
     //
     Button quality_open_tip_btn = 8;
+    // 试看清晰度类型
+    int32 trial_quality_type = 9;
+    // 禁用提示
+    Toast disable_toast = 10;
+    // 唯一标识
+    string uuid = 11;
 }
 
 // 
@@ -829,6 +911,36 @@ message StreamInfo {
     Scheme scheme = 16;
     // 支持drm
     bool support_drm = 17;
+    // 格式描述图片
+    string display_desc_img = 18;
+    // 格式描述图片
+    string description_img = 19;
+    // 格式描述图片(选中)
+    string description_img_selected = 20;
+    // 格式描述折叠图片
+    string description_fold_img = 21;
+    // 埋点上报参数
+    map<string, string> report_params = 22;
+    // 切换提示
+    string switch_toast = 23;
+    // 过场
+    string cutscene = 24;
+    // 角标
+    Badge badge = 25;
+    // 可观看清晰度原因
+    CanWatchQnReason can_watch_qn_reason = 26;
+    // 受限观看清晰度原因
+    LimitWatchQnReason limit_watch_reason = 27;
+}
+
+// 受限观看清晰度原因
+enum LimitWatchQnReason {
+    // 默认
+    LIMIT_WATCH_QN_REASON_DEFAULT = 0;
+    // 清晰度大会员播放
+    LIMIT_WATCH_QN_REASON_QN_VIP_PLAY = 1;
+    // 电信家庭网络设备限制
+    LIMIT_WATCH_QN_REASON_CTCC_HOME_NETWORK_DEVICE_LIMIT = 2;
 }
 
 // 视频流信息: 流媒体元数据: 清晰度不满足条件信息
@@ -953,6 +1065,97 @@ message VodInfo {
     LossLessItem loss_less_item = 9;
     // 是否支持投屏
     bool support_project = 10;
+    // AI 音频信息
+    AIAudio ai_audio = 11;
+    // 清晰度面板
+    QnPanel qn_panel = 12;
+    // 当前语言
+    string cur_language = 13;
+    // 解决方案
+    map<string, StreamSolution> solution = 14;
+    // 当前生产类型
+    ProductionType cur_production_type = 15;
+}
+
+// AI 音频信息
+message AIAudio {
+    // 是否支持
+    bool support_ai_audio = 1;
+    // AI 音频项
+    repeated AIAudioItem ai_audio_items = 2;
+    // 开启提示
+    string ai_open_toast = 3;
+    // 关闭提示
+    string ai_close_toast = 4;
+    // 角标
+    Badge badge = 5;
+    // 默认标题
+    string default_title = 6;
+    // 列表标题
+    string list_title = 7;
+    // 列表描述
+    string list_desc = 8;
+}
+
+// AI 音频项
+message AIAudioItem {
+    // 音频信息
+    repeated DashItem audio_info = 1;
+    // 标题
+    string title = 2;
+    // 按钮文案
+    string button_title = 3;
+    // 字幕语言
+    string subtitle_lang = 4;
+}
+
+// 清晰度面板
+message QnPanel {
+    // 清晰度项
+    repeated QnItem qn_items = 1;
+}
+
+// 清晰度项
+message QnItem {
+    // 
+    oneof content {
+        // 单一流信息
+        StreamInfo stream_info = 1;
+        // 清晰度分组
+        QnGroup qn_group = 2;
+    }
+}
+
+// 清晰度分组
+message QnGroup {
+    // 是否需要大会员
+    bool need_vip = 1;
+    // 是否需要登录
+    bool need_login = 2;
+    // 是否大会员免费
+    bool vip_free = 3;
+    // 标题图片
+    string title_img = 4;
+    // 标题图片(选中)
+    string title_img_selected = 5;
+    // 流信息列表
+    repeated StreamInfo stream_infos = 6;
+    // 分组类型
+    QnGroupType group_type = 7;
+}
+
+// 清晰度分组类型
+enum QnGroupType {
+    // 
+    UNKNOWN_GROUP = 0;
+    // 大会员超清
+    VIP_VISION = 1;
+}
+
+// 流解决方案
+message StreamSolution {
+    // 流信息列表
+    repeated Stream stream_list = 1;
 }
 
 // 响度均衡操作信息
@@ -971,4 +1174,400 @@ message VolumeInfo {
     double target_i = 6;
     // Target true peak 目标响度真峰值
     double target_tp = 7;
+    // 多场景参数
+    map<string, string> multi_scene_args = 8;
+}
+
+// 播放控制
+enum PlayCtrl {
+    // 默认
+    PLAY_CTRL_DEFAULT = 0;
+    // 简单模式
+    PLAY_CTRL_SIMPLE = 1;
+}
+
+// 可看清晰度原因
+enum CanWatchQnReason {
+    // 默认
+    CAN_WATCH_QN_REASON_DEFAULT = 0;
+    // 大会员清晰度试看
+    CAN_WATCH_QN_REASON_VIP_QN_TRY_WATCH = 1;
+    // 电信家庭宽带
+    CAN_WATCH_QN_REASON_CTCC_HOME_NETWORK = 2;
+    // 大会员
+    CAN_WATCH_QN_REASON_BIG_VIP = 3;
+    // TV大会员
+    CAN_WATCH_QN_REASON_TV_BIG_VIP = 4;
+    // OGV点播付费
+    CAN_WATCH_QN_REASON_OGV_TVOD_PAY = 5;
+}
+
+// 播放面板设置项样式
+enum SettingItemStyle {
+    // 无
+    SETTING_STYLE_NONE = 0;
+    // 开关
+    SETTING_STYLE_SWITCH = 1;
+    // 更多
+    SETTING_STYLE_MORE = 2;
+    // 选择
+    SETTING_STYLE_SELECT = 3;
+    // 竖排
+    SETTING_STYLE_VERTICAL = 4;
+}
+
+// 设置项跳转类型
+enum SettingJumpType {
+    // 无
+    SETTING_JUMP_TYPE_NONE = 0;
+    // 打开链接
+    SETTING_JUMP_TYPE_OPEN_URL = 1;
+    // 半屏
+    SETTING_JUMP_TYPE_HALF_SCREEN = 2;
+    // 外部浏览器打开链接
+    SETTING_JUMP_TYPE_OPEN_URL_BY_OUTER_BROWSER = 3;
+}
+
+// 设置项类型
+enum SettingItemType {
+    // 无
+    SETTING_NONE = 0;
+    // 倍速
+    SETTING_PLAYBACK_RATE = 1;
+    // 稍后再看
+    SETTING_WATCH_LATER = 2;
+    // 下载
+    SETTING_DOWNlOAD = 3;
+    // 小窗
+    SETTING_SMALL_WINDOW = 4;
+    // 幻星进入
+    SETTING_FREYAENTER = 5;
+    // 播放模式
+    SETTING_PLAYBACK_MODE = 6;
+    // 循环播放
+    SETTING_LOOP_PLAYBACK = 7;
+    // 定时关闭
+    SETTING_TIMING_SWITCH = 8;
+    // 后台播放
+    SETTING_BACKGROUND_PLAY = 9;
+    // 字幕
+    SETTING_SUBTITLE = 10;
+    // 字幕交换
+    SETTING_SUBTITLE_EXCHANGE = 11;
+    // 镜像
+    SETTING_FLIP_CONF = 12;
+    // 更多播放设置
+    SETTING_MORE_PLAY = 13;
+    // 抖动
+    SETTING_SHAKE = 14;
+    // 跳过片头片尾
+    SETTING_SKIP_OPED = 15;
+    // 笔记
+    SETTING_NOTE = 16;
+    // 举报
+    SETTING_REPORT = 17;
+    // 反馈
+    SETTING_FEEDBACK = 18;
+    // 免费礼物
+    SETTING_FREE_GIFT = 19;
+    // 配音
+    SETTING_DUB = 20;
+    // 听视频
+    SETTING_LISTEN = 21;
+    // 投屏
+    SETTING_PROJECT = 22;
+    // 画质
+    SETTING_PIC_SIZE = 23;
+    // 全景
+    SETTING_PANORAMA = 24;
+    // 视觉辅助
+    SETTING_VISION_ASSIST = 25;
+    // 剪辑
+    SETTING_EDIT = 26;
+    // 不感兴趣
+    SETTING_DISLIKE = 27;
+    // 必火
+    SETTING_BIHUO = 28;
+    // 手势
+    SETTING_GESTURE = 29;
+    // 弹幕
+    SETTING_DM = 30;
+    // 清晰度
+    SETTING_DEFINITION = 31;
+    // 推荐
+    SETTING_SUGGEST = 32;
+    // 自动滚动
+    SETTING_AUTOMATIC_SCROLL = 33;
+    // 回溯
+    SETTING_BACKTRACKING = 34;
+    // AI音频
+    SETTING_AI_AUDIO = 35;
+    // AI音频交换
+    SETTING_AI_AUDIO_EXCHANGE = 36;
+    // 翻译
+    SETTING_TRANSLATE = 37;
+    // 弹幕开关
+    SETTING_DM_SWITCH = 38;
+    // UP主不感兴趣
+    SETTING_UP_DISLIKE = 39;
+    // IP不感兴趣
+    SETTING_IP_DISLIKE = 40;
+    // 视频不感兴趣
+    SETTING_VIDEO_DISLIKE = 41;
+}
+
+// 设置组样式
+enum GroupStyle {
+    // 默认
+    GROUP_STYLE_DEFAULT = 0;
+    // 横向
+    GROUP_STYLE_HORIZON = 1;
+}
+
+// 视频生产类型
+enum ProductionType {
+    // 默认
+    PRODUCTION_TYPE_DEFAULT = 0;
+    // 用户上传
+    PRODUCTION_TYPE_UPLOAD = 1;
+    // AI生成
+    PRODUCTION_TYPE_AI = 2;
+}
+
+// 视频控制信息
+message VideoCtrl {
+    // 自动清晰度控制
+    AutoQnCtl auto_qn_ctl = 1;
+    // 清晰度实验
+    QnExp qn_exp = 2;
+    // 清晰度特性
+    string qn_feature = 3;
+    // 设备增强
+    repeated DeviceEnhance device_enhance = 4;
+    // 清晰度覆盖规则
+    map<string, QnCoverRules> qn_cover_rules = 5;
+}
+
+// 自动清晰度控制
+message AutoQnCtl {
+    // 已登录半屏
+    int64 login_half = 1;
+    // 未登录半屏
+    int64 nologin_half = 2;
+    // 已登录全屏
+    int64 login_full = 3;
+    // 未登录全屏
+    int64 nologin_full = 4;
+    // 移动端已登录全屏
+    int64 mobile_login_full = 5;
+    // 移动端未登录全屏
+    int64 mobile_nologin_full = 6;
+    // 场景清晰度范围
+    map<string, AutoQnRange> scene_qn_range = 7;
+}
+
+// 自动清晰度范围
+message AutoQnRange {
+    // 最大值
+    int64 max = 1;
+    // 最小值
+    int64 min = 2;
+}
+
+// 清晰度实验
+message QnExp {
+    // 实验1
+    bool qn_exp_1 = 1;
+    // 实验2
+    bool qn_exp_2 = 2;
+    // 实验3
+    QnExpThree qn_exp_3 = 3;
+}
+
+// 清晰度实验3
+message QnExpThree {
+    // 是否开启
+    bool qn_exp_3 = 1;
+    // sid
+    int64 sid = 2;
+    // 低屏阈值
+    float low_screen_threshold = 3;
+}
+
+// 设备增强
+message DeviceEnhance {
+    // 目标清晰度
+    int64 target_qn = 1;
+}
+
+// 清晰度覆盖规则
+message QnCoverRules {
+    // 规则项
+    repeated QnCoverRuleItem items = 1;
+}
+
+// 清晰度覆盖规则项
+message QnCoverRuleItem {
+    // 目标清晰度
+    int64 target_qn = 1;
+    // 解决方案类型
+    string solution_type = 2;
+    // 解决方案清晰度
+    int64 solution_qn = 3;
+}
+
+// 多语言信息
+message Language {
+    // 是否支持
+    bool support = 1;
+    // 语言列表
+    repeated LanguageItem items = 2;
+    // 开启提示
+    string open_toast = 3;
+    // 关闭提示
+    string close_toast = 4;
+    // 角标
+    Badge badge = 5;
+    // 默认标题
+    string default_title = 6;
+    // 列表标题
+    string list_title = 7;
+    // 列表描述
+    string list_desc = 8;
+    // 气泡文案
+    string bubble_text = 9;
+}
+
+// 语言项
+message LanguageItem {
+    // 语言
+    string lang = 1;
+    // 标题
+    string title = 2;
+    // 按钮文案
+    string button_title = 3;
+    // 字幕语言
+    string subtitle_lang = 4;
+    // 视频去文字
+    bool video_detext = 5;
+    // 视频口型变化
+    bool video_mouth_shape_change = 6;
+    // 生产类型
+    ProductionType production_type = 7;
+}
+
+// 角标
+message Badge {
+    // 文案
+    string text = 1;
+    // 文字颜色
+    string text_color = 2;
+    // 夜间文字颜色
+    string text_color_night = 3;
+    // 背景颜色
+    string bg_color = 4;
+    // 夜间背景颜色
+    string bg_color_night = 5;
+    // 边框颜色
+    string border_color = 6;
+    // 夜间边框颜色
+    string border_color_night = 7;
+    // 背景样式
+    int32 bg_style = 8;
+}
+
+// 设置组
+message SettingGroup {
+    // 标题
+    string title = 1;
+    // 设置项
+    repeated SettingItem items = 2;
+    // 组样式
+    GroupStyle group_style = 3;
+}
+
+// 设置项
+message SettingItem {
+    // 基础信息
+    SettingBase base = 1;
+    // 样式
+    SettingItemStyle style = 2;
+    // 值
+    oneof value {
+        // 更多
+        SettingMore more = 3;
+        // 竖排
+        SettingVertical vertical = 4;
+        // 开关
+        SettingSwitch switch = 5;
+    }
+    // 数据
+    oneof data {
+        // 不感兴趣
+        DislikeItem dislike_item = 6;
+    }
+}
+
+// 设置项基础信息
+message SettingBase {
+    // 左侧图标
+    string left_icon = 1;
+    // 左侧标题
+    string left_title = 2;
+    // 类型
+    SettingItemType type = 3;
+    // 控制信息
+    SettingControl control = 4;
+    // 上报参数
+    map<string, string> report = 5;
+}
+
+// 设置项控制信息
+message SettingControl {
+    // 是否禁用
+    bool disabled = 1;
+    // 禁用原因
+    string disabled_reason = 2;
+    // 禁用置灰
+    bool disable_gray = 3;
+}
+
+// 更多设置项
+message SettingMore {
+    // 跳转链接
+    string url = 1;
+    // 右侧标题
+    string right_title = 2;
+    // 右侧图标
+    string right_icon = 3;
+    // 跳转类型
+    SettingJumpType jump_type = 4;
+    // 是否需要登录
+    bool need_login = 5;
+    // 角标
+    Badge badge = 6;
+}
+
+// 竖排设置项
+message SettingVertical {
+    // 跳转链接
+    string url = 1;
+    // 跳转类型
+    SettingJumpType jump_type = 2;
+    // 是否需要登录
+    bool need_login = 3;
+    // 角标
+    Badge badge = 4;
+}
+
+// 开关设置项
+message SettingSwitch {
+    // 角标
+    Badge badge = 1;
+}
+
+// 不感兴趣项
+message DislikeItem {
+    // 原因id
+    int64 reason_id = 1;
 }

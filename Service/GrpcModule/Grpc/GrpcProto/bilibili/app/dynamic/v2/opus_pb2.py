@@ -27,15 +27,17 @@ from bilibili.app.dynamic.v2 import dynamic_pb2 as bilibili_dot_app_dot_dynamic_
 from bilibili.pagination import pagination_pb2 as bilibili_dot_pagination_dot_pagination__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"bilibili/app/dynamic/v2/opus.proto\x12\x17\x62ilibili.app.dynamic.v2\x1a\x30\x62ilibili/app/archive/middleware/v1/preload.proto\x1a%bilibili/app/dynamic/v2/dynamic.proto\x1a$bilibili/pagination/pagination.proto\"U\n\nListFavReq\x12\x12\n\nlocal_time\x18\x01 \x01(\x05\x12\x33\n\npagination\x18\x02 \x01(\x0b\x32\x1f.bilibili.pagination.Pagination\"\x7f\n\x0bListFavResp\x12\x37\n\titem_list\x18\x01 \x03(\x0b\x32$.bilibili.app.dynamic.v2.OpusFavItem\x12\x37\n\tnext_page\x18\x02 \x01(\x0b\x32$.bilibili.pagination.PaginationReply\"\xfe\x01\n\x0bOpusFavItem\x12\x0f\n\x07opus_id\x18\x01 \x01(\x03\x12\x10\n\x08\x63\x61rd_uri\x18\x02 \x01(\t\x12:\n\tcover_pic\x18\x03 \x01(\x0b\x32\'.bilibili.app.dynamic.v2.MdlDynDrawItem\x12:\n\x0etext_paragraph\x18\x04 \x01(\x0b\x32\".bilibili.app.dynamic.v2.Paragraph\x12?\n\x0b\x62ottom_text\x18\x05 \x01(\x0b\x32*.bilibili.app.dynamic.v2.CoverIconWithText\x12\x13\n\x0b\x63lick_toast\x18\x06 \x01(\t\"\x94\x02\n\rOpusDetailReq\x12\x34\n\topus_type\x18\x01 \x01(\x0e\x32!.bilibili.app.dynamic.v2.OpusType\x12\x0b\n\x03oid\x18\x02 \x01(\x03\x12\x10\n\x08\x64yn_type\x18\x03 \x01(\x03\x12\x10\n\x08share_id\x18\x04 \x01(\t\x12\x12\n\nshare_mode\x18\t \x01(\x05\x12\x12\n\nlocal_time\x18\n \x01(\x05\x12\x43\n\x0bplayer_args\x18\x0b \x01(\x0b\x32..bilibili.app.archive.middleware.v1.PlayerArgs\x12/\n\x06\x63onfig\x18\x0c \x01(\x0b\x32\x1f.bilibili.app.dynamic.v2.Config\"F\n\x0eOpusDetailResp\x12\x34\n\topus_item\x18\x01 \x01(\x0b\x32!.bilibili.app.dynamic.v2.OpusItem\"\xc1\x01\n\x08OpusItem\x12\x0f\n\x07opus_id\x18\x01 \x01(\x03\x12\x34\n\topus_type\x18\x02 \x01(\x0e\x32!.bilibili.app.dynamic.v2.OpusType\x12\x0b\n\x03oid\x18\x03 \x01(\x03\x12\x30\n\x07modules\x18\x04 \x03(\x0b\x32\x1f.bilibili.app.dynamic.v2.Module\x12/\n\x06\x65xtend\x18\x05 \x01(\x0b\x32\x1f.bilibili.app.dynamic.v2.Extend*\\\n\x08OpusType\x12\x11\n\rOPUS_TYPE_DYN\x10\x00\x12\x15\n\x11OPUS_TYPE_ARTICLE\x10\x01\x12\x12\n\x0eOPUS_TYPE_NOTE\x10\x02\x12\x12\n\x0eOPUS_TYPE_WORD\x10\x03\x32\xbb\x01\n\x04Opus\x12T\n\x07ListFav\x12#.bilibili.app.dynamic.v2.ListFavReq\x1a$.bilibili.app.dynamic.v2.ListFavResp\x12]\n\nOpusDetail\x12&.bilibili.app.dynamic.v2.OpusDetailReq\x1a\'.bilibili.app.dynamic.v2.OpusDetailRespb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\"bilibili/app/dynamic/v2/opus.proto\x12\x17\x62ilibili.app.dynamic.v2\x1a\x30\x62ilibili/app/archive/middleware/v1/preload.proto\x1a%bilibili/app/dynamic/v2/dynamic.proto\x1a$bilibili/pagination/pagination.proto\"U\n\nListFavReq\x12\x12\n\nlocal_time\x18\x01 \x01(\x05\x12\x33\n\npagination\x18\x02 \x01(\x0b\x32\x1f.bilibili.pagination.Pagination\"\x7f\n\x0bListFavResp\x12\x37\n\titem_list\x18\x01 \x03(\x0b\x32$.bilibili.app.dynamic.v2.OpusFavItem\x12\x37\n\tnext_page\x18\x02 \x01(\x0b\x32$.bilibili.pagination.PaginationReply\"\xfe\x01\n\x0bOpusFavItem\x12\x0f\n\x07opus_id\x18\x01 \x01(\x03\x12\x10\n\x08\x63\x61rd_uri\x18\x02 \x01(\t\x12:\n\tcover_pic\x18\x03 \x01(\x0b\x32\'.bilibili.app.dynamic.v2.MdlDynDrawItem\x12:\n\x0etext_paragraph\x18\x04 \x01(\x0b\x32\".bilibili.app.dynamic.v2.Paragraph\x12?\n\x0b\x62ottom_text\x18\x05 \x01(\x0b\x32*.bilibili.app.dynamic.v2.CoverIconWithText\x12\x13\n\x0b\x63lick_toast\x18\x06 \x01(\t\"\x85\x04\n\rOpusDetailReq\x12\x34\n\topus_type\x18\x01 \x01(\x0e\x32!.bilibili.app.dynamic.v2.OpusType\x12\x0b\n\x03oid\x18\x02 \x01(\x03\x12\x10\n\x08\x64yn_type\x18\x03 \x01(\x03\x12\x10\n\x08share_id\x18\x04 \x01(\t\x12\x12\n\nshare_mode\x18\t \x01(\x05\x12\x12\n\nlocal_time\x18\n \x01(\x05\x12\x43\n\x0bplayer_args\x18\x0b \x01(\x0b\x32..bilibili.app.archive.middleware.v1.PlayerArgs\x12/\n\x06\x63onfig\x18\x0c \x01(\x0b\x32\x1f.bilibili.app.dynamic.v2.Config\x12\x32\n\x08\x61\x64_param\x18\r \x01(\x0b\x32 .bilibili.app.dynamic.v2.AdParam\x12\x0c\n\x04\x66rom\x18\x0e \x01(\t\x12\x0f\n\x07pattern\x18\x0f \x01(\t\x12\x0e\n\x06switch\x18\x10 \x01(\x05\x12G\n\tab_groups\x18\x11 \x03(\x0b\x32\x34.bilibili.app.dynamic.v2.OpusDetailReq.AbGroupsEntry\x12\x12\n\nfrom_spmid\x18\x12 \x01(\t\x1a/\n\rAbGroupsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"U\n\x0eOpusDetailResp\x12\x34\n\topus_item\x18\x01 \x01(\x0b\x32!.bilibili.app.dynamic.v2.OpusItem\x12\r\n\x05state\x18\x02 \x01(\x05\"\xc1\x01\n\x08OpusItem\x12\x0f\n\x07opus_id\x18\x01 \x01(\x03\x12\x34\n\topus_type\x18\x02 \x01(\x0e\x32!.bilibili.app.dynamic.v2.OpusType\x12\x0b\n\x03oid\x18\x03 \x01(\x03\x12\x30\n\x07modules\x18\x04 \x03(\x0b\x32\x1f.bilibili.app.dynamic.v2.Module\x12/\n\x06\x65xtend\x18\x05 \x01(\x0b\x32\x1f.bilibili.app.dynamic.v2.Extend*\\\n\x08OpusType\x12\x11\n\rOPUS_TYPE_DYN\x10\x00\x12\x15\n\x11OPUS_TYPE_ARTICLE\x10\x01\x12\x12\n\x0eOPUS_TYPE_NOTE\x10\x02\x12\x12\n\x0eOPUS_TYPE_WORD\x10\x03\x32\xbb\x01\n\x04Opus\x12T\n\x07ListFav\x12#.bilibili.app.dynamic.v2.ListFavReq\x1a$.bilibili.app.dynamic.v2.ListFavResp\x12]\n\nOpusDetail\x12&.bilibili.app.dynamic.v2.OpusDetailReq\x1a\'.bilibili.app.dynamic.v2.OpusDetailRespb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.app.dynamic.v2.opus_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_OPUSTYPE']._serialized_start=1210
-  _globals['_OPUSTYPE']._serialized_end=1302
+  _globals['_OPUSDETAILREQ_ABGROUPSENTRY']._loaded_options = None
+  _globals['_OPUSDETAILREQ_ABGROUPSENTRY']._serialized_options = b'8\001'
+  _globals['_OPUSTYPE']._serialized_start=1466
+  _globals['_OPUSTYPE']._serialized_end=1558
   _globals['_LISTFAVREQ']._serialized_start=190
   _globals['_LISTFAVREQ']._serialized_end=275
   _globals['_LISTFAVRESP']._serialized_start=277
@@ -43,11 +45,13 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_OPUSFAVITEM']._serialized_start=407
   _globals['_OPUSFAVITEM']._serialized_end=661
   _globals['_OPUSDETAILREQ']._serialized_start=664
-  _globals['_OPUSDETAILREQ']._serialized_end=940
-  _globals['_OPUSDETAILRESP']._serialized_start=942
-  _globals['_OPUSDETAILRESP']._serialized_end=1012
-  _globals['_OPUSITEM']._serialized_start=1015
-  _globals['_OPUSITEM']._serialized_end=1208
-  _globals['_OPUS']._serialized_start=1305
-  _globals['_OPUS']._serialized_end=1492
+  _globals['_OPUSDETAILREQ']._serialized_end=1181
+  _globals['_OPUSDETAILREQ_ABGROUPSENTRY']._serialized_start=1134
+  _globals['_OPUSDETAILREQ_ABGROUPSENTRY']._serialized_end=1181
+  _globals['_OPUSDETAILRESP']._serialized_start=1183
+  _globals['_OPUSDETAILRESP']._serialized_end=1268
+  _globals['_OPUSITEM']._serialized_start=1271
+  _globals['_OPUSITEM']._serialized_end=1464
+  _globals['_OPUS']._serialized_start=1561
+  _globals['_OPUS']._serialized_end=1748
 # @@protoc_insertion_point(module_scope)

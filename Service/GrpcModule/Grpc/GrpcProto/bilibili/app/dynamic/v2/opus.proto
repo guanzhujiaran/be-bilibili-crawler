@@ -64,12 +64,26 @@ message OpusDetailReq {
     bilibili.app.archive.middleware.v1.PlayerArgs player_args = 11;
     // 
     Config config = 12;
+    // 广告参数
+    AdParam ad_param = 13;
+    // 来源
+    string from = 14;
+    // 模式
+    string pattern = 15;
+    // 开关
+    int32 switch = 16;
+    // 实验分组
+    map<string, string> ab_groups = 17;
+    // 来源spmid
+    string from_spmid = 18;
 }
 
 // 
 message OpusDetailResp {
     // 
     OpusItem opus_item = 1;
+    // 状态
+    int32 state = 2;
 }
 
 // 

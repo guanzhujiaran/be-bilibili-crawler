@@ -15,5 +15,20 @@ message PlayerArgs {
   int64 force_host = 4;
   // 音量均衡
   int64 voice_balance = 5;
-  int64 voice_any = 6;
+  // 清晰度策略
+  QnPolicy qn_policy = 6;
+  // 客户端属性
+  int64 client_attr = 7;
+  // 额外内容
+  map<string, string> extra_content = 8;
+  // 软解流类型
+  int64 soft_fnval = 9;
+}
+
+// 清晰度策略
+enum QnPolicy {
+  // 默认
+  QN_POLICY_DEFAULT = 0;
+  // 自动清晰度开启
+  QN_POLICY_AUTO_QN_ENABLE = 1;
 }

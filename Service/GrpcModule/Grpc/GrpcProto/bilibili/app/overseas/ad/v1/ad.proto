@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package bilibili.app.overseas.ad.v1;
+
+// 海外广告仲裁方式
+enum AdArbitration {
+    // 未指定
+    AD_ARBITRATION_UNSPECIFIED = 0;
+    // 优先级
+    AD_ARBITRATION_PRIORITY = 1;
+    // 竞价
+    AD_ARBITRATION_BID = 2;
+}
+
+// 海外广告信息
+message OverseasAdInfo {
+    // 广告位配置, key 为 slot
+    map<string, UnitAdConfigs> slots = 1;
+}
+
+// 广告位配置集合
+message UnitAdConfigs {
+    // 广告配置
+    repeated UnitAdConfig configs = 1;
+    // 仲裁方式
+    AdArbitration arbitration = 2;
+}
+
+// 单条广告配置
+message UnitAdConfig {
+    // 广告格式
+    string ad_format = 1;
+    // 广告位id
+    string placement_id = 2;
+    // 最小播放间隔
+    optional int64 min_play_interval = 3;
+    // 展示延迟
+    optional int64 show_delay = 4;
+    // 倒计时
+    optional int64 count_down = 5;
+    // 每日最大展示次数
+    optional int64 max_show_per_day = 6;
+    // 单个视频最大展示次数
+    optional int64 max_show_per_video = 7;
+    // 预加载时长
+    optional int64 preload_duration = 8;
+    // 底价ecpm
+    optional double floor_ecpm = 9;
+    // 优先级
+    optional int32 priority = 10;
+    // 视频间最小间隔
+    optional int64 min_video_interval = 11;
+}

@@ -22,20 +22,22 @@ _runtime_version.ValidateProtobufRuntimeVersion(
 _sym_db = _symbol_database.Default()
 
 
-from google.protobuf import empty_pb2 as google_dot_protobuf_dot_empty__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n1bilibili/community/service/govern/v1/govern.proto\x12$bilibili.community.service.govern.v1\x1a\x1bgoogle/protobuf/empty.proto\"\xce\x01\n\x0cQoeReportReq\x12\n\n\x02id\x18\x01 \x01(\x03\x12\r\n\x05scene\x18\x02 \x01(\x03\x12\x0c\n\x04type\x18\x03 \x01(\x05\x12\x0e\n\x06\x63\x61ncel\x18\x04 \x01(\x08\x12\x15\n\rbusiness_type\x18\x05 \x01(\t\x12\x0b\n\x03oid\x18\x06 \x01(\x03\x12J\n\x0cscore_result\x18\x07 \x01(\x0b\x32\x34.bilibili.community.service.govern.v1.QoeScoreResult\x12\x15\n\rbusiness_data\x18\x08 \x01(\t\"\x1f\n\x0eQoeScoreResult\x12\r\n\x05score\x18\x01 \x01(\x02\x32^\n\x03Qoe\x12W\n\tQoeReport\x12\x32.bilibili.community.service.govern.v1.QoeReportReq\x1a\x16.google.protobuf.Emptyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n1bilibili/community/service/govern/v1/govern.proto\x12$bilibili.community.service.govern.v1\"\x9b\x01\n\nDeviceInfo\x12\r\n\x05\x62uvid\x18\x01 \x01(\t\x12\x0e\n\x06\x62uvid3\x18\x02 \x01(\t\x12\x0f\n\x07\x63hannel\x18\x03 \x01(\t\x12\x14\n\x0craw_platform\x18\x04 \x01(\t\x12\x14\n\x0craw_mobi_app\x18\x05 \x01(\t\x12\x0e\n\x06\x64\x65vice\x18\x06 \x01(\t\x12\r\n\x05\x62uild\x18\x07 \x01(\x03\x12\x12\n\nuser_agent\x18\x08 \x01(\t\"\x84\x01\n\tQoeResult\x12\x14\n\x0coption_title\x18\x01 \x01(\t\x12\x15\n\roption_titles\x18\x02 \x03(\t\x12\x14\n\x0coption_descs\x18\x03 \x03(\t\x12\x14\n\x0coption_score\x18\x04 \x01(\x02\x12\x1e\n\x16option_custom_feedback\x18\x05 \x01(\t\"\x1f\n\x0eQoeScoreResult\x12\r\n\x05score\x18\x01 \x01(\x02\"\xd6\x02\n\x0cQoeReportReq\x12\n\n\x02id\x18\x01 \x01(\x03\x12\x0b\n\x03oid\x18\x02 \x01(\x03\x12\x0c\n\x04type\x18\x03 \x01(\x05\x12\r\n\x05scene\x18\x04 \x01(\x03\x12\x15\n\rbusiness_type\x18\x05 \x01(\t\x12\x15\n\rbusiness_data\x18\x06 \x01(\t\x12\x45\n\x0b\x64\x65vice_info\x18\x07 \x01(\x0b\x32\x30.bilibili.community.service.govern.v1.DeviceInfo\x12?\n\x06result\x18\x08 \x01(\x0b\x32/.bilibili.community.service.govern.v1.QoeResult\x12J\n\x0cscore_result\x18\t \x01(\x0b\x32\x34.bilibili.community.service.govern.v1.QoeScoreResult\x12\x0e\n\x06\x63\x61ncel\x18\n \x01(\x08\x42\x02P\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.community.service.govern.v1.govern_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
-  DESCRIPTOR._loaded_options = None
-  _globals['_QOEREPORTREQ']._serialized_start=121
-  _globals['_QOEREPORTREQ']._serialized_end=327
-  _globals['_QOESCORERESULT']._serialized_start=329
-  _globals['_QOESCORERESULT']._serialized_end=360
-  _globals['_QOE']._serialized_start=362
-  _globals['_QOE']._serialized_end=456
+  _globals['DESCRIPTOR']._loaded_options = None
+  _globals['DESCRIPTOR']._serialized_options = b'P\001'
+  _globals['_DEVICEINFO']._serialized_start=92
+  _globals['_DEVICEINFO']._serialized_end=247
+  _globals['_QOERESULT']._serialized_start=250
+  _globals['_QOERESULT']._serialized_end=382
+  _globals['_QOESCORERESULT']._serialized_start=384
+  _globals['_QOESCORERESULT']._serialized_end=415
+  _globals['_QOEREPORTREQ']._serialized_start=418
+  _globals['_QOEREPORTREQ']._serialized_end=760
 # @@protoc_insertion_point(module_scope)

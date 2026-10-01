@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from bilibili.dagw.component.avatar.common import common_pb2 as bilibili_dot_dagw_dot_component_dot_avatar_dot_common_dot_common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n.bilibili/dagw/component/avatar/v1/plugin.proto\x12(bilibili.dagw.component.avatar.v1.plugin\x1a\x32\x62ilibili/dagw/component/avatar/common/common.proto\"\x7f\n\x18\x43ommentDoubleClickConfig\x12J\n\x0binteraction\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.v1.plugin.Interaction\x12\x17\n\x0f\x61nimation_scale\x18\x02 \x01(\x01\"U\n\nGyroConfig\x12G\n\tgyroscope\x18\x01 \x01(\x0b\x32\x34.bilibili.dagw.component.avatar.v1.plugin.NFTImageV2\"\x94\x01\n\x12GyroscopeContentV2\x12\x10\n\x08\x66ile_url\x18\x01 \x01(\t\x12\r\n\x05scale\x18\x02 \x01(\x02\x12]\n\x14physical_orientation\x18\x03 \x03(\x0b\x32?.bilibili.dagw.component.avatar.v1.plugin.PhysicalOrientationV2\"y\n\x11GyroscopeEntityV2\x12\x14\n\x0c\x64isplay_type\x18\x01 \x01(\t\x12N\n\x08\x63ontents\x18\x02 \x03(\x0b\x32<.bilibili.dagw.component.avatar.v1.plugin.GyroscopeContentV2\"S\n\x0bInteraction\x12\x0e\n\x06nft_id\x18\x01 \x01(\t\x12\x0f\n\x07\x65nabled\x18\x02 \x01(\x08\x12\r\n\x05itype\x18\x03 \x01(\t\x12\x14\n\x0cmetadata_url\x18\x04 \x01(\t\"\"\n\x0fLiveAnimeConfig\x12\x0f\n\x07is_live\x18\x01 \x01(\x08\"\xb6\x01\n\rLiveAnimeItem\x12\x41\n\x05\x63olor\x18\x01 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x13\n\x0bstart_ratio\x18\x02 \x01(\x01\x12\x11\n\tend_ratio\x18\x03 \x01(\x01\x12\x14\n\x0cstart_stroke\x18\x04 \x01(\x01\x12\x15\n\rstart_opacity\x18\x05 \x01(\x01\x12\r\n\x05phase\x18\x06 \x01(\x03\"\\\n\nNFTImageV2\x12N\n\tgyroscope\x18\x01 \x03(\x0b\x32;.bilibili.dagw.component.avatar.v1.plugin.GyroscopeEntityV2\"<\n\x1cPhysicalOrientationAnimation\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\x0e\n\x06\x62\x65zier\x18\x03 \x01(\t\"\x81\x01\n\x15PhysicalOrientationV2\x12\x0c\n\x04type\x18\x01 \x01(\t\x12Z\n\nanimations\x18\x03 \x03(\x0b\x32\x46.bilibili.dagw.component.avatar.v1.plugin.PhysicalOrientationAnimationb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n.bilibili/dagw/component/avatar/v1/plugin.proto\x12(bilibili.dagw.component.avatar.v1.plugin\x1a\x32\x62ilibili/dagw/component/avatar/common/common.proto\"\x7f\n\x18\x43ommentDoubleClickConfig\x12J\n\x0binteraction\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.v1.plugin.Interaction\x12\x17\n\x0f\x61nimation_scale\x18\x02 \x01(\x01\"U\n\nGyroConfig\x12G\n\tgyroscope\x18\x01 \x01(\x0b\x32\x34.bilibili.dagw.component.avatar.v1.plugin.NFTImageV2\"\x94\x01\n\x12GyroscopeContentV2\x12\x10\n\x08\x66ile_url\x18\x01 \x01(\t\x12\r\n\x05scale\x18\x02 \x01(\x02\x12]\n\x14physical_orientation\x18\x03 \x03(\x0b\x32?.bilibili.dagw.component.avatar.v1.plugin.PhysicalOrientationV2\"y\n\x11GyroscopeEntityV2\x12\x14\n\x0c\x64isplay_type\x18\x01 \x01(\t\x12N\n\x08\x63ontents\x18\x02 \x03(\x0b\x32<.bilibili.dagw.component.avatar.v1.plugin.GyroscopeContentV2\"S\n\x0bInteraction\x12\x0e\n\x06nft_id\x18\x01 \x01(\t\x12\x0f\n\x07\x65nabled\x18\x02 \x01(\x08\x12\r\n\x05itype\x18\x03 \x01(\t\x12\x14\n\x0cmetadata_url\x18\x04 \x01(\t\"\x83\x02\n\x0fLiveAnimeConfig\x12\x0f\n\x07is_live\x18\x01 \x01(\x08\x12H\n\x06\x63onfig\x18\x02 \x01(\x0b\x32\x38.bilibili.dagw.component.avatar.v1.plugin.LiveTextConfig\x12\x46\n\x05items\x18\x03 \x03(\x0b\x32\x37.bilibili.dagw.component.avatar.v1.plugin.LiveAnimeItem\x12M\n\rborder_config\x18\x04 \x03(\x0b\x32\x36.bilibili.dagw.component.avatar.v1.plugin.BorderConfig\"\xb6\x01\n\rLiveAnimeItem\x12\x41\n\x05\x63olor\x18\x01 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x13\n\x0bstart_ratio\x18\x02 \x01(\x01\x12\x11\n\tend_ratio\x18\x03 \x01(\x01\x12\x14\n\x0cstart_stroke\x18\x04 \x01(\x01\x12\x15\n\rstart_opacity\x18\x05 \x01(\x01\x12\r\n\x05phase\x18\x06 \x01(\x03\"\\\n\nNFTImageV2\x12N\n\tgyroscope\x18\x01 \x03(\x0b\x32;.bilibili.dagw.component.avatar.v1.plugin.GyroscopeEntityV2\"K\n\x1cPhysicalOrientationAnimation\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x03(\x02\x12\x0e\n\x06\x62\x65zier\x18\x03 \x01(\t\"\x90\x01\n\x15PhysicalOrientationV2\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05\x61ngle\x18\x02 \x03(\x02\x12Z\n\nanimations\x18\x03 \x03(\x0b\x32\x46.bilibili.dagw.component.avatar.v1.plugin.PhysicalOrientationAnimation\"v\n\x0c\x42orderConfig\x12\x41\n\x05\x63olor\x18\x01 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x14\n\x0c\x62order_width\x18\x02 \x01(\x01\x12\r\n\x05ratio\x18\x03 \x01(\x01\"\xfc\x01\n\x0eLiveTextConfig\x12\r\n\x05width\x18\x01 \x01(\x01\x12\x0e\n\x06height\x18\x02 \x01(\x01\x12\x10\n\x08offset_y\x18\x03 \x01(\x01\x12\x14\n\x0c\x62order_width\x18\x04 \x01(\x01\x12\x11\n\ttext_size\x18\x05 \x01(\x01\x12H\n\x0c\x62order_color\x18\x07 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x46\n\nbackground\x18\x08 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\"\xbc\x01\n\x12WebLiveAnimeConfig\x12\x18\n\x10\x63ircle_gap_width\x18\x01 \x01(\x01\x12\x19\n\x11pink_circle_width\x18\x02 \x01(\x01\x12\x18\n\x10live_label_width\x18\x03 \x01(\x01\x12\x19\n\x11live_label_height\x18\x04 \x01(\x01\x12\x1b\n\x13live_label_offset_y\x18\x05 \x01(\x01\x12\x1f\n\x17live_label_border_width\x18\x06 \x01(\x01\"\xdc\x01\n\x10\x46ollowIconConfig\x12\x12\n\nhas_follow\x18\x01 \x01(\x08\x12G\n\x08icon_res\x18\x02 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\x12\x14\n\x0c\x62order_width\x18\x03 \x01(\x01\x12H\n\x0c\x62order_color\x18\x04 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x0b\n\x03mid\x18\x05 \x01(\x03\"\x92\x02\n\x12\x46ollowActionConfig\x12\x12\n\nhas_follow\x18\x01 \x01(\x08\x12G\n\x08icon_res\x18\x02 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\x12\x14\n\x0c\x62order_width\x18\x03 \x01(\x01\x12H\n\x0c\x62order_color\x18\x04 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\x12\x0b\n\x03mid\x18\x05 \x01(\x03\x12\x18\n\x10icon_width_ratio\x18\x06 \x01(\x01\x12\x18\n\x10icon_size_offset\x18\x07 \x01(\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -42,14 +42,24 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GYROSCOPEENTITYV2']._serialized_end=632
   _globals['_INTERACTION']._serialized_start=634
   _globals['_INTERACTION']._serialized_end=717
-  _globals['_LIVEANIMECONFIG']._serialized_start=719
-  _globals['_LIVEANIMECONFIG']._serialized_end=753
-  _globals['_LIVEANIMEITEM']._serialized_start=756
-  _globals['_LIVEANIMEITEM']._serialized_end=938
-  _globals['_NFTIMAGEV2']._serialized_start=940
-  _globals['_NFTIMAGEV2']._serialized_end=1032
-  _globals['_PHYSICALORIENTATIONANIMATION']._serialized_start=1034
-  _globals['_PHYSICALORIENTATIONANIMATION']._serialized_end=1094
-  _globals['_PHYSICALORIENTATIONV2']._serialized_start=1097
-  _globals['_PHYSICALORIENTATIONV2']._serialized_end=1226
+  _globals['_LIVEANIMECONFIG']._serialized_start=720
+  _globals['_LIVEANIMECONFIG']._serialized_end=979
+  _globals['_LIVEANIMEITEM']._serialized_start=982
+  _globals['_LIVEANIMEITEM']._serialized_end=1164
+  _globals['_NFTIMAGEV2']._serialized_start=1166
+  _globals['_NFTIMAGEV2']._serialized_end=1258
+  _globals['_PHYSICALORIENTATIONANIMATION']._serialized_start=1260
+  _globals['_PHYSICALORIENTATIONANIMATION']._serialized_end=1335
+  _globals['_PHYSICALORIENTATIONV2']._serialized_start=1338
+  _globals['_PHYSICALORIENTATIONV2']._serialized_end=1482
+  _globals['_BORDERCONFIG']._serialized_start=1484
+  _globals['_BORDERCONFIG']._serialized_end=1602
+  _globals['_LIVETEXTCONFIG']._serialized_start=1605
+  _globals['_LIVETEXTCONFIG']._serialized_end=1857
+  _globals['_WEBLIVEANIMECONFIG']._serialized_start=1860
+  _globals['_WEBLIVEANIMECONFIG']._serialized_end=2048
+  _globals['_FOLLOWICONCONFIG']._serialized_start=2051
+  _globals['_FOLLOWICONCONFIG']._serialized_end=2271
+  _globals['_FOLLOWACTIONCONFIG']._serialized_start=2274
+  _globals['_FOLLOWACTIONCONFIG']._serialized_end=2548
 # @@protoc_insertion_point(module_scope)

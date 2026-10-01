@@ -22,8 +22,10 @@ message Restriction {
     bool review = 4;
     // 客户端是否选择关闭个性化推荐
     bool disable_rcmd = 5;
-    // 
+    //
     bool basic_mode = 6;
-    int32 unknown1 = 7;
-    bool unknown2 = 8;
+    // 青少年年龄（客户端固定上报 16）
+    int64 teenagers_age = 7;
+    // 海外青少年模式
+    bool overseas_teenagers_mode = 8;
 }

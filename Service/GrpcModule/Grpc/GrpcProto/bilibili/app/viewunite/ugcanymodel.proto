@@ -36,6 +36,8 @@ message ElecRank {
     int64 count = 2;
     // 
     string text = 3;
+    // 
+    bool hide_count = 4;
 }
 
 // 
@@ -131,4 +133,105 @@ message ViewUgcAny {
     repeated bilibili.app.viewunite.common.Page pages = 5;
     // 
     ElecRank elec_rank = 6;
+    // Ugc 剧集配置
+    UgcSeasonConf ugc_season_conf = 7;
+    // AI 额外信息
+    AiExtra ai_extra = 8;
+    // 实验信息
+    Experiment experiment = 9;
+    // AI 异步相关
+    bilibili.app.viewunite.common.RelateAsync relate_async = 10;
+    // 负面反馈信息
+    bilibili.app.viewunite.common.Nf nf = 11;
+}
+
+// Ugc 剧集配置
+message UgcSeasonConf {
+    // 剧集是否展开
+    bool season_unfold = 1;
+    // 折叠时间
+    int64 fold_time = 2;
+}
+
+// AI 额外信息
+message AiExtra {
+    // 追踪ID
+    string track_id = 1;
+}
+
+// 关注引导
+message FollowGuide {
+    // 是否展示观看引导
+    bool is_view = 1;
+    // 观看引导文案
+    string view_text = 2;
+    // 是否展示点赞引导
+    bool is_thumb = 3;
+    // 点赞引导文案
+    string thumb_text = 4;
+}
+
+// 分享引导策略
+message ShareGuideStrategy {
+    // 延迟秒数
+    int32 delay_seconds = 1;
+    // 播放进度阈值
+    float play_progress_threshold = 2;
+    // 播放时长阈值
+    int32 play_time_threshold = 3;
+    // 在线人数阈值
+    int32 online_viewer_threshold = 4;
+}
+
+// 分享引导实验配置
+message ShareGuideExpConfig {
+    // 实验类型
+    enum ExpType {
+        // 未知
+        UNKNOWN = 0;
+        // 分享首次奖励
+        SHARE_FIRST_REWARD = 1;
+        // 分享在线观看人数
+        SHARE_ONLINE_VIEWERS = 2;
+    }
+    // 实验类型
+    ExpType exp_type = 1;
+    // 文案
+    string text = 2;
+    // 策略列表
+    repeated ShareGuideStrategy strategies = 3;
+    // 单日总上限
+    int32 daily_total_limit = 4;
+    // 额外参数
+    map<string, string> extra_params = 5;
+}
+
+// 分享引导
+message ShareGuide {
+    // 是否命中A组
+    bool hit_a = 1;
+    // 时长
+    int32 duration = 2;
+    // A组次数
+    int32 count_a = 3;
+    // 是否命中B组
+    bool hit_b = 4;
+    // B组次数
+    int32 count_b = 5;
+    // 文案
+    string text = 6;
+    // 强调文案
+    string emphasized_text = 7;
+    // 生效的实验配置
+    repeated ShareGuideExpConfig active_exps = 8;
+}
+
+// 实验信息
+message Experiment {
+    // 分享引导
+    ShareGuide share_guide = 1;
+    // 关注引导
+    FollowGuide follow_guide = 2;
+    // 标签折叠
+    bool tag_fold = 3;
 }

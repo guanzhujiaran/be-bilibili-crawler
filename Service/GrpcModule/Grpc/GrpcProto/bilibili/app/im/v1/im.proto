@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+// 临时存根：完整 app/im/v1 转录进行中，此文件仅提供跨包引用类型
+package bilibili.app.im.v1;
+
+option java_multiple_files = true;
+
+// 会话标识
+message SessionId {
+    // 聊天对象id
+    int64 talker_id = 1;
+    // 会话类型
+    int32 session_type = 2;
+}

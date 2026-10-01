@@ -7,11 +7,11 @@
 - 处理流程（每轮）：
   1. redis 去重锁：该记录是否正被其他副本处理；
   2. 直接查目标数据库是否已存在提取信息（不判断「最近」）；
-  3. 抢一个可用的 LLM 槽位（每个 (base_url, model, token) 跨进程最多 1 个在途请求）；
-  4. 不存在 → 用该槽位调用大模型提取并写库。
+  3. 不存在 → 逐个尝试当前可用的云端 LLM 调用大模型提取并写库
+     （逐个尝试逻辑在 prize_extractor 内实现，请求节流由每个实例的 rate limiter 负责）；
 - **ack / nack 语义（不丢消息）**：
   只有「确认库里已有提取结果」与「本轮成功写库」两处会 ack；其余情况（抢不到去重锁、
-  没有可用槽位、提取或写库失败）一律保持消息未确认，在本机退避后继续下一轮。
+  提取或写库失败）一律保持消息未确认，在本机退避后继续下一轮。
   进程崩溃时未确认消息由 broker 重投，持久化与重投全部交给 RabbitMQ。
   反之，「什么都没做就 ack」会真的丢数据：重复副本一旦撞上尚未释放的去重锁被 ack 丢弃，
   而原副本随后又失败，这条消息就再也没人处理了（旧实现的「并发已满重新入队 + ack」
@@ -61,7 +61,6 @@ from Service.MQ.base.MQClient.consume_budget import (
     ConsumeBudget,
     ConsumeBudgetExceeded,
 )
-from Service.llm_service import LLMSlotLease, LLMSlotWaitTimeout, llm_slot_pool
 from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
 from log.base_log import MQ_logger
 
@@ -111,10 +110,8 @@ prize_extract_redis = PrizeExtractRedisManager()
 _pending_release_tasks: set[asyncio.Task] = set()
 
 
-async def _release_resources(lease: LLMSlotLease | None, lock_key: str) -> None:
-    """释放槽位租约（仅在持有租约时）与 redis 去重锁。"""
-    if lease is not None:
-        await llm_slot_pool.release(lease)
+async def _release_resources(lock_key: str) -> None:
+    """释放 redis 去重锁。"""
     await prize_extract_redis.release_lock(lock_key)
 
 
@@ -167,13 +164,12 @@ async def _already_stored(params: PrizeExtractParams) -> bool:
 
 async def _do_extract_and_store(
     params: PrizeExtractParams,
-    lease: LLMSlotLease,
     budget: ConsumeBudget,
 ) -> PrizeExtractResult | OfficialPrizeExtractResult:
-    """用租约锁定的槽位调用大模型提取并把结果写库，返回 result（值）。
+    """调用大模型提取并把结果写库，返回 result（值）。
 
-    具体提取函数与落库目标由 params.target_db 决定；LLM 调用一律使用 ``lease.llm``
-    —— 锁定哪个槽位就用哪个槽位，否则「锁着 A 槽位、请求打到 B」会让槽位锁形同虚设。
+    具体提取函数与落库目标由 params.target_db 决定；LLM 实例由提取流程内部按
+    「当前可用」逐个尝试（见 prize_extractor._do_extract），不再由本模块指定槽位。
 
     ``budget`` 的剩余时间透传给提取流程，作为允许阻塞（等待槽位冷却恢复）的上界。
     """
@@ -186,7 +182,6 @@ async def _do_extract_and_store(
         result: PrizeExtractResp[OfficialPrizeExtractResult] = (
             await extract_prize_info_for_lotdata(
                 dyn_content=params.lottery_text,
-                chat_openai_client=lease.llm,
                 max_wait=max_wait,
             )
         )
@@ -203,7 +198,6 @@ async def _do_extract_and_store(
         result = await extract_prize_info_for_biliopusdb(
             dyn_content=params.dyn_content,
             dyn_publish_time=params.dyn_publish_time,
-            chat_openai_client=lease.llm,
             max_wait=max_wait,
         )
         r = result.result
@@ -234,19 +228,18 @@ async def _do_extract_and_store(
 async def _consume_once(
     mq_props, params: PrizeExtractParams, msg: RabbitMessage, budget: ConsumeBudget
 ) -> PrizeExtractResult | OfficialPrizeExtractResult | None:
-    """执行一轮处理：抢去重锁 → 查库 → 抢槽位 → 提取写库 → ack。
+    """执行一轮处理：抢去重锁 → 查库 → 提取写库 → ack。
 
     - 返回值：提取结果（本轮已成功写库并 ack）；``None`` 表示确认「库里已有提取信息」
       并 ack；
     - 抛出的异常表示「本轮没干成」，由 :func:`process_prize_extract` 决定继续下一轮
       或把消息交还队列；调用方**不会** ack/nack 这条消息。
 
-    所有等待（抢锁 / 抢槽位 / 重试）都按 ``budget`` 的剩余时间截断，
+    所有等待（抢锁 / 提取重试）都按 ``budget`` 的剩余时间截断，
     保证未确认时间不会超过 broker 的 ``consumer_timeout``。
     """
     module_name = mq_props.queue_name
     lock_key = _lock_key(params)
-    lease: LLMSlotLease | None = None
     try:
         # 1) redis 锁：同一条记录正被其他副本处理时，本机等它结束（不是丢弃）
         await _wait_own_lock(module_name, lock_key, budget)
@@ -257,18 +250,11 @@ async def _consume_once(
             await msg.ack()
             return None
 
-        # 3) 抢一个 LLM 槽位：没有可用槽位时在本机等（受预算约束，超时交还消息重投）
-        lease = await llm_slot_pool.acquire(max_wait=budget.remaining())
-        MQ_logger.info(
-            f"【{module_name}】{lock_key} 占用 LLM 槽位 {lease.fingerprint}"
-        )
-
-        # 4) 用该槽位调用大模型提取并写库。
+        # 3) 调用大模型提取并写库（内部逐个尝试当前可用的 LLM 实例）。
         #    失败不立即 ack/nack：先在进程内按「指数等待 + 抖动」重试（见
-        #    bili_common.core.backoff / consume_backoff），一轮耗尽后由外层继续下一轮；
-        #    槽位不可用（冷却 / 已删除）会立刻放弃本轮，由外层换槽位或交还消息。
+        #    bili_common.core.backoff / consume_backoff），一轮耗尽后由外层继续下一轮。
         result = await run_with_backoff(
-            lambda: _do_extract_and_store(params, lease, budget),
+            lambda: _do_extract_and_store(params, budget),
             config=build_consume_backoff_config(
                 module_name=module_name,
                 params=params,
@@ -281,12 +267,10 @@ async def _consume_once(
         return result
     finally:
         # 释放动作必须「不可取消」：连接拆除 / 任务取消时 CancelledError 可能恰好
-        # 投递在 release 的 await 上，导致去重锁与槽位租约泄漏（后续同 key 消息长期
+        # 投递在 release 的 await 上，导致去重锁泄漏（后续同 key 消息长期
         # 被「正在处理中」跳过）。这里托管为独立任务并用 shield 等待，
         # 保证释放动作跑完（本任务自身的取消仍会正常向上传播）。
-        release_task = asyncio.create_task(
-            _release_resources(lease=lease, lock_key=lock_key)
-        )
+        release_task = asyncio.create_task(_release_resources(lock_key=lock_key))
         # asyncio 只对运行中的任务持弱引用，登记一份强引用避免被 GC。
         _pending_release_tasks.add(release_task)
         release_task.add_done_callback(_pending_release_tasks.discard)
@@ -300,8 +284,8 @@ async def _requeue_for_budget(
 
     为什么必须「主动」：RabbitMQ 的 ``consumer_timeout``（默认 30 分钟）到点会
     **强制关闭 channel 并把消息重投**，那时 channel 已关、ack/nack 都会失败，
-    行为完全不可控。抢在它之前主动交还，至少是可控的，且此时去重锁与槽位租约
-    都已由 ``_consume_once`` 的 ``finally`` 释放（``nack`` 之前不存在锁泄漏）。
+    行为完全不可控。抢在它之前主动交还，至少是可控的，且此时去重锁
+    已由 ``_consume_once`` 的 ``finally`` 释放（``nack`` 之前不存在锁泄漏）。
 
     交还前加一点随机抖动，避免同一批消息在同一刻集体重投形成热点。
     """
@@ -351,7 +335,7 @@ async def process_prize_extract(
         except asyncio.CancelledError:
             # 取消必须向上传播（连接拆除 / 服务关停），不能当成普通失败吞掉
             raise
-        except (ConsumeBudgetExceeded, LLMSlotWaitTimeout) as e:
+        except ConsumeBudgetExceeded as e:
             # 等待类操作主动报告预算耗尽：交还消息，由下一个消费者重新开始
             await _requeue_for_budget(budget, msg, f"{type(e).__name__}: {e}")
             return None

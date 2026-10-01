@@ -24,17 +24,21 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\'bilibili/metadata/network/network.proto\x12\x19\x62ilibili.metadata.network\"{\n\x07Network\x12\x34\n\x04type\x18\x01 \x01(\x0e\x32&.bilibili.metadata.network.NetworkType\x12-\n\x02tf\x18\x02 \x01(\x0e\x32!.bilibili.metadata.network.TFType\x12\x0b\n\x03oid\x18\x03 \x01(\t*^\n\x0bNetworkType\x12\x0e\n\nNT_UNKNOWN\x10\x00\x12\x08\n\x04WIFI\x10\x01\x12\x0c\n\x08\x43\x45LLULAR\x10\x02\x12\x0b\n\x07OFFLINE\x10\x03\x12\x0c\n\x08OTHERNET\x10\x04\x12\x0c\n\x08\x45THERNET\x10\x05*]\n\x06TFType\x12\x0e\n\nTF_UNKNOWN\x10\x00\x12\n\n\x06U_CARD\x10\x01\x12\t\n\x05U_PKG\x10\x02\x12\n\n\x06\x43_CARD\x10\x03\x12\t\n\x05\x43_PKG\x10\x04\x12\n\n\x06T_CARD\x10\x05\x12\t\n\x05T_PKG\x10\x06\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\'bilibili/metadata/network/network.proto\x12\x19\x62ilibili.metadata.network\"\xee\x01\n\x07Network\x12\x34\n\x04type\x18\x01 \x01(\x0e\x32&.bilibili.metadata.network.NetworkType\x12-\n\x02tf\x18\x02 \x01(\x0e\x32!.bilibili.metadata.network.TFType\x12\x0b\n\x03oid\x18\x03 \x01(\t\x12\x39\n\x08\x63\x65llular\x18\x04 \x01(\x0e\x32\'.bilibili.metadata.network.CellularType\x12\x36\n\x07quality\x18\x05 \x01(\x0b\x32%.bilibili.metadata.network.NetQuality\"\\\n\nNetQuality\x12\x14\n\x0csuccess_rate\x18\x01 \x01(\x02\x12\r\n\x05speed\x18\x02 \x01(\x05\x12\x17\n\x0fspeed_timestamp\x18\x03 \x01(\x03\x12\x10\n\x08net_type\x18\x04 \x01(\x05*B\n\x0c\x43\x65llularType\x12\n\n\x06\x43_NONE\x10\x00\x12\x08\n\x04\x43_2G\x10\x01\x12\x08\n\x04\x43_3G\x10\x02\x12\x08\n\x04\x43_4G\x10\x03\x12\x08\n\x04\x43_5G\x10\x04*^\n\x0bNetworkType\x12\x0e\n\nNT_UNKNOWN\x10\x00\x12\x08\n\x04WIFI\x10\x01\x12\x0c\n\x08\x43\x45LLULAR\x10\x02\x12\x0b\n\x07OFFLINE\x10\x03\x12\x0c\n\x08OTHERNET\x10\x04\x12\x0c\n\x08\x45THERNET\x10\x05*]\n\x06TFType\x12\x0e\n\nTF_UNKNOWN\x10\x00\x12\n\n\x06U_CARD\x10\x01\x12\t\n\x05U_PKG\x10\x02\x12\n\n\x06\x43_CARD\x10\x03\x12\t\n\x05\x43_PKG\x10\x04\x12\n\n\x06T_CARD\x10\x05\x12\t\n\x05T_PKG\x10\x06\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.metadata.network.network_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_NETWORKTYPE']._serialized_start=195
-  _globals['_NETWORKTYPE']._serialized_end=289
-  _globals['_TFTYPE']._serialized_start=291
-  _globals['_TFTYPE']._serialized_end=384
-  _globals['_NETWORK']._serialized_start=70
-  _globals['_NETWORK']._serialized_end=193
+  _globals['_CELLULARTYPE']._serialized_start=405
+  _globals['_CELLULARTYPE']._serialized_end=471
+  _globals['_NETWORKTYPE']._serialized_start=473
+  _globals['_NETWORKTYPE']._serialized_end=567
+  _globals['_TFTYPE']._serialized_start=569
+  _globals['_TFTYPE']._serialized_end=662
+  _globals['_NETWORK']._serialized_start=71
+  _globals['_NETWORK']._serialized_end=309
+  _globals['_NETQUALITY']._serialized_start=311
+  _globals['_NETQUALITY']._serialized_end=403
 # @@protoc_insertion_point(module_scope)

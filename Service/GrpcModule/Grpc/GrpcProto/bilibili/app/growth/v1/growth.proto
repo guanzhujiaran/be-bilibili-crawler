@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package bilibili.app.growth.v1;
+
+option java_multiple_files = true;
+
+// 广告设备信息
+message AdDeviceInfo {
+    // imei
+    string imei = 1;
+    // imei md5
+    string imei_md5 = 2;
+    // oaid
+    string oaid = 3;
+    // oaid md5
+    string oaid_md5 = 4;
+    // android id
+    string android_id = 5;
+    // android id md5
+    string android_id_md5 = 6;
+}
+
+// 归因上报-请求
+message ReportAttributionReq {
+    // 广告设备信息
+    AdDeviceInfo ad_device_info = 1;
+    // 归因数据
+    string attribution_data = 2;
+    // 点击时间
+    int64 click_time = 3;
+    // 下载时间
+    int64 download_time = 4;
+    // 安装时间
+    int64 install_time = 5;
+    // referrer扩展
+    string referrer_ex = 6;
+}
+
+// 归因上报-响应
+message ReportAttributionResp {
+}

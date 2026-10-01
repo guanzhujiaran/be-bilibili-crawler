@@ -2,107 +2,103 @@ syntax = "proto3";
 
 package bilibili.dagw.component.avatar.common;
 
-//
-message BasicRenderSpec {
-    //
-    double opacity = 1;
+option java_multiple_files = true;
+
+// 尺寸描述
+message SizeSpec {
+    // 宽
+    double width = 1;
+    // 高
+    double height = 2;
 }
 
-//
-message ColorConfig {
-    //
-    bool is_dark_mode_aware = 1;
-    //
-    ColorSpec day = 2;
-    //
-    ColorSpec night = 3;
-}
-
-//
-message ColorSpec {
-    //
-    string argb = 1;
-}
-
-//
-message LayerGeneralSpec {
-    //
-    PositionSpec pos_spec = 1;
-    //
-    SizeSpec size_spec = 2;
-    //
-    BasicRenderSpec render_spec = 3;
-}
-
-//
-message MaskProperty {
-    //
-    LayerGeneralSpec general_spec = 1;
-    //
-    ResourceSource mask_src = 2;
-}
-
-//
-message NativeDrawRes {
-    //
-    int32 draw_type = 1;
-    //
-    int32 fill_mode = 2;
-    //
-    ColorConfig color_config = 3;
-    //
-    double edge_weight = 4;
-}
-
-//
+// 位置描述
 message PositionSpec {
-    //
+    // 坐标位置
     int32 coordinate_pos = 1;
-    //
+    // x 轴
     double axis_x = 2;
-    //
+    // y 轴
     double axis_y = 3;
 }
 
-//
+// 渲染描述
+message BasicRenderSpec {
+    // 透明度
+    double opacity = 1;
+}
+
+// 蒙版属性
+message MaskProperty {
+    // 通用规格
+    LayerGeneralSpec general_spec = 1;
+    // 蒙版资源
+    ResourceSource mask_src = 2;
+}
+
+// 通用规格
+message LayerGeneralSpec {
+    // 位置
+    PositionSpec pos_spec = 1;
+    // 尺寸
+    SizeSpec size_spec = 2;
+    // 渲染
+    BasicRenderSpec render_spec = 3;
+}
+
+// 远端资源
 message RemoteRes {
-    //
+    // 资源 url
     string url = 1;
-    //
+    // bfs 样式
     string bfs_style = 2;
 }
 
-//
+// 本地资源
+message LocalRes {
+    // 资源路径
+    string absolute_path = 1;
+}
+
+// 原生绘制资源
+message NativeDrawRes {
+    // 绘制类型
+    int32 draw_type = 1;
+    // 填充模式
+    int32 fill_mode = 2;
+    // 边缘宽度
+    double edge_weight = 3;
+    // 颜色配置
+    ColorConfig color_config = 4;
+}
+
+// 资源来源
 message ResourceSource {
-    //
-    enum LocalRes {
-        LOCAL_RES_INVALID = 0;
-        LOCAL_RES_ICON_VIP = 1;
-        LOCAL_RES_ICON_SMALL_VIP = 2;
-        LOCAL_RES_ICON_PERSONAL_VERIFY = 3;
-        LOCAL_RES_ICON_ENTERPRISE_VERIFY = 4;
-        LOCAL_RES_ICON_NFT_MAINLAND = 5;
-        LOCAL_RES_DEFAULT_AVATAR = 6;
-    }
-    //
+    // 资源类型
     int32 src_type = 1;
-    //
+    // 占位类型
     int32 placeholder = 2;
-    //
+    // 资源内容
     oneof res {
-        //
+        // 远端资源
         RemoteRes remote = 3;
-        //
+        // 本地资源
         LocalRes local = 4;
-        //
-        NativeDrawRes draw = 5;
+        // 原生绘制资源
+        NativeDrawRes native_draw = 5;
     }
 }
 
-//
-message SizeSpec {
-    //
-    double width = 1;
-    //
-    double height = 2;
+// 颜色配置
+message ColorConfig {
+    // 日间颜色
+    ColorConfigDayNight color_day = 1;
+    // 夜间颜色
+    ColorConfigDayNight color_night = 2;
+}
+
+// 日夜颜色
+message ColorConfigDayNight {
+    // 普通颜色
+    string color = 1;
 }

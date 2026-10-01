@@ -3,8 +3,10 @@ syntax = "proto3";
 package bilibili.app.viewunite.v1;
 
 import "bilibili/app/archive/middleware/v1/preload.proto";
+import "bilibili/app/overseas/ad/v1/ad.proto";
 import "bilibili/app/viewunite/common.proto";
 import "bilibili/pagination/pagination.proto";
+import "bilibili/playershared/playershared.proto";
 import "google/protobuf/any.proto";
 
 // 统一视频信息接口 (7.41.0+)
@@ -15,8 +17,24 @@ service View {
     rpc RelatesFeed(RelatesFeedReq) returns (RelatesFeedReply);
     // 
     rpc View(ViewReq) returns (ViewReply);
-    // 
+    //
     rpc ViewProgress(ViewProgressReq) returns (ViewProgressReply);
+    // AI相关异步
+    rpc AIRelateAsync(AIRelateAsyncReq) returns (AIRelateAsyncReply);
+    // 缓存鉴权
+    rpc CacheAuthentication(CacheAuthenticationReq) returns (CacheAuthenticationReply);
+    // 广告搜索
+    rpc FloorAdSearch(FloorAdSearchReq) returns (FloorAdSearchReply);
+    // 分P
+    rpc Pages(PagesReq) returns (PagesReply);
+    // 播放暂停
+    rpc PlayPause(PlayPauseReq) returns (PlayPauseReply);
+    // 故事模式
+    rpc Story(StoryReq) returns (StoryReply);
+    // 视频提及
+    rpc VideoMentions(VideoMentionsReq) returns (VideoMentionsReply);
+    // 播放页结束页
+    rpc ViewEndPage(ViewEndPageReq) returns (ViewEndPageReply);
 }
 
 // 
@@ -57,6 +75,8 @@ message Arc {
     int64 type_id = 9;
     // 
     string title = 10;
+    // 
+    int32 state = 11;
 }
 
 // 
@@ -73,6 +93,8 @@ message ArcRefreshReply {
     LikeConfig like_config = 5;
     // 
     SimpleOwner owner = 6;
+    // 
+    ReplyStyle reply_style = 7;
 }
 
 // 
@@ -135,6 +157,12 @@ message BizReserveGameParam {
     int64 game_id = 1;
 }
 
+// 
+message BizGameBackflowParam {
+    // 
+    string extra = 1;
+}
+
 enum BizType {
     // 
     BizTypeNone = 0;
@@ -148,6 +176,8 @@ enum BizType {
     BizTypeFavSeason = 4;
     // 
     BizTypeReserveGame = 5;
+    // 
+    BizTypeGiftGame = 6;
 }
 
 // 
@@ -160,6 +190,14 @@ message Button {
     string icon = 3;
     // 
     JumpShowType jump_show_type = 4;
+    // 
+    string text_color = 5;
+    // 
+    string bg_color = 6;
+    // 
+    string border_color = 7;
+    // 
+    map<string, string> report = 8;
 }
 
 // 
@@ -192,12 +230,90 @@ message ChronosParam {
 
 // 推广信息
 message CM {
-    // 
+    //
     google.protobuf.Any cm_under_player = 1;
-    // 
+    //
     google.protobuf.Any ads_control = 2;
-    // 
+    //
     repeated google.protobuf.Any source_content = 3;
+    //
+    PadRelateCM pad_relate_cm = 4;
+    //
+    repeated SourceContentItem source_content_item = 5;
+    //
+    google.protobuf.Any cm_half_panel = 6;
+    //
+    bilibili.app.overseas.ad.v1.OverseasAdInfo overseas_ad_info = 7;
+}
+
+// 平板端相关推荐广告
+message PadRelateCM {
+    //
+    RelateCM cm = 1;
+    //
+    oneof data {
+        //
+        RelateLiveCM live = 2;
+    }
+}
+
+// 相关推荐广告(稿件)
+message RelateCM {
+    //
+    int64 aid = 1;
+    //
+    google.protobuf.Any source_content = 2;
+    //
+    int64 duration = 3;
+    //
+    bilibili.app.viewunite.common.Stat stat = 4;
+    //
+    bilibili.app.viewunite.common.Owner owner = 5;
+}
+
+// 相关推荐广告(直播)
+message RelateLiveCM {
+    //
+    int64 room_id = 1;
+    //
+    int64 live_status = 2;
+    //
+    bilibili.app.viewunite.common.StatInfo stat_info = 3;
+    //
+    string area_name = 4;
+}
+
+// 广告素材条目
+message SourceContentItem {
+    //
+    google.protobuf.Any source_content = 1;
+    //
+    SourceContentType sc_type = 2;
+    //
+    oneof data {
+        //
+        SourceContentAV av = 3;
+        //
+        bilibili.app.viewunite.common.SourceContentLive live = 4;
+    }
+}
+
+// 广告素材类型
+enum SourceContentType {
+    //
+    SC_DEFAULT = 0;
+    //
+    SC_AV = 1;
+    //
+    SC_LIVE = 2;
+}
+
+// 广告素材(稿件)
+message SourceContentAV {
+    //
+    int64 aid = 1;
+    //
+    bilibili.app.viewunite.common.Stat stat = 2;
 }
 
 // 
@@ -234,6 +350,40 @@ message Config {
     StoryEntrance story_entrance = 3;
     // 
     BgPlayNotice bg_play_notice = 4;
+    // 沉浸式模式
+    Immersion immersion = 5;
+    // 翻译引导
+    TranslateGuide translate_guide = 6;
+    // 听视频
+    Listen listen = 7;
+}
+
+// 沉浸式模式
+message Immersion {
+    // 是否开启
+    bool open = 1;
+}
+
+// 翻译引导
+message TranslateGuide {
+    // 引导开关
+    bool guide_switch = 1;
+    // 是否在白名单
+    bool is_in_white = 2;
+    // AI 翻译标题
+    string ai_translation_title = 3;
+    // AI 翻译内容
+    string ai_translation_content = 4;
+    // 取消按钮文案
+    string cancel_button_text = 5;
+    // 确认按钮文案
+    string confirm_button_text = 6;
+}
+
+// 听视频
+message Listen {
+    // 是否新版听视频
+    bool is_new_listen = 1;
 }
 
 // 视频播放时弹出的卡片
@@ -295,6 +445,8 @@ enum ECode {
     CODE_DEFAULT = 0;
     // 
     CODE_404 = 1;
+    // 稿件隐私
+    CODE_ARC_PRIVACY = 2;
     // 青少年限制
     CODE_TEENAGER = 78301;
 }
@@ -381,6 +533,8 @@ message Material {
     PageType page_type = 10;
     // 
     bool need_login = 11;
+    // 
+    map<string, string> report = 12;
 }
 
 // 素材类型
@@ -443,6 +597,8 @@ message OperationCard {
         BizJumpLinkParam jump = 9;
         // 
         BizReserveGameParam game = 10;
+        // 
+        BizGameBackflowParam game_backflow = 11;
     }
 }
 
@@ -570,6 +726,20 @@ message RelatesFeedReq {
     int64 auto_play = 9;
     // 
     string from_track_id = 10;
+    // 
+    string biz_extra = 11;
+    // 
+    string ad_extra = 12;
+    // 
+    int64 tab_category = 13;
+    // 
+    string tab_category_name = 14;
+    // 
+    map<string, string> extra_content = 15;
+    // 
+    string play_mode = 16;
+    // 
+    string from_scene = 17;
 }
 
 // 
@@ -614,12 +784,22 @@ message ReqUser {
     ReqUserExtra extra = 9;
     // 
     int32 paid = 10;
+    // 老粉
+    OldFan old_fan = 11;
 }
 
 // 
 message ReqUserExtra {
     // 
     bool user_flag_new = 1;
+}
+
+// 老粉信息
+message OldFan {
+    // 
+    int32 is_follow_display = 1;
+    // 
+    string wing_pic = 2;
 }
 
 // 
@@ -630,6 +810,8 @@ message Rights {
     bool no_reprint = 2;
     // 
     bool download = 3;
+    // 
+    bool is_charging_pay = 4;
 }
 
 // 
@@ -698,6 +880,8 @@ message TabControl {
     bool disable = 2;
     // 
     string disable_click_tip = 3;
+    // 
+    float disable_alpha = 4;
 }
 
 // 
@@ -712,6 +896,8 @@ message TabModule {
         ReplyTab reply = 3;
         // 
         bilibili.app.viewunite.common.ActivityTab activity_tab = 4;
+        // 
+        bilibili.app.viewunite.common.CatalogTab catalog = 5;
     }
 }
 
@@ -724,6 +910,8 @@ enum TabType {
     TAB_REPLY = 2;
     // OGV 活动信息 Tab
     TAB_OGV_ACTIVITY = 3;
+    // 目录 Tab
+    TAB_CATALOG = 4;
 }
 
 // 
@@ -756,6 +944,8 @@ message VideoGuide {
     VideoViewPoint video_point = 2;
     // 
     ContractCard contract_card = 3;
+    // 
+    Material right_material = 4;
 }
 
 // 
@@ -781,7 +971,7 @@ message VideoShot {
     // 
     int32 img_x_len = 2;
     // 
-    int32 imd_x_size = 3;
+    int32 img_x_size = 3;
     // 
     int32 img_y_len = 4;
     // 
@@ -803,15 +993,27 @@ message VideoViewPoint {
 // 
 message ViewBase {
     // 
-    BizType biz_type = 1;
+    bilibili.playershared.BizType biz_type = 1;
     // 
-    PageType page_type = 2;
+    PageCategory page_type = 2;
     // 
     PageControl control = 3;
     // 
     ActivityResource activity_resource = 4;
     // 
     Config config = 5;
+    // 翻译信息
+    Translation translation = 6;
+}
+
+// 翻译信息
+message Translation {
+    // 
+    int32 translation_status = 1;
+    // 
+    string cur_language = 2;
+    // 
+    string arc_language = 3;
 }
 
 // 
@@ -890,8 +1092,472 @@ message ViewReq {
     Relate relate = 11;
     // 
     string biz_extra = 12;
-    // 
+    //
     string ad_extra = 13;
-    // 
+    //
     string from_scene = 14;
+    // 播放控制
+    bilibili.playershared.PlayCtrl play_ctrl = 15;
+}
+
+// 视频ID
+message RelateID {
+    // 视频avid
+    int64 id = 1;
+}
+
+// 分P请求
+message PagesReq {
+    // 稿件avid
+    int64 aid = 1;
+}
+
+// 广告搜索请求
+message FloorAdSearchReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 广告额外参数
+    string ad_extra = 2;
+    // 当前页面spmid
+    string spmid = 3;
+    // 上一页面spmid
+    string from_spmid = 4;
+}
+
+// 故事模式请求参数
+message StoryReqParam {
+    // 追踪ID
+    string track_id = 1;
+    // 展示ID
+    int64 display_id = 2;
+    // 额外内容
+    map<string, string> extra_content = 3;
+    // 是否刷新
+    bool refresh = 4;
+    // 业务信息
+    map<string, string> business_info = 5;
+}
+
+// 播单请求参数
+message PlayListReqParam {
+    // 媒体ID
+    int64 media_id = 1;
+    // 业务ID
+    int64 biz_id = 2;
+    // 类型
+    int64 type = 3;
+    // 翻页方向
+    bool page_direction = 4;
+    // 是否首页
+    bool first_page = 5;
+    // 偏移
+    int64 offset = 6;
+    // 排序降序
+    int64 sort_desc = 7;
+    // 排序字段
+    int64 sort_field = 8;
+}
+
+// 故事模式请求
+message StoryReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 稿件bvid
+    string bvid = 2;
+    // 播放器参数
+    bilibili.app.archive.middleware.v1.PlayerArgs player_args = 3;
+    oneof param {
+        // 故事模式请求参数
+        StoryReqParam story_req_param = 4;
+        // 播单请求参数
+        PlayListReqParam play_list_req_param = 5;
+    }
+    // 下拉
+    int64 pull = 6;
+    // 来源
+    string from = 7;
+    // 当前页面spmid
+    string spmid = 8;
+    // 上一页面spmid
+    string from_spmid = 9;
+    // 广告额外参数
+    string ad_extra = 10;
+    // 是否可折叠
+    bool foldable = 11;
+}
+
+// 播放暂停请求
+message PlayPauseReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 稿件cid
+    int64 cid = 2;
+    // Tab类型
+    TabType tab_type = 3;
+    // 业务额外参数
+    string biz_extra = 4;
+    // 广告额外参数
+    string ad_extra = 5;
+    // 额外内容
+    map<string, string> extra_content = 6;
+    // 会话ID
+    string session_id = 7;
+}
+
+// 视频提及请求
+message VideoMentionsReq {
+    // 视频请求参数
+    string video_req = 1;
+    // 稿件avid
+    int64 aid = 2;
+    // 当前页面spmid
+    string spmid = 3;
+    // 上一页面spmid
+    string from_spmid = 4;
+    // 上一页面追踪ID
+    string from_trackid = 5;
+    // 来源场景
+    string from_scene = 6;
+    // 业务额外参数
+    string biz_extra = 7;
+    // 额外内容
+    map<string, string> extra_content = 8;
+}
+
+// 播放页结束页请求
+message ViewEndPageReq {
+    // 稿件avid
+    int64 aid = 1;
+    // 稿件bvid
+    string bvid = 2;
+    // 来源
+    string from = 3;
+    // 当前页面spmid
+    string spmid = 4;
+    // 上一页面spmid
+    string from_spmid = 5;
+    // 会话ID
+    string session_id = 6;
+    // 相关视频ID列表
+    repeated RelateID relate_ids = 7;
+    // 追踪ID
+    string track_id = 8;
+    // 额外内容
+    map<string, string> extra_content = 9;
+    // 广告额外参数
+    string ad_extra = 10;
+    // 播放器参数
+    bilibili.app.archive.middleware.v1.PlayerArgs player_args = 11;
+}
+
+// 缓存播放稿件
+message CachePlayAv {
+    // 稿件avid
+    int64 aid = 1;
+}
+
+// AI相关异步请求
+message AIRelateAsyncReq {
+    // 视频信息请求
+    ViewReq req = 1;
+    // AI相关异步参数
+    bilibili.app.viewunite.common.RelateAsync relate_async = 2;
+}
+
+// 缓存鉴权请求
+message CacheAuthenticationReq {
+    // 缓存播放稿件列表
+    repeated CachePlayAv av = 1;
+}
+
+// 缓存鉴权回复
+message CacheAuthenticationReply {
+    // 缓存结果映射
+    map<int64, CachePlayAvRly> item = 1;
+}
+
+// 分P回复
+message PagesReply {
+    // 分P列表
+    repeated bilibili.app.viewunite.common.Page pages = 1;
+}
+
+// 缓存播放稿件鉴权结果
+message CachePlayAvRly {
+    // 鉴权结果码
+    CacheCode code = 1;
+}
+
+// 异步模块
+message AsyncModule {
+    // 模块列表
+    repeated bilibili.app.viewunite.common.Module modules = 1;
+}
+
+// 暂停类型
+enum PauseType {
+    // 默认
+    PAUSE_TYPE_DEFAULT = 0;
+    // 广告
+    PAUSE_TYPE_ADS = 1;
+}
+
+// 缓存鉴权结果码
+enum CacheCode {
+    // 可播放
+    PLAY = 0;
+    // 未开通
+    UPOWERSTATE_INACTIVE = 100;
+    // 重复上次操作
+    REPEAT_LAST_OPERATION = 101;
+}
+
+// 广告搜索项
+message FloorAdSearchItem {
+    // 内容
+    google.protobuf.Any source_content = 1;
+}
+
+// 广告搜索Tab
+message FloorAdSearchTab {
+    // 标题
+    string title = 1;
+    // 按钮标题
+    string but_title = 2;
+    // 按钮链接
+    string but_url = 3;
+}
+
+// 广告搜索回复
+message FloorAdSearchReply {
+    // Tab信息
+    FloorAdSearchTab tab = 1;
+    // 广告搜索项列表
+    repeated FloorAdSearchItem item = 3;
+}
+
+// AI相关异步回复
+message AIRelateAsyncReply {
+    // 广告信息
+    CM cm = 1;
+    // 异步模块
+    AsyncModule module = 2;
+    // 补充内容
+    google.protobuf.Any supplement = 3;
+}
+
+// 文本信息
+message TextInfo {
+    // 文本
+    string text = 1;
+    // 文本颜色
+    string text_color = 2;
+    // 夜间文本颜色
+    string text_color_night = 3;
+    // 字号
+    int32 font_size = 4;
+}
+
+// 按钮动作类型
+enum ButtonAction {
+    // 默认
+    BUTTON_ACTION_DEFAULT = 0;
+    // 取消
+    BUTTON_ACTION_CANCEL = 1;
+}
+
+// 按钮信息
+message ButtonInfo {
+    // 文本
+    string text = 1;
+    // 文本颜色
+    string text_color = 2;
+    // 夜间文本颜色
+    string text_color_night = 3;
+    // 背景颜色
+    string bg_color = 4;
+    // 夜间背景颜色
+    string bg_color_night = 5;
+    // 动作类型
+    ButtonAction action_type = 6;
+    // 字号
+    int32 font_size = 7;
+    // 边框颜色
+    string frame_color = 8;
+}
+
+// 暂停广告稿件
+message PauseAdsAV {
+    // 稿件avid
+    int64 aid = 1;
+    // 统计数据
+    bilibili.app.viewunite.common.Stat stat = 2;
+    // 封面
+    string cover = 3;
+    // 标题
+    string title = 4;
+    // 时长
+    int64 duration = 5;
+}
+
+// 暂停广告内容列表
+message PauseSourceContentList {
+    // 内容
+    google.protobuf.Any source_content = 1;
+    // 广告稿件列表
+    repeated PauseAdsAV av = 2;
+}
+
+// 暂停广告
+message PauseAds {
+    // 内容列表
+    repeated PauseSourceContentList list = 1;
+}
+
+// 暂停信息
+message PauseBar {
+    // 标题
+    TextInfo title = 1;
+    // 倒计时时长
+    int64 timer_countdown = 2;
+    // 是否开启倒计时
+    bool countdown_enable = 3;
+    // 按钮列表
+    repeated ButtonInfo button = 6;
+}
+
+// 播放暂停回复
+message PlayPauseReply {
+    // 暂停类型
+    PauseType type = 1;
+    // 暂停信息
+    PauseBar bar = 2;
+    oneof data {
+        // 暂停广告
+        PauseAds ads = 3;
+    }
+}
+
+// 视频提及回复
+message VideoMentionsReply {
+    // 提及列表
+    repeated bilibili.app.viewunite.common.Mention mentions = 1;
+    // 标题
+    string title = 2;
+    // AB实验
+    map<string, string> ab = 3;
+}
+
+// 视频播放数据
+message VideoPlayData {
+    // 播放地址
+    string url = 1;
+    // 分辨率
+    bilibili.playershared.Dimension dimension = 2;
+    // 稿件avid
+    int64 aid = 3;
+    // 剧集epid
+    int64 ep_id = 4;
+    // 稿件cid
+    int64 cid = 5;
+}
+
+// 故事模式广告信息
+message StoryAdInfo {
+    // 创意ID
+    int64 creative_id = 1;
+    // 广告回调
+    string ad_cb = 2;
+    // 资源
+    int64 resource = 3;
+    // 来源
+    int32 source = 4;
+    // 请求ID
+    string request_id = 5;
+    // 是否广告
+    bool is_ad = 6;
+    // 是否本地广告
+    bool is_ad_loc = 7;
+    // 客户端IP
+    string client_ip = 8;
+    // 额外信息
+    string extra = 9;
+    // 广告类型
+    int32 advertise_type = 10;
+}
+
+// PGC信息
+message PGCInfo {
+    // 会员付费提示
+    string vip_pay_tip = 1;
+}
+
+// 故事模式视频卡片
+message StoryVideoCard {
+    // 播放数据
+    VideoPlayData play_data = 1;
+    // 视频详情
+    ViewReply view_content = 2;
+    // 推荐会话ID
+    string recommend_session_id = 3;
+    // 封面
+    string cover = 4;
+    // 追踪ID
+    string track_id = 5;
+    // 跳转类型
+    string goto = 6;
+    // PGC信息
+    PGCInfo pgc_info = 7;
+    // 广告信息
+    StoryAdInfo ad_info = 8;
+}
+
+// 故事模式卡片包装
+message StoryActualCardWrapper {
+    oneof actual_card {
+        // 视频卡片
+        StoryVideoCard video_card = 1;
+    }
+}
+
+// 故事模式回复
+message StoryReply {
+    // 故事卡片列表
+    repeated StoryActualCardWrapper story_card_wrappers = 1;
+}
+
+// 结束页广告类型
+enum EndCmType {
+    // 默认
+    END_CM_DEFAULT = 0;
+    // 半屏
+    END_CM_HALF = 1;
+}
+
+// 结束页半屏信息
+message ViewEndHalf {
+    // 暂停类型
+    PauseType type = 1;
+    oneof data {
+        // 暂停广告
+        PauseAds ads = 2;
+    }
+}
+
+// 结束页卡片
+message ViewEndPageCard {
+    // 相关推荐
+    bilibili.app.viewunite.common.RelateCard relate = 1;
+    // 卡片索引
+    int64 card_index = 2;
+}
+
+// 播放页结束页回复
+message ViewEndPageReply {
+    // 相关推荐卡片列表
+    repeated ViewEndPageCard relates = 1;
+    // 半屏信息
+    ViewEndHalf half = 2;
+    // 结束页广告类型
+    EndCmType type = 3;
 }

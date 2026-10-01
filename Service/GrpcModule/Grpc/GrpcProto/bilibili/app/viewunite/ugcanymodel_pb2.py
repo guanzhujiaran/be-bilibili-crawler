@@ -25,31 +25,51 @@ _sym_db = _symbol_database.Default()
 from bilibili.app.viewunite import common_pb2 as bilibili_dot_app_dot_viewunite_dot_common__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(bilibili/app/viewunite/ugcanymodel.proto\x12\"bilibili.app.viewunite.ugcanymodel\x1a#bilibili/app/viewunite/common.proto\"n\n\x07\x44islike\x12\r\n\x05title\x18\x01 \x01(\t\x12\x10\n\x08subtitle\x18\x02 \x01(\t\x12\x42\n\x07reasons\x18\x03 \x03(\x0b\x32\x31.bilibili.app.viewunite.ugcanymodel.DislikeReason\"S\n\rDislikeReason\x12\n\n\x02id\x18\x01 \x01(\x03\x12\x0b\n\x03mid\x18\x02 \x01(\x03\x12\x0b\n\x03rid\x18\x03 \x01(\x05\x12\x0e\n\x06tag_id\x18\x04 \x01(\x03\x12\x0c\n\x04name\x18\x05 \x01(\t\"g\n\x08\x45lecRank\x12>\n\x04list\x18\x01 \x03(\x0b\x32\x30.bilibili.app.viewunite.ugcanymodel.ElecRankItem\x12\r\n\x05\x63ount\x18\x02 \x01(\x03\x12\x0c\n\x04text\x18\x03 \x01(\t\"N\n\x0c\x45lecRankItem\x12\x0e\n\x06\x61vatar\x18\x01 \x01(\t\x12\x10\n\x08nickname\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0b\n\x03mid\x18\x04 \x01(\x03\"\x90\x01\n\x08Premiere\x12I\n\x0epremiere_state\x18\x01 \x01(\x0e\x32\x31.bilibili.app.viewunite.ugcanymodel.PremiereState\x12\x12\n\nstart_time\x18\x02 \x01(\x03\x12\x14\n\x0cservice_time\x18\x03 \x01(\x03\x12\x0f\n\x07room_id\x18\x04 \x01(\x03\"G\n\x0fPremiereReserve\x12\x12\n\nreserve_id\x18\x01 \x01(\x03\x12\r\n\x05\x63ount\x18\x02 \x01(\x03\x12\x11\n\tis_follow\x18\x03 \x01(\x08\"\xd8\x01\n\x10PremiereResource\x12>\n\x08premiere\x18\x01 \x01(\x0b\x32,.bilibili.app.viewunite.ugcanymodel.Premiere\x12\x44\n\x07reserve\x18\x02 \x01(\x0b\x32\x33.bilibili.app.viewunite.ugcanymodel.PremiereReserve\x12>\n\x04text\x18\x03 \x01(\x0b\x32\x30.bilibili.app.viewunite.ugcanymodel.PremiereText\"\xe9\x01\n\x0cPremiereText\x12\r\n\x05title\x18\x01 \x01(\t\x12\x10\n\x08subtitle\x18\x02 \x01(\t\x12\x13\n\x0bonline_text\x18\x03 \x01(\t\x12\x13\n\x0bonline_icon\x18\x04 \x01(\t\x12\x18\n\x10online_icon_dark\x18\x05 \x01(\t\x12\x13\n\x0bintro_title\x18\x06 \x01(\t\x12\x12\n\nintro_icon\x18\x07 \x01(\t\x12\x19\n\x11guidance_pulldown\x18\x08 \x01(\t\x12\x16\n\x0eguidance_entry\x18\t \x01(\t\x12\x18\n\x10intro_icon_night\x18\n \x01(\t\"\xb3\x02\n\nViewUgcAny\x12\x46\n\x08premiere\x18\x01 \x01(\x0b\x32\x34.bilibili.app.viewunite.ugcanymodel.PremiereResource\x12<\n\x07\x64islike\x18\x02 \x01(\x0b\x32+.bilibili.app.viewunite.ugcanymodel.Dislike\x12\x12\n\nshort_link\x18\x03 \x01(\t\x12\x16\n\x0eshare_subtitle\x18\x04 \x01(\t\x12\x32\n\x05pages\x18\x05 \x03(\x0b\x32#.bilibili.app.viewunite.common.Page\x12?\n\telec_rank\x18\x06 \x01(\x0b\x32,.bilibili.app.viewunite.ugcanymodel.ElecRank*\\\n\rPremiereState\x12\x11\n\rpremiere_none\x10\x00\x12\x13\n\x0fpremiere_before\x10\x01\x12\x0f\n\x0bpremiere_in\x10\x02\x12\x12\n\x0epremiere_after\x10\x03\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n(bilibili/app/viewunite/ugcanymodel.proto\x12\"bilibili.app.viewunite.ugcanymodel\x1a#bilibili/app/viewunite/common.proto\"n\n\x07\x44islike\x12\r\n\x05title\x18\x01 \x01(\t\x12\x10\n\x08subtitle\x18\x02 \x01(\t\x12\x42\n\x07reasons\x18\x03 \x03(\x0b\x32\x31.bilibili.app.viewunite.ugcanymodel.DislikeReason\"S\n\rDislikeReason\x12\n\n\x02id\x18\x01 \x01(\x03\x12\x0b\n\x03mid\x18\x02 \x01(\x03\x12\x0b\n\x03rid\x18\x03 \x01(\x05\x12\x0e\n\x06tag_id\x18\x04 \x01(\x03\x12\x0c\n\x04name\x18\x05 \x01(\t\"{\n\x08\x45lecRank\x12>\n\x04list\x18\x01 \x03(\x0b\x32\x30.bilibili.app.viewunite.ugcanymodel.ElecRankItem\x12\r\n\x05\x63ount\x18\x02 \x01(\x03\x12\x0c\n\x04text\x18\x03 \x01(\t\x12\x12\n\nhide_count\x18\x04 \x01(\x08\"N\n\x0c\x45lecRankItem\x12\x0e\n\x06\x61vatar\x18\x01 \x01(\t\x12\x10\n\x08nickname\x18\x02 \x01(\t\x12\x0f\n\x07message\x18\x03 \x01(\t\x12\x0b\n\x03mid\x18\x04 \x01(\x03\"\x90\x01\n\x08Premiere\x12I\n\x0epremiere_state\x18\x01 \x01(\x0e\x32\x31.bilibili.app.viewunite.ugcanymodel.PremiereState\x12\x12\n\nstart_time\x18\x02 \x01(\x03\x12\x14\n\x0cservice_time\x18\x03 \x01(\x03\x12\x0f\n\x07room_id\x18\x04 \x01(\x03\"G\n\x0fPremiereReserve\x12\x12\n\nreserve_id\x18\x01 \x01(\x03\x12\r\n\x05\x63ount\x18\x02 \x01(\x03\x12\x11\n\tis_follow\x18\x03 \x01(\x08\"\xd8\x01\n\x10PremiereResource\x12>\n\x08premiere\x18\x01 \x01(\x0b\x32,.bilibili.app.viewunite.ugcanymodel.Premiere\x12\x44\n\x07reserve\x18\x02 \x01(\x0b\x32\x33.bilibili.app.viewunite.ugcanymodel.PremiereReserve\x12>\n\x04text\x18\x03 \x01(\x0b\x32\x30.bilibili.app.viewunite.ugcanymodel.PremiereText\"\xe9\x01\n\x0cPremiereText\x12\r\n\x05title\x18\x01 \x01(\t\x12\x10\n\x08subtitle\x18\x02 \x01(\t\x12\x13\n\x0bonline_text\x18\x03 \x01(\t\x12\x13\n\x0bonline_icon\x18\x04 \x01(\t\x12\x18\n\x10online_icon_dark\x18\x05 \x01(\t\x12\x13\n\x0bintro_title\x18\x06 \x01(\t\x12\x12\n\nintro_icon\x18\x07 \x01(\t\x12\x19\n\x11guidance_pulldown\x18\x08 \x01(\t\x12\x16\n\x0eguidance_entry\x18\t \x01(\t\x12\x18\n\x10intro_icon_night\x18\n \x01(\t\"\xf3\x04\n\nViewUgcAny\x12\x46\n\x08premiere\x18\x01 \x01(\x0b\x32\x34.bilibili.app.viewunite.ugcanymodel.PremiereResource\x12<\n\x07\x64islike\x18\x02 \x01(\x0b\x32+.bilibili.app.viewunite.ugcanymodel.Dislike\x12\x12\n\nshort_link\x18\x03 \x01(\t\x12\x16\n\x0eshare_subtitle\x18\x04 \x01(\t\x12\x32\n\x05pages\x18\x05 \x03(\x0b\x32#.bilibili.app.viewunite.common.Page\x12?\n\telec_rank\x18\x06 \x01(\x0b\x32,.bilibili.app.viewunite.ugcanymodel.ElecRank\x12J\n\x0fugc_season_conf\x18\x07 \x01(\x0b\x32\x31.bilibili.app.viewunite.ugcanymodel.UgcSeasonConf\x12=\n\x08\x61i_extra\x18\x08 \x01(\x0b\x32+.bilibili.app.viewunite.ugcanymodel.AiExtra\x12\x42\n\nexperiment\x18\t \x01(\x0b\x32..bilibili.app.viewunite.ugcanymodel.Experiment\x12@\n\x0crelate_async\x18\n \x01(\x0b\x32*.bilibili.app.viewunite.common.RelateAsync\x12-\n\x02nf\x18\x0b \x01(\x0b\x32!.bilibili.app.viewunite.common.Nf\"9\n\rUgcSeasonConf\x12\x15\n\rseason_unfold\x18\x01 \x01(\x08\x12\x11\n\tfold_time\x18\x02 \x01(\x03\"\x1b\n\x07\x41iExtra\x12\x10\n\x08track_id\x18\x01 \x01(\t\"W\n\x0b\x46ollowGuide\x12\x0f\n\x07is_view\x18\x01 \x01(\x08\x12\x11\n\tview_text\x18\x02 \x01(\t\x12\x10\n\x08is_thumb\x18\x03 \x01(\x08\x12\x12\n\nthumb_text\x18\x04 \x01(\t\"\x8a\x01\n\x12ShareGuideStrategy\x12\x15\n\rdelay_seconds\x18\x01 \x01(\x05\x12\x1f\n\x17play_progress_threshold\x18\x02 \x01(\x02\x12\x1b\n\x13play_time_threshold\x18\x03 \x01(\x05\x12\x1f\n\x17online_viewer_threshold\x18\x04 \x01(\x05\"\xbb\x03\n\x13ShareGuideExpConfig\x12Q\n\x08\x65xp_type\x18\x01 \x01(\x0e\x32?.bilibili.app.viewunite.ugcanymodel.ShareGuideExpConfig.ExpType\x12\x0c\n\x04text\x18\x02 \x01(\t\x12J\n\nstrategies\x18\x03 \x03(\x0b\x32\x36.bilibili.app.viewunite.ugcanymodel.ShareGuideStrategy\x12\x19\n\x11\x64\x61ily_total_limit\x18\x04 \x01(\x05\x12^\n\x0c\x65xtra_params\x18\x05 \x03(\x0b\x32H.bilibili.app.viewunite.ugcanymodel.ShareGuideExpConfig.ExtraParamsEntry\x1a\x32\n\x10\x45xtraParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"H\n\x07\x45xpType\x12\x0b\n\x07UNKNOWN\x10\x00\x12\x16\n\x12SHARE_FIRST_REWARD\x10\x01\x12\x18\n\x14SHARE_ONLINE_VIEWERS\x10\x02\"\xd3\x01\n\nShareGuide\x12\r\n\x05hit_a\x18\x01 \x01(\x08\x12\x10\n\x08\x64uration\x18\x02 \x01(\x05\x12\x0f\n\x07\x63ount_a\x18\x03 \x01(\x05\x12\r\n\x05hit_b\x18\x04 \x01(\x08\x12\x0f\n\x07\x63ount_b\x18\x05 \x01(\x05\x12\x0c\n\x04text\x18\x06 \x01(\t\x12\x17\n\x0f\x65mphasized_text\x18\x07 \x01(\t\x12L\n\x0b\x61\x63tive_exps\x18\x08 \x03(\x0b\x32\x37.bilibili.app.viewunite.ugcanymodel.ShareGuideExpConfig\"\xaa\x01\n\nExperiment\x12\x43\n\x0bshare_guide\x18\x01 \x01(\x0b\x32..bilibili.app.viewunite.ugcanymodel.ShareGuide\x12\x45\n\x0c\x66ollow_guide\x18\x02 \x01(\x0b\x32/.bilibili.app.viewunite.ugcanymodel.FollowGuide\x12\x10\n\x08tag_fold\x18\x03 \x01(\x08*\\\n\rPremiereState\x12\x11\n\rpremiere_none\x10\x00\x12\x13\n\x0fpremiere_before\x10\x01\x12\x0f\n\x0bpremiere_in\x10\x02\x12\x12\n\x0epremiere_after\x10\x03\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.app.viewunite.ugcanymodel_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PREMIERESTATE']._serialized_start=1484
-  _globals['_PREMIERESTATE']._serialized_end=1576
+  _globals['_SHAREGUIDEEXPCONFIG_EXTRAPARAMSENTRY']._loaded_options = None
+  _globals['_SHAREGUIDEEXPCONFIG_EXTRAPARAMSENTRY']._serialized_options = b'8\001'
+  _globals['_PREMIERESTATE']._serialized_start=2975
+  _globals['_PREMIERESTATE']._serialized_end=3067
   _globals['_DISLIKE']._serialized_start=117
   _globals['_DISLIKE']._serialized_end=227
   _globals['_DISLIKEREASON']._serialized_start=229
   _globals['_DISLIKEREASON']._serialized_end=312
   _globals['_ELECRANK']._serialized_start=314
-  _globals['_ELECRANK']._serialized_end=417
-  _globals['_ELECRANKITEM']._serialized_start=419
-  _globals['_ELECRANKITEM']._serialized_end=497
-  _globals['_PREMIERE']._serialized_start=500
-  _globals['_PREMIERE']._serialized_end=644
-  _globals['_PREMIERERESERVE']._serialized_start=646
-  _globals['_PREMIERERESERVE']._serialized_end=717
-  _globals['_PREMIERERESOURCE']._serialized_start=720
-  _globals['_PREMIERERESOURCE']._serialized_end=936
-  _globals['_PREMIERETEXT']._serialized_start=939
-  _globals['_PREMIERETEXT']._serialized_end=1172
-  _globals['_VIEWUGCANY']._serialized_start=1175
-  _globals['_VIEWUGCANY']._serialized_end=1482
+  _globals['_ELECRANK']._serialized_end=437
+  _globals['_ELECRANKITEM']._serialized_start=439
+  _globals['_ELECRANKITEM']._serialized_end=517
+  _globals['_PREMIERE']._serialized_start=520
+  _globals['_PREMIERE']._serialized_end=664
+  _globals['_PREMIERERESERVE']._serialized_start=666
+  _globals['_PREMIERERESERVE']._serialized_end=737
+  _globals['_PREMIERERESOURCE']._serialized_start=740
+  _globals['_PREMIERERESOURCE']._serialized_end=956
+  _globals['_PREMIERETEXT']._serialized_start=959
+  _globals['_PREMIERETEXT']._serialized_end=1192
+  _globals['_VIEWUGCANY']._serialized_start=1195
+  _globals['_VIEWUGCANY']._serialized_end=1822
+  _globals['_UGCSEASONCONF']._serialized_start=1824
+  _globals['_UGCSEASONCONF']._serialized_end=1881
+  _globals['_AIEXTRA']._serialized_start=1883
+  _globals['_AIEXTRA']._serialized_end=1910
+  _globals['_FOLLOWGUIDE']._serialized_start=1912
+  _globals['_FOLLOWGUIDE']._serialized_end=1999
+  _globals['_SHAREGUIDESTRATEGY']._serialized_start=2002
+  _globals['_SHAREGUIDESTRATEGY']._serialized_end=2140
+  _globals['_SHAREGUIDEEXPCONFIG']._serialized_start=2143
+  _globals['_SHAREGUIDEEXPCONFIG']._serialized_end=2586
+  _globals['_SHAREGUIDEEXPCONFIG_EXTRAPARAMSENTRY']._serialized_start=2462
+  _globals['_SHAREGUIDEEXPCONFIG_EXTRAPARAMSENTRY']._serialized_end=2512
+  _globals['_SHAREGUIDEEXPCONFIG_EXPTYPE']._serialized_start=2514
+  _globals['_SHAREGUIDEEXPCONFIG_EXPTYPE']._serialized_end=2586
+  _globals['_SHAREGUIDE']._serialized_start=2589
+  _globals['_SHAREGUIDE']._serialized_end=2800
+  _globals['_EXPERIMENT']._serialized_start=2803
+  _globals['_EXPERIMENT']._serialized_end=2973
 # @@protoc_insertion_point(module_scope)

@@ -5,12 +5,12 @@ import gzip
 import hashlib
 import hmac
 import json
+import os
 import random
 import re
 import string
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from CONFIG import CONFIG
@@ -40,57 +40,22 @@ from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.device.device_pb2 impor
 from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.fawkes.fawkes_pb2 import (
     FawkesReq,
 )
-from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.locale.locale_pb2 import (
-    Locale,
-    LocaleIds,
-)
 from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.metadata_pb2 import Metadata
-from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.network.network_pb2 import (
-    Network,
-    NetworkType,
-)
 from Service.GrpcModule.Grpc.GrpcProto.bilibili.metadata.restriction.restriction_pb2 import (
     Restriction,
 )
 from Service.GrpcModule.Grpc.GrpcProto.datacenter.hakase.protobuf.android_device_info_pb2 import (
     AndroidDeviceInfo,
 )
+from Utils.GrpcUtils.metadata.device_env import (
+    RECENT_REGION_HEADER,
+    DeviceEnv,
+    encode_metadata_headers,
+    gen_trace_id,
+    new_device_env,
+    resolve_proxies,
+)
 from Utils.代理.SealedRequests import my_async_httpx
-
-
-class Fp:
-    def __init__(self, buvid_auth, device_model, device_radio_ver):
-        self.buvid_auth = buvid_auth
-        self.device_model = device_model
-        self.device_radio_ver = device_radio_ver
-
-    def gen(self, timestamp):
-        device_fp = f"{self.buvid_auth}{self.device_model}{self.device_radio_ver}"
-        device_fp_md5 = hashlib.md5(device_fp.encode()).hexdigest()
-
-        fp_raw = device_fp_md5
-        fp_raw += datetime.fromtimestamp(timestamp).strftime("%Y%m%d%H%M%S")
-        fp_raw += self.gen_random_string(16)
-
-        veri_code_str = format(
-            "%02x"
-            % (
-                sum(
-                    int(fp_raw[i : i + 2], 16)
-                    for i in range(0, min(len(fp_raw), 62), 2)
-                )
-                % 256
-            )
-        )
-
-        fp_raw += veri_code_str
-
-        return fp_raw
-
-    @staticmethod
-    def gen_random_string(length):
-        charset = "0123456789abcdef"
-        return "".join(random.choice(charset) for _ in range(length))
 
 
 def gen_random_access_key() -> str:
@@ -106,10 +71,6 @@ def gen_random_access_key() -> str:
     )
 
 
-def random_id():
-    return "".join(random.sample("0123456789abcdefghijklmnopqrstuvwxyz", 8))
-
-
 def gen_aurora_eid(uid: int) -> str:
     if uid == 0:
         raise ValueError("uid must not be 0")
@@ -119,28 +80,6 @@ def gen_aurora_eid(uid: int) -> str:
     for i, v in enumerate(mid_byte):
         result_byte.append(v ^ key[i % len(key)])
     return base64.b64encode(result_byte).decode("utf-8").rstrip("=")
-
-
-def fake_buvid():
-    mac_list = []
-    for _ in range(1, 7):
-        rand_str = "".join(random.sample("0123456789abcdef", 2))
-        mac_list.append(rand_str)
-    rand_mac = ":".join(mac_list)
-    md5 = hashlib.md5()
-    md5.update(rand_mac.encode())
-    md5_mac_str = md5.hexdigest()
-    md5_mac = list(md5_mac_str)
-    return f"XY{md5_mac[2]}{md5_mac[12]}{md5_mac[22]}{md5_mac_str}".upper()
-
-
-def gen_trace_id() -> str:
-    trace_id_uid = str(uuid.uuid4()).replace("-", "")[0:26].lower()
-    trace_id_hex = hex(int(round(time.time()) / 256)).lower().replace("0x", "")
-    trace_id = (
-        trace_id_uid + trace_id_hex + ":" + trace_id_uid[-10:] + trace_id_hex + ":0:0"
-    )
-    return trace_id
 
 
 class gen_x_bili_ticket:
@@ -167,100 +106,16 @@ class gen_x_bili_ticket:
         return mac.digest()
 
 
-@dataclass
-class MetaDataNeedInfo:
-    """
-    根据不同ua制作MetaData需要的不同的信息
-    """
-
-    build: int = 7630200  # 版本号
-    device_model: str = "22081212C"  # 机型
-    osver: str = "13"  # 系统版本
-    version_name: str = "7.63.0"  # app版本名称
-    brand: str = "Xiaomi"
-    channel: str = "bili"  # 安装包渠道信息
-    ua: str = (
-        "Dalvik/2.1.0 (Linux; U; Android 13; 22081212C Build/TQ2A.230505.002.A1) 7.63.0 os/android model/22081212C mobi_app/android build/7630200 channel/bili innerVer/7630200 osVer/13 network/2"
-    )
-
-    def generate_ua_from_Dalvik_appVer(
-        self,
-        Dalvik: str,
-        version_name: str = "7.63.0",
-        build: int = 7630200,
-        channel: str = "bili",
-        brand: str = "Xiaomi",
-    ):
-
-        device_model = "".join(
-            re.findall("Android.*?\d+; (.*?) (?:Build|MIUI)", Dalvik)
-        )
-        osver = "".join(re.findall("Android (.*?[\w]);", Dalvik))
-
-        if device_model and osver and version_name and build and channel and brand:
-            self.device_model = device_model
-            self.osver = osver
-            self.build = build
-            self.version_name = version_name
-            self.channel = channel
-            self.brand = brand
-        else:
-            BiliGrpcApi_logger.error("解析Dalvik失败！")
-            BiliGrpcApi_logger.error(
-                f"{Dalvik}\n{build, device_model, osver, version_name, brand, channel}"
-            )
-        self.ua = (
-            f"grpc-c++/1.66.2 {Dalvik} "
-            f"{self.version_name} "
-            f"os/android "
-            f"model/{self.device_model} "
-            f"mobi_app/android "
-            f"build/{self.build} "
-            f"channel/{self.channel} "
-            f"innerVer/{self.build} "
-            f"osVer/{self.osver} "
-            f"network/2 "
-            f"grpc-java-ignet/1.36.1 "
-            f"grpc-c/43.0.0 "
-            f"(android; ignet_http)"
-        )
-
-    def init_from_ua(self, ua: str, brand: str):
-        self.ua = ua
-        build = "".join(re.findall("build/(\d+)", ua))
-        if build and str.isdigit(build):
-            build = int(build)
-        else:
-            build = 7630200
-        device_model = "".join(re.findall("Android.*?\d+; (.*?) (?:Build|MIUI)", ua))
-        osver = "".join(re.findall("Android (.*?[\w]);", ua))
-        version_name = "".join(re.findall("\(.*?\) (.*?) ", ua))
-        channel = "".join(re.findall("channel/(\w+)", ua))
-        if build and device_model and osver and version_name and brand and channel:
-            (
-                self.build,
-                self.device_model,
-                self.osver,
-                self.version_name,
-                self.brand,
-                self.channel,
-            ) = (build, device_model, osver, version_name, brand, channel)
-        else:
-            BiliGrpcApi_logger.error("解析ua失败！")
-            BiliGrpcApi_logger.error(
-                f"{build, device_model, osver, version_name, brand, channel}"
-            )
-
-
 async def make_metadata(
     access_key,
-    brand="Xiaomi",
-    Dalvik="Dalvik/2.1.0 (Linux; U; Android 13; 22081212C Build/TQ2A.230505.002.A1)",
-    version_name="8.12.0",
-    build=81200100,
-    channel="bili",
+    brand="OnePlus",
+    Dalvik="Dalvik/2.1.0 (Linux; U; Android 11; ONEPLUS A6000 Build/RKQ1.201217.002)",
+    version_name="9.13.0",
+    build=9130500,
+    channel=None,
     proxy=None,
     mid=0,
+    device: DeviceEnv | None = None,
 ) -> tuple[tuple, GetTicketResponse | None, MetaDataBasicInfo]:
     """
     根据ua自动生成包含ua信息的MetaData
@@ -275,132 +130,103 @@ async def make_metadata(
     :return:
     """
     proxy = {"proxy": {"http": CONFIG.my_ipv6_addr, "https": CONFIG.my_ipv6_addr}}
-    metaDataNeedInfo = MetaDataNeedInfo()
-    metaDataNeedInfo.generate_ua_from_Dalvik_appVer(
-        Dalvik, version_name, build, channel, brand
-    )
-    BUVID = fake_buvid()
-    device_model = metaDataNeedInfo.device_model
-    fp_generator = Fp(BUVID, device_model, "")
-    gen_ts = int(time.time()) - random.randint(600, 60000)
-    fp_remote = fp_generator.gen(gen_ts)
-    fp_local = fp_generator.gen(gen_ts - random.randint(1000, 60000))
-    device_params = {
-        "app_id": 1,
-        "build": metaDataNeedInfo.build,
-        "buvid": BUVID,
-        "mobi_app": "android",
-        "platform": "android",
-        "channel": metaDataNeedInfo.channel,
-        "brand": metaDataNeedInfo.brand,
-        "model": device_model,
-        "osver": metaDataNeedInfo.osver,
-        "fp_local": fp_remote,  # 三个保持一致
-        "fp_remote": fp_remote,
-        "version_name": metaDataNeedInfo.version_name,
-        "fp": fp_remote,
-        "fts": gen_ts,
-    }
-
-    device_info_bytes = Device(**device_params).SerializeToString()
-    metadata_params = {
-        "mobi_app": "android",
-        "build": metaDataNeedInfo.build,
-        "channel": metaDataNeedInfo.channel,
-        "buvid": BUVID,
-        "platform": "android",
-    }
+    # 一台设备 = 一个 DeviceEnv：buvid/指纹/guest_id/会话、硬件参数、三套 UA，
+    # 以及该设备自己的 region（服务端按 buvid 签发）全都挂在它上面。
+    # 传了 device 就复用它（设备池），否则新建一台。
+    if device is None:
+        device = new_device_env(
+            Dalvik=Dalvik,
+            version_name=version_name,
+            build=build,
+            channel=channel,
+            brand=brand,
+        )
+    # fts 由设备对象按 fp 内嵌生成时间派生，保证「设备身份时间」自洽
+    device_info_bytes = Device(**device.device_params()).SerializeToString()
     metadata: tuple = (
         ("accept", "*/*"),
         ("accept-encoding", "gzip, deflate, br"),
-        ("bili-http-engine", "ignet"),
-        ("buvid", BUVID),
+        ("buvid", device.buvid),
         ("content-type", "application/grpc"),
         ("grpc-accept-encoding", "identity, deflate, gzip"),
         ("grpc-encoding", "gzip"),
-        ("grpc-timeout", "18S"),
-        ("ignet_grpc_annotation_id", f"{random.choice(range(1, 200))}"),
+        ("grpc-timeout", "8S"),
         ("te", "trailers"),
-        ("user-agent", metaDataNeedInfo.ua),
-        ("x-bili-aurora-eid", ""),
+        ("user-agent", device.ua),
         ("x-bili-device-bin", device_info_bytes),
         (
             "x-bili-fawkes-req-bin",
             FawkesReq(
-                appkey="android64", env="prod", session_id=random_id()
+                appkey="android64", env="prod", session_id=device.session_id
             ).SerializeToString(),
         ),
+        ("x-bili-locale-bin", device.locale_header()),
         (
-            "x-bili-locale-bin",
-            Locale(
-                c_locale=LocaleIds(language="zh", region="CN"),
-                s_locale=LocaleIds(language="zh", region="CN"),
-            ).SerializeToString(),
+            "x-bili-metadata-bin",
+            Metadata(**device.metadata_params()).SerializeToString(),
         ),
-        ("x-bili-metadata-bin", Metadata(**metadata_params).SerializeToString()),
-        ("x-bili-metadata-ip-region", "CN"),
-        ("x-bili-metadata-legal-region", "CN"),
+        # 引擎标识：抓包中 gRPC over HTTP/2 固定为 1；服务端不校验，可安全省略
+        ("x-bili-moss-engine-type", "1"),
+        # 抓包为 WIFI 且不带 oid（oid 仅免流场景下发）；success_rate 是客户端上报的采样值
         (
             "x-bili-network-bin",
-            Network(
-                type=NetworkType.WIFI,
-                oid=random.choice(["46000", "46002", "46007", "46008"]),
-            ).SerializeToString(),
+            device.network_header(success_rate=random.uniform(0.95, 0.99)),
         ),
-        ("x-bili-restriction-bin", Restriction(unknown1=16).SerializeToString()),
+        ("x-bili-restriction-bin", Restriction(teenagers_age=16).SerializeToString()),
         ("x-bili-ticket", ""),
-        ("x-bili-trace-id", gen_trace_id()),
+        # 抓包未发送 x-bili-trace-id，故不发送（HTTP 侧仍会带）
     )
     try:
-        await active_buvid(
-            brand=brand,
-            build=16180799,
-            buvid=BUVID,
-            channel=channel,
-            app_version_build=metaDataNeedInfo.build,
-            app_version_name=metaDataNeedInfo.version_name,
-            model=metaDataNeedInfo.device_model,
-            ua=metaDataNeedInfo.ua,
-            proxy=proxy,
-        )
+        await active_buvid(device, proxy=proxy)
     except Exception as e:
-        pass
-    finally:
-        pass
+        # 失败不影响后续 ticket 流程，但必须留痕，不能静默吞掉
+        BiliGrpcApi_logger.error(f"激活buvid失败：{type(e).__name__}\t{e}")
     bili_ticket_resp = await get_bili_ticket(
-        device_info=device_info_bytes,
-        app_version=metaDataNeedInfo.version_name,
-        app_version_code=str(metaDataNeedInfo.build),
-        chid=metaDataNeedInfo.channel,
-        osver=metaDataNeedInfo.osver,
-        model=metaDataNeedInfo.device_model,
-        brand=metaDataNeedInfo.brand,
-        fp_local=fp_local,
-        md=metadata,
+        device, device_info=device_info_bytes, md=metadata, proxy=proxy
     )
     if bili_ticket_resp:
-        new_metadata = []
-        for k, v in metadata:
-            if k == "x-bili-ticket":
-                new_metadata.append((k, bili_ticket_resp.ticket))
-                continue
-            new_metadata.append((k, v))
-        metadata = tuple(new_metadata)
+        metadata = tuple(
+            (k, bili_ticket_resp.ticket if k == "x-bili-ticket" else v)
+            for k, v in metadata
+        )
+    # region 属于设备：没有 recent-region 就让它自己去领一次
+    # （抓包证实由 GET /x/resource/show/tab/v2 的响应头下发）
+    if not device.recent_region_valid():
+        try:
+            learned = await device.fetch_region(proxy=proxy)
+            if learned:
+                BiliGrpcApi_logger.info(f"tab/v2 学到 region：{sorted(learned)}")
+        except Exception as e:
+            # 领不到不影响主流程，但必须留痕
+            BiliGrpcApi_logger.error(
+                f"tab/v2 获取 region 失败：{type(e).__name__}\t{e}"
+            )
+    # 设备回带自己学到的 region 头（ip → legal → recent，没学到就不带）
+    region_headers = device.region_headers()
+    forced_recent = os.environ.get("BILI_RECENT_REGION", "")
+    if forced_recent and not device.recent_region_valid():
+        region_headers = [
+            (k, v) for k, v in region_headers if k != RECENT_REGION_HEADER
+        ] + [(RECENT_REGION_HEADER, forced_recent)]
+    if region_headers:
+        metadata = metadata + tuple(region_headers)
     if access_key:
-        metadata.__add__(("authorization", f"identify_v1 {access_key}"))
+        metadata = metadata + (("authorization", f"identify_v1 {access_key}"),)
 
     metadata_basic_info = MetaDataBasicInfo(
-        buvid=BUVID,
-        fp_local=fp_local,
-        fp_remote=fp_remote,
-        guestid=random.randint(1000000000000, 9999999999999),
-        app_version_name=version_name,
-        model=device_model,
-        app_build=build,
-        channel=channel,
-        osver=metaDataNeedInfo.osver,
+        buvid=device.buvid,
+        fp_local=device.fp_local,
+        fp_remote=device.fp_remote,
+        guestid=int(device.guest_id),
+        app_version_name=device.version_name,
+        model=device.device_model,
+        app_build=device.build,
+        channel=device.channel,
+        osver=device.osver,
         ticket=bili_ticket_resp.ticket if bili_ticket_resp else "",
-        brand=brand,
+        brand=device.brand,
+        session_id=device.session_id,
+        device=device,
     )
     return metadata, bili_ticket_resp, metadata_basic_info
 
@@ -615,17 +441,16 @@ def generate_app_info(
 
 
 async def get_bili_ticket(
-    device_info: bytes,
-    app_version: str,
-    app_version_code: str,
-    chid: str,
-    osver: str,
-    model: str,
-    brand: str,
-    fp_local: str,
-    md,
-    proxy=None,
+    device: DeviceEnv, device_info: bytes, md, proxy=None
 ) -> GetTicketResponse | None:
+    # 指纹/版本信息全部取自设备对象
+    app_version = device.version_name
+    app_version_code = str(device.build)
+    chid = device.channel
+    osver = device.osver
+    model = device.device_model
+    brand = device.brand
+    fp_local = device.fp_local
     android_build_id_moc = f"{''.join(random.choice(string.ascii_uppercase + string.digits) for _ in range(4))}.{(datetime.now() - timedelta(days=random.randint(365, 365 * 5))).strftime('%y%m%d')}.{str(random.randint(10000000, 99999999))}"
     rand_memory = MemSizes[random.choice(list(MemSizes.keys()))]
     rand_boot_id = random.randint(100000, 948576)
@@ -838,7 +663,7 @@ async def get_bili_ticket(
     data = (
         b"\01" + len(compressed_proto_bytes).to_bytes(4, "big") + compressed_proto_bytes
     )
-    proxy = CONFIG.custom_proxy
+    proxies = resolve_proxies(proxy)
     resp = None
     while 1:
         try:
@@ -847,7 +672,7 @@ async def get_bili_ticket(
                 method="POST",
                 data=data,
                 headers=tuple(new_headers),
-                proxies=proxy,
+                proxies=proxies,
                 verify=False,
             )
             gresp = GetTicketResponse()
@@ -855,6 +680,8 @@ async def get_bili_ticket(
                 gresp.ParseFromString(gzip.decompress(resp.content[5:]))
             else:
                 gresp.ParseFromString(resp.content[5:])
+            # 顺带从响应里学习 region（APK: kntr.base.region.impl.h.b）
+            device.learn_region(resp.headers, getattr(resp, "trailers", None))
             if not gresp.ticket:
                 BiliGrpcApi_logger.error(
                     f"获取ticket失败！\n{resp.content}\n{resp.headers}"
@@ -863,72 +690,74 @@ async def get_bili_ticket(
         except Exception as e:
             err_resp = None if resp is None else resp.content
             BiliGrpcApi_logger.exception(
-                f"获取bili_ticket失败！\nproxy：{proxy}\n{err_resp}\n{type(e)}\t{e}"
+                f"获取bili_ticket失败！\nproxy：{proxies}\n{err_resp}\n{type(e)}\t{e}"
             )
-            if not proxy:
-                proxy = CONFIG.custom_proxy
-            else:
-                proxy = None
+            # 代理与直连互为兜底，因此处会来回切换
+            proxies = None if proxies else CONFIG.custom_proxy
 
 
-async def active_buvid(
-    brand, build, buvid, channel, app_version_build, app_version_name, model, ua, proxy
-):
+async def active_buvid(device: DeviceEnv, proxy=None, build=28799195):
     """
-    激活buvid???? 顺序在 get_bili_ticket 之前
-    :return:
+    激活buvid（POST https://app.bilibili.com/x/polymer/buvid/get），顺序在 get_bili_ticket 之前
+
+    参数与请求头均按该接口抓包对齐：
+    - app-key/bili-http-engine/session_id/x-bili-redirect 等头部照抓包下发；
+    - user-agent 用 HTTP 老格式（不含 grpc-c++ 包装）；
+    - 表单字段 androidId/drmId/mac/imei/oaid/build/internalVersionCode 与抓包一致；
+      appkey/ts/sign 由 appsign 补齐。
     """
     url = "https://app.bilibili.com/x/polymer/buvid/get"
     data = {
         "androidId": "".join(
-            [random.choice(string.ascii_lowercase + string.digits) for x in range(16)]
+            random.choice(string.ascii_lowercase + string.digits) for _ in range(16)
         ),
-        "brand": brand,
+        "brand": device.brand,
         "build": build,
-        "buvid": buvid,
-        "channel": channel,
-        "drmId": "",
-        "fawkesAppKey": "android",
+        "buvid": device.buvid,
+        "channel": device.channel,
+        "drmId": "".join(random.choice("0123456789abcdef") for _ in range(32)),
+        "fawkesAppKey": "android64",
         "first": 1,
         "firstStart": 1,
         "imei": "",
-        "internalVersionCode": app_version_build,
-        "mac": ":".join(["%02x" % random.randint(0, 255) for _ in range(6)]),
-        "model": model,
+        "internalVersionCode": device.inner_ver,
+        "mac": "",
+        "model": device.device_model,
         "neuronAppId": 1,
         "neuronPlatformId": 3,
         "oaid": "",
-        "versionCode": app_version_build,
-        "versionName": app_version_name,
+        "ts": int(time.time()),
+        "versionCode": device.build,
+        "versionName": device.version_name,
     }
     signed_data = appsign(data)
     headers = (
-        ("env", "prod"),
-        ("app-key", "android"),
-        ("env", "prod"),
-        ("app-key", "android"),
-        ("user-agent", ua),
-        ("x-bili-trace-id", gen_trace_id()),
-        ("x-bili-aurora-eid", ""),
-        ("x-bili-mid", ""),
-        ("x-bili-aurora-zone", ""),
-        ("x-bili-gaia-vtoken", ""),
-        ("x-bili-ticket", ""),
+        ("accept", "*/*"),
+        ("accept-encoding", "gzip, deflate, br"),
+        ("app-key", "android64"),
+        ("bili-http-engine", "ignet"),
+        ("buvid", device.buvid),
         ("content-type", "application/x-www-form-urlencoded; charset=utf-8"),
+        ("env", "prod"),
+        ("session_id", device.session_id),
+        ("user-agent", device.ua_http),
+        ("x-bili-locale-bin", device.locale_header()),
+        # 抓包 CAEqBQ0AAIC/：WIFI + success_rate=-1.0（-1 表示尚未采样），不带 oid
+        ("x-bili-network-bin", device.network_header()),
+        ("x-bili-redirect", "1"),
+        ("x-bili-trace-id", gen_trace_id()),
     )
+    headers = encode_metadata_headers(headers)
 
     req = await my_async_httpx.request(
         url=url,
-        method="post",
+        method="POST",
         data=signed_data,
         headers=headers,
-        proxies=(
-            {"http": proxy["proxy"]["http"], "https": proxy["proxy"]["https"]}
-            if proxy
-            else CONFIG.custom_proxy
-        ),
+        proxies=resolve_proxies(proxy),
         verify=False,
     )
+    device.learn_region(req.headers)
     BiliGrpcApi_logger.debug(f" {url} 激活buvid：{req.text}")
 
 

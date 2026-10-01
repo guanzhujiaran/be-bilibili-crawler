@@ -11,6 +11,31 @@ message Network {
     TFType tf = 2;
     // 运营商
     string oid = 3;
+    // 蜂窝网络类型
+    CellularType cellular = 4;
+    // 网络质量
+    NetQuality quality = 5;
+}
+
+// 蜂窝网络类型
+enum CellularType {
+    C_NONE = 0;  // 无
+    C_2G   = 1;  // 2G
+    C_3G   = 2;  // 3G
+    C_4G   = 3;  // 4G
+    C_5G   = 4;  // 5G
+}
+
+// 网络质量
+message NetQuality {
+    // 成功率
+    float success_rate = 1;
+    // 速度
+    int32 speed = 2;
+    // 速度采样时间戳
+    int64 speed_timestamp = 3;
+    // 网络类型
+    int32 net_type = 4;
 }
 
 // 网络类型

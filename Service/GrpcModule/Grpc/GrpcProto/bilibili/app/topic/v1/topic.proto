@@ -326,6 +326,10 @@ message TopicDetailsAllReply {
     TimeLineResource time_line_resource = 6;
     //
     TopicServerConfig topic_server_config = 7;
+    // 在线人数
+    TopicOnline topic_online = 8;
+    // 顶部卡片列表
+    repeated TopicTopCard topic_top_cards = 9;
 }
 
 //
@@ -424,6 +428,16 @@ message TopicInfo {
     string stats_desc = 20;
     //
     string fixed_topic_icon = 21;
+    // 分类
+    int64 categories = 22;
+    // 分类map
+    map<int32, bool> category_map = 23;
+    // 话题分类列表
+    repeated string topic_categories = 24;
+    // 是否商业话题
+    bool is_business = 25;
+    // 是否展示互动数据
+    bool show_interact_data = 26;
 }
 
 //
@@ -577,4 +591,246 @@ message VideoSmallCardItem {
     int64 card_stat_icon2 = 5;
     //
     string card_stat_text2 = 6;
+}
+
+// 在线人数
+message TopicOnline {
+    // 在线数
+    int64 online_num = 1;
+    // 在线文案
+    string online_text = 2;
+}
+
+// 顶部卡片
+message TopicTopCard {
+    // 类型
+    int32 type = 1;
+    oneof card_item {
+        // 话题胶囊
+        TopicCapsuleInfo capsules = 2;
+        // 流量卡
+        TrafficCard traffic_card = 3;
+        // 游戏卡
+        GameCard game_card = 4;
+        // 时间线资源
+        TimeLineResource time_line_resource = 5;
+        // 大封面内联
+        LargeCoverInline large_cover_inline = 6;
+        // 预约关系
+        ReserveRelationInfo reserve_relation = 7;
+        // 电竞信息
+        EsportInfo esport_info = 8;
+    }
+    // 开始时间
+    int64 start_time = 9;
+    // 结束时间
+    int64 end_time = 10;
+    oneof card_item2 {
+        // IP话题卡
+        IPTopicCard ip_topic_card = 11;
+        // 头部点击区域卡
+        HeadClickAreaCard head_click_area_card = 12;
+        // 条目卡
+        ItemCard item_card = 13;
+    }
+}
+
+// 话题胶囊信息
+message TopicCapsuleInfo {
+    // 胶囊列表
+    repeated TopicCapsule capsules = 1;
+}
+
+// 预约关系信息
+message ReserveRelationInfo {
+    // 预约id
+    int64 sid = 1;
+    // 类型
+    int32 type = 2;
+    // 评论区id
+    string oid = 3;
+    // UP主mid
+    int64 upmid = 4;
+    // 标题
+    string title = 5;
+    // 状态
+    int32 state = 6;
+    // 总数
+    int64 total = 7;
+    // 时间描述
+    string time_desc_text = 8;
+    // 人数描述
+    string number_desc_text = 9;
+    // 开始时间
+    int64 start_time = 10;
+    // 结束时间
+    int64 end_time = 11;
+    // 直播计划开始时间
+    int64 live_plan_start_time = 12;
+    // 是否关注
+    int64 is_follow = 13;
+    // 预约记录时间
+    int64 reserve_record_ctime = 14;
+    // stime
+    int64 stime = 15;
+    // etime
+    int64 etime = 16;
+}
+
+// 电竞信息
+message EsportInfo {
+    // id
+    int64 id = 1;
+    // 比赛列表
+    repeated MatchInfo items = 2;
+    // 开始时间
+    int64 start_time = 3;
+    // 结束时间
+    int64 end_time = 4;
+    // 选手评分
+    PlayerRatingInMatch player_rating = 5;
+}
+
+// 比赛信息
+message MatchInfo {
+    // id
+    int64 id = 1;
+    // 主队
+    MatchTeamInfo home = 2;
+    // 客队
+    MatchTeamInfo away = 3;
+    // 状态
+    int32 status = 4;
+    // 比赛阶段
+    string match_stage = 5;
+    // 比赛时间
+    MatchCardDisplay match_time = 6;
+    // 比赛标签
+    MatchCardDisplay match_label = 7;
+    // 比赛按钮
+    MatchCardDisplay match_button = 8;
+}
+
+// 队伍信息
+message MatchTeamInfo {
+    // id
+    int64 id = 1;
+    // 标题
+    string title = 2;
+    // 封面
+    string cover = 3;
+    // 分数
+    int64 score = 4;
+}
+
+// 比赛卡片展示
+message MatchCardDisplay {
+    // 文本
+    string text = 1;
+    // 日间文字颜色
+    string text_color = 2;
+    // 夜间文字颜色
+    string text_color_night = 3;
+    // 跳转链接
+    string uri = 4;
+    // 状态
+    int32 state = 5;
+    // 直播链接
+    string live_link = 6;
+    // 文本列表
+    Texts texts = 7;
+}
+
+// 文本列表
+message Texts {
+    // 文本
+    string text = 1;
+}
+
+// 选手评分
+message PlayerRatingInMatch {
+    // 选手id
+    int64 player_id = 1;
+    // 选手名
+    string player_name = 2;
+    // 选手头像
+    string player_face = 3;
+    // 评分
+    string rating = 4;
+    // 热评
+    string hot_remark = 5;
+    // 比赛id
+    int64 match_id = 6;
+    // 跳转链接
+    string jump_uri = 7;
+}
+
+// IP话题卡
+message IPTopicCard {
+    // 条目列表
+    repeated IPTopicInfo items = 1;
+    // 开始时间
+    int64 start_time = 2;
+    // 结束时间
+    int64 end_time = 3;
+}
+
+// IP话题信息
+message IPTopicInfo {
+    // id
+    int64 id = 1;
+    // 名称
+    string name = 2;
+    // 图标
+    string icon = 3;
+    // 统计描述
+    string stats_desc = 4;
+    // 跳转链接
+    string jump_url = 5;
+}
+
+// 头部点击区域卡
+message HeadClickAreaCard {
+    // 点击行列表
+    repeated HeadClickAreaRow click_rows = 1;
+    // 开始时间
+    int64 start_time = 2;
+    // 结束时间
+    int64 end_time = 3;
+}
+
+// 头部点击区域行
+message HeadClickAreaRow {
+    // 矩形列表
+    repeated HeadClickRect rects = 1;
+}
+
+// 点击矩形
+message HeadClickRect {
+    // 宽
+    int32 w = 1;
+    // 高
+    int32 h = 2;
+    // 图片
+    string pic = 3;
+    // 路径
+    ClickPath path = 4;
+}
+
+// 点击路径
+message ClickPath {
+    // 路径
+    string path = 1;
+}
+
+// 条目卡
+message ItemCard {
+    // 条目id
+    int64 item_id = 1;
+    // 业务数据
+    string biz_data = 2;
+    // 开始时间
+    int64 start_time = 3;
+    // 结束时间
+    int64 end_time = 4;
 }

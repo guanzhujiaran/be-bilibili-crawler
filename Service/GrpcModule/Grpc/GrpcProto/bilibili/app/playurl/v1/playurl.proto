@@ -132,7 +132,7 @@ message DashItem {
     // 清晰度
     uint32 id = 1;
     // 主线流
-    string baseUrl = 2;
+    string base_url = 2;
     // 备用流
     repeated string backup_url = 3;
     // 带宽
@@ -147,6 +147,8 @@ message DashItem {
     string frame_rate = 8;
     //
     string widevine_pssh = 9;
+    // DRM URI
+    string bilidrm_uri = 10;
 }
 
 // dash视频流
@@ -175,6 +177,8 @@ message DashVideo {
     int32 height = 11;
     //
     string widevine_pssh = 12;
+    // DRM URI
+    string bilidrm_uri = 13;
 }
 
 // 杜比伴音信息
@@ -187,7 +191,7 @@ message DolbyItem {
     // 杜比类型
     Type type = 1;
     // 音频流
-    DashItem audio = 2;
+    repeated DashItem audio = 2;
 }
 
 // 事件
@@ -283,8 +287,8 @@ message PlayAbilityConf {
     CloudConf small_window_conf    = 23; // 小窗
     CloudConf shake_conf           = 24; // 震动
     CloudConf outer_dm_conf        = 25; // 外层面板弹幕设置
-    CloudConf innerDmDisable       = 26; // 三点内弹幕设置
-    CloudConf inner_dm_conf        = 27; // 一起看入口
+    CloudConf inner_dm_conf        = 26; // 三点内弹幕设置
+    CloudConf panorama_conf        = 27; // 一起看入口
     CloudConf dolby_conf           = 28; // 杜比音效
     CloudConf color_filter_conf    = 29; // 颜色滤镜
     CloudConf loss_less_conf       = 30; // HIRES
@@ -413,6 +417,8 @@ message PlayURLReply {
     repeated FormatDescription support_formats = 12;
     // 视频格式
     VideoType type = 13;
+    // 大会员风控信息
+    VipRisk vip_risk = 14;
 }
 
 // 视频地址-请求
@@ -459,6 +465,10 @@ message PlayViewReply {
     AB ab = 7;
     //
     PlayLimit play_limit = 8;
+    // 播放页结束信息
+    ViewInfo view_info = 9;
+    // 播放页预览信息
+    PlayArc arc = 10;
 }
 
 // 播放页信息-请求
@@ -554,6 +564,8 @@ message ResponseUrl {
     repeated string backup_url = 5;
     // md5
     string md5 = 6;
+    // 清晰度
+    uint32 quality = 7;
 }
 
 //分段视频流
@@ -661,6 +673,8 @@ message VideoInfo {
     VolumeInfo volume = 8;
     // 
     LossLessItem loss_less_item = 9;
+    // 主视频时长
+    uint64 main_timelength = 10;
 }
 
 // 视频类型
@@ -687,4 +701,231 @@ message VolumeInfo {
     double target_i = 6;
     //
     double target_tp = 7;
+    // 多场景参数
+    map<string, string> multi_scene_args = 8;
+}
+
+// 可观看清晰度原因
+enum CanWatchQnReason {
+    // 默认
+    CAN_WATCH_QN_REASON_DEFAULT = 0;
+    // 大会员清晰度试看
+    CAN_WATCH_QN_REASON_VIP_QN_TRY_WATCH = 1;
+    // 电信家庭网络
+    CAN_WATCH_QN_REASON_CTCC_HOME_NETWORK = 2;
+    // 大会员
+    CAN_WATCH_QN_REASON_BIG_VIP = 3;
+    // TV大会员
+    CAN_WATCH_QN_REASON_TV_BIG_VIP = 4;
+    // OGV付费点播
+    CAN_WATCH_QN_REASON_OGV_TVOD_PAY = 5;
+}
+
+// 受限观看清晰度原因
+enum LimitWatchQnReason {
+    // 默认
+    LIMIT_WATCH_QN_REASON_DEFAULT = 0;
+    // 清晰度大会员播放
+    LIMIT_WATCH_QN_REASON_QN_VIP_PLAY = 1;
+    // 电信家庭网络设备限制
+    LIMIT_WATCH_QN_REASON_CTCC_HOME_NETWORK_DEVICE_LIMIT = 2;
+}
+
+// 引导样式
+enum GuideStyle {
+    // 未知
+    STYLE_UNKNOWN = 0;
+    // 充电文本
+    CHARGING_TEXT = 1;
+    // 竖排文本
+    VERTICAL_TEXT = 2;
+}
+
+// 提示类型
+enum ToastType {
+    // 未知
+    TOAST_TYPE_UNKNOWN = 0;
+    // 充电提示
+    CHARGING_TOAST = 1;
+    // 电信提示
+    CTCC_TOAST = 2;
+}
+
+// 按钮动作类型
+enum ButtonAction {
+    // 未知
+    BUTTON_UNKNOWN = 0;
+    // 充电
+    CHARGINGPLUS = 1;
+    // 大会员
+    VIP = 2;
+}
+
+// 文本信息
+message TextInfo {
+    // 文本
+    string text = 1;
+    // 文本颜色
+    string text_color = 2;
+    // 夜间文本颜色
+    string text_color_night = 3;
+}
+
+// 渐变色
+message GradientColor {
+    // 起始颜色
+    string start_color = 1;
+    // 结束颜色
+    string end_color = 2;
+}
+
+// 角标信息
+message BadgeInfo {
+    // 文本
+    string text = 1;
+    // 文本颜色
+    string text_color = 2;
+    // 背景渐变色
+    GradientColor bg_gradient_color = 3;
+}
+
+// 上报信息
+message Report {
+    // 曝光事件ID
+    string show_event_id = 1;
+    // 点击事件ID
+    string click_event_id = 2;
+    // 扩展字段
+    string extends = 3;
+}
+
+// 按钮信息
+message ButtonInfo {
+    // 文本
+    string text = 1;
+    // 文本颜色
+    string text_color = 2;
+    // 夜间文本颜色
+    string text_color_night = 3;
+    // 背景颜色
+    string bg_color = 4;
+    // 夜间背景颜色
+    string bg_color_night = 5;
+    // 跳转链接
+    string link = 6;
+    // 动作类型
+    ButtonAction action_type = 7;
+    // 上报信息
+    Report report = 8;
+    // 边框颜色
+    string frame_color = 9;
+    // 图标
+    string icon = 10;
+    // 背景渐变色
+    GradientColor bg_gradient_color = 11;
+    // 角标信息
+    BadgeInfo badge = 12;
+}
+
+// 底部展示
+message BottomDisplay {
+    // 标题
+    TextInfo title = 1;
+    // 图标
+    string icon = 2;
+}
+
+// 弹窗
+message Dialog {
+    // 样式类型
+    GuideStyle style_type = 1;
+    // 上报信息
+    Report report = 2;
+    // 标题
+    TextInfo title = 3;
+    // 副标题
+    TextInfo subtitle = 4;
+    // 按钮列表
+    repeated ButtonInfo button = 5;
+    // 底部展示列表
+    repeated BottomDisplay bottom_display = 6;
+}
+
+// 提示条
+message PromptBar {
+    // 标题
+    TextInfo title = 1;
+    // 副标题
+    TextInfo sub_title = 2;
+    // 副标题图标
+    string sub_title_icon = 3;
+    // 背景图
+    string bg_image = 4;
+    // 按钮列表
+    repeated ButtonInfo button = 5;
+    // 上报信息
+    Report report = 6;
+}
+
+// 综合提示
+message ComprehensiveToast {
+    // 提示类型
+    ToastType type = 1;
+    // 按钮信息
+    ButtonInfo button = 2;
+    // 图标
+    string icon = 3;
+    // 提示文本
+    TextInfo toast_text = 4;
+    // 上报信息
+    Report report = 5;
+}
+
+// 播放页预览信息
+message PlayArc {
+    // 是否预览
+    bool is_preview = 1;
+}
+
+// 大会员风控信息
+message VipRisk {
+    // 是否允许
+    bool allow = 1;
+    // 类型
+    int64 type = 2;
+    // 原因
+    int64 reason = 3;
+    // 设备状态
+    int64 device_status = 4;
+}
+
+// 跳转方案
+message Scheme {
+    // 动作类型
+    enum ActionType {
+        // 未知
+        UNKNOWN = 0;
+        // 展示提示
+        SHOW_TOAST = 1;
+    }
+    // 动作类型
+    ActionType action_type = 1;
+    // 提示文本
+    string toast = 2;
+}
+
+// 多媒体流
+message MultiDashVideo {
+    // 视频流列表
+    repeated DashVideo dash_videos = 1;
+}
+
+// 播放页信息
+message ViewInfo {
+    // 弹窗映射
+    map<string, Dialog> dialog_map = 1;
+    // 提示条
+    PromptBar prompt_bar = 2;
+    // 综合提示列表
+    repeated ComprehensiveToast toasts = 3;
 }

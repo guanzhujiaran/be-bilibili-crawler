@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package bilibili.broadcast.message.im;
 
+import "bilibili/app/im/v1/im.proto";
 import "google/protobuf/empty.proto";
 
 //
@@ -73,7 +74,7 @@ message Msg {
     // 表示撤回的消息的session_seqno 用以后续的比较 实现未读数的正确显示
 	uint64 withdraw_seqno = 15;
     // 通知码
-	string notify_code =16;
+	string notify_code = 16;
     // 消息来源
 	uint32 msg_source = 17;
 }
@@ -96,4 +97,30 @@ message ReqServerNotify {
     Msg instant_msg = 2;
     //
 	NotifyInfo notify_info = 3;
+}
+
+// 拉取消息命令
+message FetchMessageCommand {
+    // 会话标识
+    bilibili.app.im.v1.SessionId session_id = 1;
+}
+
+// 更新会话命令
+message UpdateSessionOneCommand {
+    // 会话标识
+    bilibili.app.im.v1.SessionId session_id = 1;
+}
+
+// 更新聊天信息命令
+message UpdateChatInfoCommand {
+    // 会话标识
+    bilibili.app.im.v1.SessionId session_id = 1;
+}
+
+// 聊天推送设置变更命令
+message ChatPushSettingChangedCommand {
+    // 会话标识
+    bilibili.app.im.v1.SessionId session_id = 1;
+    // 设置
+    bool setting = 2;
 }

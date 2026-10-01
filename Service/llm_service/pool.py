@@ -22,7 +22,6 @@
 """
 
 import time
-from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.rate_limiters import InMemoryRateLimiter
@@ -127,10 +126,9 @@ def _token_for_config(cfg: LLMApiConfig) -> str:
 def _fingerprint_of(cfg: LLMApiConfig) -> str:
     """按「建实例时的取值」计算槽位指纹，与 ``TrackedChatOpenAI.slot_fingerprint`` 对齐。
 
-    必须用 :func:`_token_for_config` 而不是裸 ``cfg.token``：实例在 token 为空时
+     必须用 :func:`_token_for_config` 而不是裸 ``cfg.token``：实例在 token 为空时
     会填占位密钥，若比对侧仍用空串，同一个槽位就会算出两个指纹 —— 后果是
-    「不可恢复 → 删除配置」找不到它（配置删不掉），并且进程内锁的 key 与 redis
-    租约的 key 不一致（同一槽位的互斥失效）。
+    「不可恢复 → 删除配置」找不到它（配置删不掉）。
     """
     return slot_fingerprint(cfg.base_url, cfg.model_name, _token_for_config(cfg))
 
@@ -321,38 +319,6 @@ def get_all_free_llms() -> list[TrackedChatOpenAI]:
         f"全部云端 LLM 均在冷却中，暂不可用：{detail}",
         resume_at=_earliest_resume_at(cooling),
     )
-
-
-@dataclass(slots=True, frozen=True, eq=False)
-class LLMSlot:
-    """一个云端 LLM 槽位：一条配置 + 它的指纹 + 对应实例。
-
-    槽位是「并发控制」与「配置身份」的绑定单元：同一槽位（同一
-    base_url + model_name + token）同时最多 1 个在途请求，
-    跨进程约束见 :mod:`Service.llm_service.slot`。
-    """
-
-    fingerprint: str
-    config: LLMApiConfig
-    llm: TrackedChatOpenAI
-
-
-def get_llm_slots() -> list[LLMSlot]:
-    """当前配置对应的槽位列表（顺序与 ``settings.llm_apis`` 一致）。
-
-    ``_build_free_llms`` 与本函数使用同一套过滤条件（``base_url`` 与
-    ``model_name`` 均非空）且实例池按同一顺序缓存（缓存键含全部配置字段），
-    因此两者可以按下标配对。长度不符只可能是内部状态不一致，此时返回空列表，
-    让调用方按「没有可用槽位」处理（本机等待），而不是把配置错配到别的实例上。
-    """
-    llms = _get_free_llms()
-    configs = [c for c in settings.llm_apis if c.base_url and c.model_name]
-    if len(configs) != len(llms):
-        return []
-    return [
-        LLMSlot(fingerprint=_fingerprint_of(cfg), config=cfg, llm=llm)
-        for cfg, llm in zip(configs, llms, strict=True)
-    ]
 
 
 def get_llm_stats() -> list[dict[str, Any]]:

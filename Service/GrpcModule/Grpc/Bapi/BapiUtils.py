@@ -26,10 +26,12 @@ def appsign(params: dict, appkey=APP_KEY, appsec=APP_SEC) -> dict:
 def gen_trace_id() -> str:
     """
     生成 Bilibili 请求追踪 ID
+
+    抓包格式：``<32位hex>:<后16位hex>:0:0``
+    例：``18f5d24115f33f049b447e0e096abdf6:9b447e0e096abdf6:0:0``
     """
-    trace_id_uid = str(uuid.uuid4()).replace("-", "")[0:26].lower()
-    trace_id_hex = hex(int(round(time.time()) / 256)).lower().replace("0x", "")
-    return f"{trace_id_uid}{trace_id_hex}:{trace_id_uid[-10:]}{trace_id_hex}:0:0"
+    trace_id_uid = uuid.uuid4().hex
+    return f"{trace_id_uid}:{trace_id_uid[-16:]}:0:0"
 
 
 # 已知可忽略的错误（代理/412/352 等）是无限重试的，

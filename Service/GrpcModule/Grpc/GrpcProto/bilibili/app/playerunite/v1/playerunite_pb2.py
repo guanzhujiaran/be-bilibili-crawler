@@ -23,10 +23,11 @@ _sym_db = _symbol_database.Default()
 
 
 from bilibili.playershared import playershared_pb2 as bilibili_dot_playershared_dot_playershared__pb2
+from bilibili.app.overseas.ad.v1 import ad_pb2 as bilibili_dot_app_dot_overseas_dot_ad_dot_v1_dot_ad__pb2
 from google.protobuf import any_pb2 as google_dot_protobuf_dot_any__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n-bilibili/app/playerunite/v1/playerunite.proto\x12\x1b\x62ilibili.app.playerunite.v1\x1a(bilibili/playershared/playershared.proto\x1a\x19google/protobuf/any.proto\"\xa9\x04\n\x12PlayViewUniteReply\x12\x30\n\x08vod_info\x18\x01 \x01(\x0b\x32\x1e.bilibili.playershared.VodInfo\x12\x39\n\rplay_arc_conf\x18\x02 \x01(\x0b\x32\".bilibili.playershared.PlayArcConf\x12?\n\x10play_device_conf\x18\x03 \x01(\x0b\x32%.bilibili.playershared.PlayDeviceConf\x12+\n\x05\x65vent\x18\x04 \x01(\x0b\x32\x1c.bilibili.playershared.Event\x12(\n\nsupplement\x18\x05 \x01(\x0b\x32\x14.google.protobuf.Any\x12\x30\n\x08play_arc\x18\x06 \x01(\x0b\x32\x1e.bilibili.playershared.PlayArc\x12\x39\n\rqn_trial_info\x18\x07 \x01(\x0b\x32\".bilibili.playershared.QnTrialInfo\x12/\n\x07history\x18\x08 \x01(\x0b\x32\x1e.bilibili.playershared.History\x12\x32\n\tview_info\x18\t \x01(\x0b\x32\x1f.bilibili.playershared.ViewInfo\x12<\n\x0e\x66ragment_video\x18\n \x01(\x0b\x32$.bilibili.playershared.FragmentVideo\"\xd7\x02\n\x10PlayViewUniteReq\x12,\n\x03vod\x18\x01 \x01(\x0b\x32\x1f.bilibili.playershared.VideoVod\x12\r\n\x05spmid\x18\x02 \x01(\t\x12\x12\n\nfrom_spmid\x18\x03 \x01(\t\x12V\n\rextra_content\x18\x04 \x03(\x0b\x32?.bilibili.app.playerunite.v1.PlayViewUniteReq.ExtraContentEntry\x12\x0c\n\x04\x62vid\x18\x05 \x01(\t\x12\x10\n\x08\x61\x64_extra\x18\x06 \x01(\t\x12\x31\n\x08\x66ragment\x18\x07 \x01(\x0b\x32\x1f.bilibili.playershared.Fragment\x12\x12\n\nfrom_scene\x18\x08 \x01(\t\x1a\x33\n\x11\x45xtraContentEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x32y\n\x06Player\x12o\n\rPlayViewUnite\x12-.bilibili.app.playerunite.v1.PlayViewUniteReq\x1a/.bilibili.app.playerunite.v1.PlayViewUniteReplyb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n-bilibili/app/playerunite/v1/playerunite.proto\x12\x1b\x62ilibili.app.playerunite.v1\x1a(bilibili/playershared/playershared.proto\x1a$bilibili/app/overseas/ad/v1/ad.proto\x1a\x19google/protobuf/any.proto\"\xd9\x05\n\x12PlayViewUniteReply\x12\x30\n\x08vod_info\x18\x01 \x01(\x0b\x32\x1e.bilibili.playershared.VodInfo\x12\x39\n\rplay_arc_conf\x18\x02 \x01(\x0b\x32\".bilibili.playershared.PlayArcConf\x12?\n\x10play_device_conf\x18\x03 \x01(\x0b\x32%.bilibili.playershared.PlayDeviceConf\x12+\n\x05\x65vent\x18\x04 \x01(\x0b\x32\x1c.bilibili.playershared.Event\x12(\n\nsupplement\x18\x05 \x01(\x0b\x32\x14.google.protobuf.Any\x12\x30\n\x08play_arc\x18\x06 \x01(\x0b\x32\x1e.bilibili.playershared.PlayArc\x12\x39\n\rqn_trial_info\x18\x07 \x01(\x0b\x32\".bilibili.playershared.QnTrialInfo\x12/\n\x07history\x18\x08 \x01(\x0b\x32\x1e.bilibili.playershared.History\x12\x32\n\tview_info\x18\t \x01(\x0b\x32\x1f.bilibili.playershared.ViewInfo\x12<\n\x0e\x66ragment_video\x18\n \x01(\x0b\x32$.bilibili.playershared.FragmentVideo\x12\x34\n\nvideo_ctrl\x18\x0b \x01(\x0b\x32 .bilibili.playershared.VideoCtrl\x12\x31\n\x08language\x18\x0c \x01(\x0b\x32\x1f.bilibili.playershared.Language\x12\x45\n\x10overseas_ad_info\x18\r \x01(\x0b\x32+.bilibili.app.overseas.ad.v1.OverseasAdInfo\"\x8b\x03\n\x10PlayViewUniteReq\x12,\n\x03vod\x18\x01 \x01(\x0b\x32\x1f.bilibili.playershared.VideoVod\x12\r\n\x05spmid\x18\x02 \x01(\t\x12\x12\n\nfrom_spmid\x18\x03 \x01(\t\x12V\n\rextra_content\x18\x04 \x03(\x0b\x32?.bilibili.app.playerunite.v1.PlayViewUniteReq.ExtraContentEntry\x12\x0c\n\x04\x62vid\x18\x05 \x01(\t\x12\x10\n\x08\x61\x64_extra\x18\x06 \x01(\t\x12\x31\n\x08\x66ragment\x18\x07 \x01(\x0b\x32\x1f.bilibili.playershared.Fragment\x12\x12\n\nfrom_scene\x18\x08 \x01(\t\x12\x32\n\tplay_ctrl\x18\t \x01(\x0e\x32\x1f.bilibili.playershared.PlayCtrl\x1a\x33\n\x11\x45xtraContentEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"K\n\x0fPlayAdditionReq\x12\x38\n\x05types\x18\x01 \x03(\x0e\x32).bilibili.app.playerunite.v1.AdditionType\"\xaf\x01\n\x11PlayAdditionReply\x12P\n\x16ugc_view_info_material\x18\x01 \x01(\x0b\x32\x30.bilibili.app.playerunite.v1.UgcViewInfoMaterial\x12H\n\x11translation_intro\x18\x02 \x01(\x0b\x32-.bilibili.app.playerunite.v1.TranslationIntro\"\xa8\x02\n\x13PlayHalfChannelsReq\x12\x0b\n\x03\x61id\x18\x01 \x01(\x03\x12\x0b\n\x03\x63id\x18\x02 \x01(\x03\x12Y\n\rextra_content\x18\x03 \x03(\x0b\x32\x42.bilibili.app.playerunite.v1.PlayHalfChannelsReq.ExtraContentEntry\x12\x12\n\nfrom_scene\x18\x04 \x01(\t\x12@\n\rresource_type\x18\x05 \x01(\x0e\x32).bilibili.app.playerunite.v1.ResourceType\x12\x11\n\tplay_mode\x18\x06 \x01(\t\x1a\x33\n\x11\x45xtraContentEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"L\n\x15PlayHalfChannelsReply\x12\x33\n\x06groups\x18\x01 \x03(\x0b\x32#.bilibili.playershared.SettingGroup\"\xfa\x01\n\x0ePlayQnEventReq\x12\x0b\n\x03\x61id\x18\x01 \x01(\x03\x12\x0b\n\x03\x63id\x18\x02 \x01(\x03\x12\n\n\x02qn\x18\x03 \x01(\x03\x12\x37\n\x06reason\x18\x04 \x01(\x0e\x32\'.bilibili.playershared.CanWatchQnReason\x12T\n\rreport_params\x18\x05 \x03(\x0b\x32=.bilibili.app.playerunite.v1.PlayQnEventReq.ReportParamsEntry\x1a\x33\n\x11ReportParamsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x12\n\x10PlayQnEventReply\"\x9e\x03\n\x13UgcViewInfoMaterial\x12\r\n\x05title\x18\x01 \x01(\t\x12\x10\n\x08\x62tn_text\x18\x02 \x01(\t\x12\x0f\n\x07\x62tn_url\x18\x03 \x01(\t\x12\x15\n\rbtn_jump_type\x18\x04 \x01(\x05\x12\x11\n\tdesc_text\x18\x05 \x01(\t\x12\x10\n\x08\x64\x65sc_url\x18\x06 \x01(\t\x12J\n\x05track\x18\x07 \x03(\x0b\x32;.bilibili.app.playerunite.v1.UgcViewInfoMaterial.TrackEntry\x12\x12\n\nbadge_text\x18\x08 \x01(\t\x12W\n\x0c\x61\x62_parameter\x18\t \x03(\x0b\x32\x41.bilibili.app.playerunite.v1.UgcViewInfoMaterial.AbParameterEntry\x1a,\n\nTrackEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\x1a\x32\n\x10\x41\x62ParameterEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"Q\n\x10TranslationIntro\x12\x1c\n\x14\x61i_translation_intro\x18\x01 \x01(\t\x12\x1f\n\x17multi_translation_intro\x18\x02 \x01(\t*x\n\x0c\x41\x64\x64itionType\x12\x19\n\x15\x41\x44\x44ITION_TYPE_UNKNOWN\x10\x00\x12(\n$ADDITION_TYPE_UGC_VIEW_INFO_MATERIAL\x10\x01\x12#\n\x1f\x41\x44\x44ITION_TYPE_TRANSLATION_INTRO\x10\x02*A\n\x0cResourceType\x12\x19\n\x15RESOURCE_TYPE_DEFAULT\x10\x00\x12\x16\n\x12RESOURCE_TYPE_OPUS\x10\x01\x32\xcc\x03\n\x06Player\x12o\n\rPlayViewUnite\x12-.bilibili.app.playerunite.v1.PlayViewUniteReq\x1a/.bilibili.app.playerunite.v1.PlayViewUniteReply\x12l\n\x0cPlayAddition\x12,.bilibili.app.playerunite.v1.PlayAdditionReq\x1a..bilibili.app.playerunite.v1.PlayAdditionReply\x12x\n\x10PlayHalfChannels\x12\x30.bilibili.app.playerunite.v1.PlayHalfChannelsReq\x1a\x32.bilibili.app.playerunite.v1.PlayHalfChannelsReply\x12i\n\x0bPlayQnEvent\x12+.bilibili.app.playerunite.v1.PlayQnEventReq\x1a-.bilibili.app.playerunite.v1.PlayQnEventReplyb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,12 +36,48 @@ if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._loaded_options = None
   _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._serialized_options = b'8\001'
-  _globals['_PLAYVIEWUNITEREPLY']._serialized_start=148
-  _globals['_PLAYVIEWUNITEREPLY']._serialized_end=701
-  _globals['_PLAYVIEWUNITEREQ']._serialized_start=704
-  _globals['_PLAYVIEWUNITEREQ']._serialized_end=1047
-  _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._serialized_start=996
-  _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._serialized_end=1047
-  _globals['_PLAYER']._serialized_start=1049
-  _globals['_PLAYER']._serialized_end=1170
+  _globals['_PLAYHALFCHANNELSREQ_EXTRACONTENTENTRY']._loaded_options = None
+  _globals['_PLAYHALFCHANNELSREQ_EXTRACONTENTENTRY']._serialized_options = b'8\001'
+  _globals['_PLAYQNEVENTREQ_REPORTPARAMSENTRY']._loaded_options = None
+  _globals['_PLAYQNEVENTREQ_REPORTPARAMSENTRY']._serialized_options = b'8\001'
+  _globals['_UGCVIEWINFOMATERIAL_TRACKENTRY']._loaded_options = None
+  _globals['_UGCVIEWINFOMATERIAL_TRACKENTRY']._serialized_options = b'8\001'
+  _globals['_UGCVIEWINFOMATERIAL_ABPARAMETERENTRY']._loaded_options = None
+  _globals['_UGCVIEWINFOMATERIAL_ABPARAMETERENTRY']._serialized_options = b'8\001'
+  _globals['_ADDITIONTYPE']._serialized_start=2720
+  _globals['_ADDITIONTYPE']._serialized_end=2840
+  _globals['_RESOURCETYPE']._serialized_start=2842
+  _globals['_RESOURCETYPE']._serialized_end=2907
+  _globals['_PLAYVIEWUNITEREPLY']._serialized_start=186
+  _globals['_PLAYVIEWUNITEREPLY']._serialized_end=915
+  _globals['_PLAYVIEWUNITEREQ']._serialized_start=918
+  _globals['_PLAYVIEWUNITEREQ']._serialized_end=1313
+  _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._serialized_start=1262
+  _globals['_PLAYVIEWUNITEREQ_EXTRACONTENTENTRY']._serialized_end=1313
+  _globals['_PLAYADDITIONREQ']._serialized_start=1315
+  _globals['_PLAYADDITIONREQ']._serialized_end=1390
+  _globals['_PLAYADDITIONREPLY']._serialized_start=1393
+  _globals['_PLAYADDITIONREPLY']._serialized_end=1568
+  _globals['_PLAYHALFCHANNELSREQ']._serialized_start=1571
+  _globals['_PLAYHALFCHANNELSREQ']._serialized_end=1867
+  _globals['_PLAYHALFCHANNELSREQ_EXTRACONTENTENTRY']._serialized_start=1262
+  _globals['_PLAYHALFCHANNELSREQ_EXTRACONTENTENTRY']._serialized_end=1313
+  _globals['_PLAYHALFCHANNELSREPLY']._serialized_start=1869
+  _globals['_PLAYHALFCHANNELSREPLY']._serialized_end=1945
+  _globals['_PLAYQNEVENTREQ']._serialized_start=1948
+  _globals['_PLAYQNEVENTREQ']._serialized_end=2198
+  _globals['_PLAYQNEVENTREQ_REPORTPARAMSENTRY']._serialized_start=2147
+  _globals['_PLAYQNEVENTREQ_REPORTPARAMSENTRY']._serialized_end=2198
+  _globals['_PLAYQNEVENTREPLY']._serialized_start=2200
+  _globals['_PLAYQNEVENTREPLY']._serialized_end=2218
+  _globals['_UGCVIEWINFOMATERIAL']._serialized_start=2221
+  _globals['_UGCVIEWINFOMATERIAL']._serialized_end=2635
+  _globals['_UGCVIEWINFOMATERIAL_TRACKENTRY']._serialized_start=2539
+  _globals['_UGCVIEWINFOMATERIAL_TRACKENTRY']._serialized_end=2583
+  _globals['_UGCVIEWINFOMATERIAL_ABPARAMETERENTRY']._serialized_start=2585
+  _globals['_UGCVIEWINFOMATERIAL_ABPARAMETERENTRY']._serialized_end=2635
+  _globals['_TRANSLATIONINTRO']._serialized_start=2637
+  _globals['_TRANSLATIONINTRO']._serialized_end=2718
+  _globals['_PLAYER']._serialized_start=2910
+  _globals['_PLAYER']._serialized_end=3370
 # @@protoc_insertion_point(module_scope)

@@ -1,0 +1,106 @@
+// 装扮挂件/装扮卡信息
+syntax = "proto3";
+
+package bilibili.vas.garb.model;
+
+// 用户装扮信息
+message UserSailing {
+    // 挂件
+    UserPendant pendant = 1;
+    // 装扮卡
+    UserCardBG cardbg = 2;
+    // 聚焦时的装扮卡
+    UserCardBG cardbg_with_focus = 3;
+}
+
+// 用户挂件
+message UserPendant {
+    // 挂件id
+    int64 id = 1;
+    // 挂件名
+    string name = 2;
+    // 图片url
+    string image = 3;
+    // 跳转链接
+    string jump_url = 4;
+    // 类型
+    int64 type = 5;
+    // 增强图片url
+    string image_enhance = 6;
+    // 增强图片框url
+    string image_enhance_frame = 7;
+}
+
+// 用户装扮卡
+message UserCardBG {
+    // 装扮卡id
+    int64 id = 1;
+    // 装扮卡名
+    string name = 2;
+    // 图片url
+    string image = 3;
+    // 跳转链接
+    string jump_url = 4;
+    // 粉丝信息
+    UserFanShow fan = 5;
+    // 类型
+    string type = 6;
+    // 图片组
+    ImageGroup image_group = 7;
+}
+
+// 粉丝信息
+message UserFanShow {
+    // 是否为粉丝
+    int64 is_fan = 1;
+    // 粉丝牌编号
+    int64 number = 2;
+    // 颜色
+    string color = 3;
+    // 粉丝牌名
+    string name = 4;
+    // 编号描述
+    string num_desc = 5;
+    // 编号前缀
+    string num_prefix = 6;
+    // 颜色格式
+    FanNumColorFormat color_format = 7;
+}
+
+// 粉丝牌颜色格式
+message FanNumColorFormat {
+    // 起始点
+    string start_point = 1;
+    // 结束点
+    string end_point = 2;
+    // 颜色列表
+    repeated string colors = 3;
+    // 渐变列表
+    repeated int64 gradients = 4;
+}
+
+// 图片组
+message ImageGroup {
+    // 类型
+    int64 type = 1;
+    // 视觉效果
+    VisualEffect effect_visual = 2;
+    // 游戏卡
+    CardGame card_game = 3;
+    // 视觉效果
+    message VisualEffect {
+        // 勋章图片
+        string medal_image = 1;
+        // 颜色主题
+        string color_theme = 2;
+    }
+    // 游戏卡
+    message CardGame {
+        // 编号限定词
+        string number_qualifier = 1;
+        // 等级
+        int64 grade_level = 2;
+        // 是否为最高等级
+        bool is_top_level = 3;
+    }
+}

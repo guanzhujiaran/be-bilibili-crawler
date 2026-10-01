@@ -506,3 +506,11 @@ ScreenDPIs = [
     '1080,2400,405',  # Motorola Edge 20 Pro - FHD+ (1080x2400), 395 PPI
     '1080,2400,405',  # LG Velvet - FHD+ (1080x2400), 395 PPI
 ]
+
+# B 站安卓客户端安装包渠道（UA / metadata / 设备信息中的 channel 字段）
+AppChannels = [
+    'bili', 'master', '360', 'xiaomi', 'huawei', 'honor', 'oppo', 'vivo',
+    'oneplus', 'meizu', 'samsung', 'realme', 'google', 'baidu', 'tencent',
+    'wandoujia', 'sogou', 'coolapk', 'aliyun', 'lenovo', 'sony', 'asus',
+    'zte', 'nubia', 'smartisan', 'htc', 'nokia', 'motorola', 'lg', 'panasonic',
+]
