@@ -8,9 +8,11 @@ class IpInfoRedisObj(RedisManagerBase):
         ipv6_addr = "ipv6_addr"
 
     def __init__(self):
-        super().__init__(db=CONFIG.database.ipInfoRedisObj.db,
-                         host=CONFIG.database.ipInfoRedisObj.host,
-                         port=CONFIG.database.ipInfoRedisObj.port, )
+        super().__init__(
+            db=CONFIG.database.ipInfoRedisObj.db,
+            host=CONFIG.database.ipInfoRedisObj.host,
+            port=CONFIG.database.ipInfoRedisObj.port,
+        )
 
     async def set_ip_addr(self, ip_addr: str):
         await self._set(self.RedisMap.ipv6_addr.value, ip_addr)

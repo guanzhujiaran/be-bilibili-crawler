@@ -8,4 +8,3 @@ class RequestConf(CustomBaseModel):
     is_use_available_proxy: bool = Field(False)
     is_use_custom_proxy: bool = Field(False)
     is_return_raw_response: bool = Field(False)
-    

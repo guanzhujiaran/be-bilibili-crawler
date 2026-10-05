@@ -57,6 +57,7 @@ def is_llm_unavailable(exc: BaseException | None) -> bool:
     """是否为「LLM 槽位不可用」（需要换槽位 / 等冷却，而不是继续重试同一个槽位）"""
     return isinstance(exc, _LLM_UNAVAILABLE_ERRORS)
 
+
 #: 推送正文里异常文本的截断长度：保证「同队列 + 同类异常」的正文完全一致，
 #: message-service 才能按内容去重计数（压成 ``×N`` 而不是一长串互不相同的条目）
 _ALERT_EXCEPTION_LIMIT = 200

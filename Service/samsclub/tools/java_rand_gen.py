@@ -14,8 +14,15 @@ def unsigned_right_shift(value: int, bits: int) -> int:
 
 # --- XorWowRandomPython class (from previous response) ---
 class XorWowRandomPython:
-    def __init__(self, seed1: int, seed2: int, seed3: int = None,
-                 seed4: int = None, seed5: int = None, addend_seed: int = None):
+    def __init__(
+        self,
+        seed1: int,
+        seed2: int,
+        seed3: int = None,
+        seed4: int = None,
+        seed5: int = None,
+        addend_seed: int = None,
+    ):
         if seed3 is None:
             s1 = to_int32(seed1)
             s2 = to_int32(seed2)
@@ -33,9 +40,16 @@ class XorWowRandomPython:
             self._v = to_int32(seed5)
             self._addend = to_int32(addend_seed)
 
-        if (self._x == 0 and self._y == 0 and self._z == 0 and \
-                self._w == 0 and self._v == 0):
-            raise ValueError("Initial state must have at least one non-zero element among x, y, z, w, v.")
+        if (
+            self._x == 0
+            and self._y == 0
+            and self._z == 0
+            and self._w == 0
+            and self._v == 0
+        ):
+            raise ValueError(
+                "Initial state must have at least one non-zero element among x, y, z, w, v."
+            )
 
         for _ in range(64):
             self.nextInt()  # Warm-up
@@ -69,6 +83,7 @@ class XorWowRandomPython:
     def nextBits(self, bit_count: int) -> int:
         return self._e_h(self.nextInt(), bit_count)
 
+
 class F65205aRandomIntGenerator:
     def __init__(self):
         """
@@ -101,6 +116,7 @@ class F65205aRandomIntGenerator:
         As analyzed, this directly calls the underlying XorWowRandom's nextInt().
         """
         return self._rng.nextInt()
+
 
 if __name__ == "__main__":
     a = F65205aRandomIntGenerator()

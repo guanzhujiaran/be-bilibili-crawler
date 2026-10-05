@@ -282,7 +282,6 @@ class BiliLotDataPublisher:
         do_publish = publisher_producer(mq_props=test_mq_prop)
         return await do_publish(message=body, extra_routing_key=extra_routing_key)
 
-
     # endregion
 
     @staticmethod

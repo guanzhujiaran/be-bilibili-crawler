@@ -58,7 +58,9 @@ from Service.LangChainCompo.text_embed import (
     search_lottery_text,
 )
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Service.lottery_database.bili_lotterty import (
     bos,
     get_reserve_lottery,
@@ -468,7 +470,7 @@ async def api_Search(
     response_model_exclude_none=True,
 )
 def get_single_scrapy_status(
-    scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型")
+    scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型"),
 ):
     """
     根据传入的爬虫类型查询对应的单个爬虫实时状态
@@ -687,9 +689,9 @@ async def api_GetOthersLotDynDetail(params: GetOthersLotDynDetailReq):
     if row is None:
         return CommonResponseModel(code=404, msg="第三方抽奖动态不存在", data=None)
     obj = OthersLotDynItem.model_validate(row)
-    cached = (await SqlHelper.get_extra_info_map_by_ref_ids([int(row.dynId)], "common")).get(
-        int(row.dynId)
-    )
+    cached = (
+        await SqlHelper.get_extra_info_map_by_ref_ids([int(row.dynId)], "common")
+    ).get(int(row.dynId))
     if cached:
         obj.extra_info = CommonLotExtraInfoResp(
             is_lot=bool(cached.is_lot),

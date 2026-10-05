@@ -4,7 +4,7 @@ from pydantic import TypeAdapter
 
 from Models.base.custom_pydantic import CustomBaseModel
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class ApiResponse(CustomBaseModel, Generic[T]):
@@ -40,8 +40,4 @@ class UserProfile(CustomBaseModel):
 
 RespUserProfile = TypeAdapter(ApiResponse[UserProfile])
 
-__slot__ = [
-    'RespUserProfile',
-    'ApiResponse',
-    'UserProfile'
-]
+__slot__ = ["RespUserProfile", "ApiResponse", "UserProfile"]

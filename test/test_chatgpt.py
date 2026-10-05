@@ -25,13 +25,14 @@ async def client(app):
 
 
 class TestReplySingle:
-
     @pytest.mark.asyncio
     async def test_success(self, client):
         with mock.patch("controller.v1.ChatGpt3_5.ReplySingle.chatgpt") as mock_ai:
             mock_ai.SingleReply = mock.AsyncMock(return_value="这是AI的回答")
-            response = await client.post(f"{PREFIX}/ReplySingle",
-                                         json={"question": "今天天气怎么样？", "ts": int(time.time())})
+            response = await client.post(
+                f"{PREFIX}/ReplySingle",
+                json={"question": "今天天气怎么样？", "ts": int(time.time())},
+            )
         assert response.status_code == 200
         data = response.json()
         assert data["code"] == 0
@@ -39,21 +40,24 @@ class TestReplySingle:
 
     @pytest.mark.asyncio
     async def test_missing_field(self, client):
-        response = await client.post(f"{PREFIX}/ReplySingle", json={"question": "只有问题"})
+        response = await client.post(
+            f"{PREFIX}/ReplySingle", json={"question": "只有问题"}
+        )
         assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_service_error(self, client):
         with mock.patch("controller.v1.ChatGpt3_5.ReplySingle.chatgpt") as mock_ai:
             mock_ai.SingleReply = mock.AsyncMock(side_effect=Exception("AI服务不可用"))
-            response = await client.post(f"{PREFIX}/ReplySingle",
-                                         json={"question": "测试", "ts": int(time.time())})
+            response = await client.post(
+                f"{PREFIX}/ReplySingle",
+                json={"question": "测试", "ts": int(time.time())},
+            )
         assert response.status_code == 200
         assert response.json()["code"] == 500
 
 
 class TestLLMStatus:
-
     @pytest.mark.asyncio
     async def test_get_status(self, client):
         with mock.patch("controller.v1.ChatGpt3_5.ReplySingle.chatgpt") as mock_ai:
@@ -66,24 +70,29 @@ class TestLLMStatus:
 
 
 class TestResetLLMStatus:
-
     @pytest.mark.asyncio
     async def test_reset(self, client):
         # base_url: str | None = Body(...) → body 是纯字符串
         with mock.patch("controller.v1.ChatGpt3_5.ReplySingle.chatgpt") as mock_ai:
             mock_ai.reset_llm_status.return_value = "已重置"
-            response = await client.post(f"{PREFIX}/ResetLLMStatus",
-                                         content='"http://localhost:1234"',
-                                         headers={"Content-Type": "application/json"})
+            response = await client.post(
+                f"{PREFIX}/ResetLLMStatus",
+                content='"http://localhost:1234"',
+                headers={"Content-Type": "application/json"},
+            )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_missing_base_url(self, client):
         # base_url: str | None = Body(...) → null body is valid
-        response = await client.post(f"{PREFIX}/ResetLLMStatus",
-                                     content="null",
-                                     headers={"Content-Type": "application/json"})
-        assert response.status_code != 404, f"Route should exist, got {response.status_code}"
+        response = await client.post(
+            f"{PREFIX}/ResetLLMStatus",
+            content="null",
+            headers={"Content-Type": "application/json"},
+        )
+        assert response.status_code != 404, (
+            f"Route should exist, got {response.status_code}"
+        )
 
     @pytest.mark.asyncio
     async def test_empty_body(self, client):
@@ -93,7 +102,6 @@ class TestResetLLMStatus:
 
 
 class TestHelloWorld:
-
     @pytest.mark.asyncio
     async def test_mode_1(self, client):
         response = await client.get(f"{PREFIX}/helloWorld?mode=1")

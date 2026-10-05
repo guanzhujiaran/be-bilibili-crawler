@@ -33,27 +33,36 @@ class AvailableProxySqlHelper(SqlHelperBase):
         two_hours_ago = now - timedelta(hours=2)
         async with self.async_session() as session:
             try:
-                sql = select(func.count(AvailableProxy.pk)).select_from(AvailableProxy).where(
-                    AvailableProxy.available == is_available,
-                    # --- Usability Criteria Start ---
-                    or_(
-                        AvailableProxy.counter <= 20,  # Still has low usage count
-                        AvailableProxy.max_counter_ts == None,  # Counter never reached max OR was reset
-                        AvailableProxy.max_counter_ts < two_hours_ago,  # Max count reached, but cooled down
-                        and_(  # Specific handling for response codes if needed
-                            AvailableProxy.resp_code == -352,
-                            AvailableProxy.latest_352_ts < two_hours_ago
+                sql = (
+                    select(func.count(AvailableProxy.pk))
+                    .select_from(AvailableProxy)
+                    .where(
+                        AvailableProxy.available == is_available,
+                        # --- Usability Criteria Start ---
+                        or_(
+                            AvailableProxy.counter <= 20,  # Still has low usage count
+                            AvailableProxy.max_counter_ts
+                            == None,  # Counter never reached max OR was reset
+                            AvailableProxy.max_counter_ts
+                            < two_hours_ago,  # Max count reached, but cooled down
+                            and_(  # Specific handling for response codes if needed
+                                AvailableProxy.resp_code == -352,
+                                AvailableProxy.latest_352_ts < two_hours_ago,
+                            ),
+                            and_(
+                                AvailableProxy.resp_code == -412,
+                                AvailableProxy.latest_used_ts
+                                < two_hours_ago,  # Assuming -412 also needs cooldown
+                            ),
                         ),
-                        and_(
-                            AvailableProxy.resp_code == -412,
-                            AvailableProxy.latest_used_ts < two_hours_ago  # Assuming -412 also needs cooldown
-                        )
                     )
                 )
                 result = await session.execute(sql)
                 return result.scalar_one()
             except Exception as e:
-                self.log.error(f"Error getting proxy count (available={is_available}): {e}")
+                self.log.error(
+                    f"Error getting proxy count (available={is_available}): {e}"
+                )
                 return 0  # Return 0 or raise depending on desired behavior
 
     @log_sql_retry_wrapper()
@@ -62,7 +71,9 @@ class AvailableProxySqlHelper(SqlHelperBase):
         async with self.async_session() as session:
             async with session.begin():
                 try:
-                    await session.execute(delete(AvailableProxy).where(AvailableProxy.ip == ip))
+                    await session.execute(
+                        delete(AvailableProxy).where(AvailableProxy.ip == ip)
+                    )
                     await session.commit()
                 except SQLAlchemyError as e:
                     self.log.error(f"Error deleting proxy by IP {ip}: {e}")
@@ -88,43 +99,63 @@ class AvailableProxySqlHelper(SqlHelperBase):
                     async with session.begin():
                         stmt = (
                             select(AvailableProxy)
-                            .options(selectinload(AvailableProxy.proxy_tab))  # <--- Eager load ProxyTab
+                            .options(
+                                selectinload(AvailableProxy.proxy_tab)
+                            )  # <--- Eager load ProxyTab
                             .where(
                                 AvailableProxy.available == True,
                                 or_(
                                     AvailableProxy.counter <= 20,
                                     AvailableProxy.max_counter_ts == None,
                                     AvailableProxy.max_counter_ts < two_hours_ago,
-                                    and_(AvailableProxy.resp_code == -352,
-                                         AvailableProxy.latest_352_ts < two_hours_ago),
-                                    and_(AvailableProxy.resp_code == -412,
-                                         AvailableProxy.latest_used_ts < two_hours_ago)
-                                )
+                                    and_(
+                                        AvailableProxy.resp_code == -352,
+                                        AvailableProxy.latest_352_ts < two_hours_ago,
+                                    ),
+                                    and_(
+                                        AvailableProxy.resp_code == -412,
+                                        AvailableProxy.latest_used_ts < two_hours_ago,
+                                    ),
+                                ),
                             )
                             .order_by(func.rand())
                             .limit(1)
                             .with_for_update(skip_locked=True)
                         )
                         result = await session.execute(stmt)
-                        proxy_available = result.scalars().first()  # Renamed variable for clarity
+                        proxy_available = (
+                            result.scalars().first()
+                        )  # Renamed variable for clarity
 
                         if proxy_available:
                             # --- Update AvailableProxy stats ---
                             proxy_available.counter += 1
                             proxy_available.latest_used_ts = now
 
-                            if proxy_available.counter > 20 and not proxy_available.max_counter_ts:
+                            if (
+                                proxy_available.counter > 20
+                                and not proxy_available.max_counter_ts
+                            ):
                                 proxy_available.max_counter_ts = now
-                            if proxy_available.counter > 20 and proxy_available.max_counter_ts < two_hours_ago:
+                            if (
+                                proxy_available.counter > 20
+                                and proxy_available.max_counter_ts < two_hours_ago
+                            ):
                                 proxy_available.counter = 1
 
-                            if proxy_available.resp_code == -352 and proxy_available.latest_352_ts < two_hours_ago:
+                            if (
+                                proxy_available.resp_code == -352
+                                and proxy_available.latest_352_ts < two_hours_ago
+                            ):
                                 proxy_available.resp_code = 0
 
                             # --- Check if ProxyTab was loaded ---
                             if not proxy_available.proxy_tab:
                                 return None, available_num  # Treat as failure
-                            return proxy_available, available_num  # Return the AvailableProxy object (caller will access .proxy_tab)
+                            return (
+                                proxy_available,
+                                available_num,
+                            )  # Return the AvailableProxy object (caller will access .proxy_tab)
                         else:
                             return None, available_num
             else:
@@ -139,7 +170,9 @@ class AvailableProxySqlHelper(SqlHelperBase):
 
     # --- Keep existing methods ---
     @log_sql_retry_wrapper()
-    async def get_available_proxy_by_proxy_id(self, proxy_tab_id: int) -> AvailableProxy | None:
+    async def get_available_proxy_by_proxy_id(
+        self, proxy_tab_id: int
+    ) -> AvailableProxy | None:
         async with self.async_session() as session:
             result = await session.execute(
                 select(AvailableProxy)
@@ -159,7 +192,9 @@ class AvailableProxySqlHelper(SqlHelperBase):
                 try:
                     proxy = await session.get(AvailableProxy, proxy_pk)
                     if not proxy:
-                        self.log.warning(f"Proxy pk={proxy_pk} not found for counter update.")
+                        self.log.warning(
+                            f"Proxy pk={proxy_pk} not found for counter update."
+                        )
                         return
 
                     original_counter = proxy.counter
@@ -168,12 +203,16 @@ class AvailableProxySqlHelper(SqlHelperBase):
 
                     if original_counter == 20:  # Just crossed the threshold
                         proxy.max_counter_ts = datetime.now()
-                    elif proxy.counter > 20 and proxy.max_counter_ts is None:  # Safety check
+                    elif (
+                        proxy.counter > 20 and proxy.max_counter_ts is None
+                    ):  # Safety check
                         proxy.max_counter_ts = datetime.now()
 
                     # Commit handled by context manager
                 except SQLAlchemyError as e:
-                    self.log.error(f"Error updating counter for proxy pk={proxy_pk}: {e}")
+                    self.log.error(
+                        f"Error updating counter for proxy pk={proxy_pk}: {e}"
+                    )
                     # Rollback handled by context manager
                     raise  # Or handle differently
 
@@ -185,7 +224,9 @@ class AvailableProxySqlHelper(SqlHelperBase):
                     stmt = delete(AvailableProxy).where(AvailableProxy.pk == proxy_pk)
                     result = await session.execute(stmt)
                     if result.rowcount == 0:
-                        self.log.warning(f"Attempted to delete proxy pk={proxy_pk}, but it was not found.")
+                        self.log.warning(
+                            f"Attempted to delete proxy pk={proxy_pk}, but it was not found."
+                        )
                     # Commit handled by context manager
                 except SQLAlchemyError as e:
                     self.log.error(f"Error deleting proxy pk={proxy_pk}: {e}")
@@ -199,7 +240,9 @@ class AvailableProxySqlHelper(SqlHelperBase):
                 try:
                     proxy = await session.get(AvailableProxy, proxy_pk)
                     if not proxy:
-                        self.log.warning(f"Proxy pk={proxy_pk} not found for resp_code update.")
+                        self.log.warning(
+                            f"Proxy pk={proxy_pk} not found for resp_code update."
+                        )
                         return
 
                     now = datetime.now()
@@ -215,12 +258,16 @@ class AvailableProxySqlHelper(SqlHelperBase):
 
                     # Commit handled by context manager
                 except SQLAlchemyError as e:
-                    self.log.error(f"Error updating resp_code for proxy pk={proxy_pk}: {e}")
+                    self.log.error(
+                        f"Error updating resp_code for proxy pk={proxy_pk}: {e}"
+                    )
                     # Rollback handled by context manager
                     raise  # Or handle differently
 
     @log_sql_retry_wrapper()
-    async def update_available_proxy_details(self, proxy_tab: ProxyTab, available: bool, resp_code: int):
+    async def update_available_proxy_details(
+        self, proxy_tab: ProxyTab, available: bool, resp_code: int
+    ):
         proxy_id = proxy_tab.proxy_id
         # 检查 proxy_id 是否存在于 proxy_tab 表中
         async with self.async_session() as session:
@@ -241,16 +288,14 @@ class AvailableProxySqlHelper(SqlHelperBase):
             "counter": AvailableProxy.counter if not available else 1,
             "latest_used_ts": now,
             "max_counter_ts": case(
-                (AvailableProxy.counter >= 30, now),
-                else_=AvailableProxy.max_counter_ts
+                (AvailableProxy.counter >= 30, now), else_=AvailableProxy.max_counter_ts
             ),
-            "latest_352_ts": latest_352_ts
+            "latest_352_ts": latest_352_ts,
         }
 
         async with self.async_session() as session:
             stmt = mysql_insert(AvailableProxy).values(
-                proxy_tab_id=proxy_id,
-                **new_values
+                proxy_tab_id=proxy_id, **new_values
             )
             update_stmt = stmt.on_duplicate_key_update(**new_values)
             result = await session.execute(update_stmt)
@@ -260,10 +305,10 @@ class AvailableProxySqlHelper(SqlHelperBase):
 
 sql_helper = AvailableProxySqlHelper()
 if __name__ == "__main__":
+
     async def _test_get_rand_available_proxy_sql():
         result = await sql_helper.get_rand_available_proxy_sql()
         print(result)
-
 
     async def _test_update_available_proxy_details():
         await sql_helper.update_available_proxy_details(
@@ -276,11 +321,10 @@ if __name__ == "__main__":
                 add_ts=int(time.time()),
                 success_times=1,
                 zhihu_status=0,
-                computed_proxy_str='https://111.200.255.18:7081'
+                computed_proxy_str="https://111.200.255.18:7081",
             ),
             True,
-            0
+            0,
         )
-
 
     print(asyncio.run(_test_get_rand_available_proxy_sql()))

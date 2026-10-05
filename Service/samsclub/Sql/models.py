@@ -1,6 +1,20 @@
 from typing import List, Optional
 
-from sqlalchemy import BigInteger, Column, Computed, DateTime, Double, ForeignKeyConstraint, Index, Integer, JSON, String, TIMESTAMP, Text, text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    Computed,
+    DateTime,
+    Double,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    JSON,
+    String,
+    TIMESTAMP,
+    Text,
+    text,
+)
 from sqlalchemy.dialects.mysql import TEXT, TINYINT, VARCHAR
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 from sqlalchemy.orm.base import Mapped
@@ -9,9 +23,9 @@ Base = declarative_base()
 
 
 class CrawlTaskProgress(Base):
-    __tablename__ = 'crawl_task_progress'
+    __tablename__ = "crawl_task_progress"
     __table_args__ = (
-        Index('udx_task_key', 'first_category_id', 'second_category_id', unique=True),
+        Index("udx_task_key", "first_category_id", "second_category_id", unique=True),
     )
 
     id = mapped_column(BigInteger, primary_key=True)
@@ -19,40 +33,50 @@ class CrawlTaskProgress(Base):
     second_category_id = mapped_column(Integer, nullable=False)
     last_page_num = mapped_column(Integer, server_default=text("'1'"))
     is_finished = mapped_column(TINYINT, server_default=text("'0'"))
-    created_at = mapped_column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
-    updated_at = mapped_column(DateTime, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+    created_at = mapped_column(DateTime, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = mapped_column(
+        DateTime, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
+    )
 
 
 class GroupingInfo(Base):
-    __tablename__ = 'grouping_info'
-    __table_args__ = (
-        Index('groupingId', 'groupingId', unique=True),
-    )
+    __tablename__ = "grouping_info"
+    __table_args__ = (Index("groupingId", "groupingId", unique=True),)
 
     pk = mapped_column(BigInteger, primary_key=True)
     level = mapped_column(TINYINT, nullable=False)
     parentGroupingId = mapped_column(Integer)
     groupingId = mapped_column(VARCHAR(50))
-    groupingIdInt = mapped_column(Integer, Computed('(cast(`groupingId` as signed))', persisted=True))
+    groupingIdInt = mapped_column(
+        Integer, Computed("(cast(`groupingId` as signed))", persisted=True)
+    )
     image = mapped_column(VARCHAR(1000))
     navigationId = mapped_column(VARCHAR(50))
-    navigationIdInt = mapped_column(Integer, Computed('(cast(`navigationId` as signed))', persisted=True))
+    navigationIdInt = mapped_column(
+        Integer, Computed("(cast(`navigationId` as signed))", persisted=True)
+    )
     storeId = mapped_column(VARCHAR(50))
-    storeIdInt = mapped_column(Integer, Computed('(cast(`storeId` as signed))', persisted=True))
+    storeIdInt = mapped_column(
+        Integer, Computed("(cast(`storeId` as signed))", persisted=True)
+    )
     title = mapped_column(VARCHAR(50))
     children = mapped_column(JSON)
 
 
 class SpuInfo(Base):
-    __tablename__ = 'spu_info'
-    __table_args__ = (
-        Index('title', 'title', 'update_time', 'spuId', 'create_time'),
-    )
+    __tablename__ = "spu_info"
+    __table_args__ = (Index("title", "title", "update_time", "spuId", "create_time"),)
 
-    spuId = mapped_column(VARCHAR(50), primary_key=True, comment='SPU ID')
+    spuId = mapped_column(VARCHAR(50), primary_key=True, comment="SPU ID")
     title = mapped_column(String(255), nullable=False)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
+    create_time = mapped_column(
+        TIMESTAMP, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
     brandId = mapped_column(VARCHAR(50))
     subTitle = mapped_column(TEXT)
     image = mapped_column(String(512))
@@ -87,7 +111,7 @@ class SpuInfo(Base):
     smallPackagePriceDisplay = mapped_column(String(255))
     commonOuterService = mapped_column(JSON)
     unknow_field = mapped_column(JSON)
-    onlyBarSale = mapped_column(TINYINT(1), comment='是否只在餐吧销售')
+    onlyBarSale = mapped_column(TINYINT(1), comment="是否只在餐吧销售")
     arrivalEndTimeDesc = mapped_column(Text)
     attrGroupInfo = mapped_column(JSON)
     attrInfo = mapped_column(JSON)
@@ -111,7 +135,7 @@ class SpuInfo(Base):
     isCrabCard = mapped_column(TINYINT(1))
     isGlobalOwnPickUp = mapped_column(TINYINT(1))
     isGovSpu = mapped_column(TINYINT(1))
-    isPutOnSale = mapped_column(TINYINT(1), comment='false 就代表下架了')
+    isPutOnSale = mapped_column(TINYINT(1), comment="false 就代表下架了")
     isStoreAvailable = mapped_column(TINYINT(1))
     isTicket = mapped_column(TINYINT(1))
     netWeight = mapped_column(Double(asdecimal=True))
@@ -130,42 +154,88 @@ class SpuInfo(Base):
     globalShoppingTaxRateExplain = mapped_column(Text)
     hostItem = mapped_column(Text)
 
-    spu_category: Mapped[List['SpuCategory']] = relationship('SpuCategory', uselist=True, back_populates='spu')
-    spu_new_tag_info: Mapped[List['SpuNewTagInfo']] = relationship('SpuNewTagInfo', uselist=True, back_populates='spu')
-    spu_price_info: Mapped[List['SpuPriceInfo']] = relationship('SpuPriceInfo', uselist=True, back_populates='spu')
-    spu_stock_info: Mapped[List['SpuStockInfo']] = relationship('SpuStockInfo', uselist=True, back_populates='spu')
-    spu_tag_info: Mapped[List['SpuTagInfo']] = relationship('SpuTagInfo', uselist=True, back_populates='spu')
-    spu_video_info: Mapped[List['SpuVideoInfo']] = relationship('SpuVideoInfo', uselist=True, back_populates='spu')
+    spu_category: Mapped[List["SpuCategory"]] = relationship(
+        "SpuCategory", uselist=True, back_populates="spu"
+    )
+    spu_new_tag_info: Mapped[List["SpuNewTagInfo"]] = relationship(
+        "SpuNewTagInfo", uselist=True, back_populates="spu"
+    )
+    spu_price_info: Mapped[List["SpuPriceInfo"]] = relationship(
+        "SpuPriceInfo", uselist=True, back_populates="spu"
+    )
+    spu_stock_info: Mapped[List["SpuStockInfo"]] = relationship(
+        "SpuStockInfo", uselist=True, back_populates="spu"
+    )
+    spu_tag_info: Mapped[List["SpuTagInfo"]] = relationship(
+        "SpuTagInfo", uselist=True, back_populates="spu"
+    )
+    spu_video_info: Mapped[List["SpuVideoInfo"]] = relationship(
+        "SpuVideoInfo", uselist=True, back_populates="spu"
+    )
 
 
 class SpuCategory(Base):
-    __tablename__ = 'spu_category'
+    __tablename__ = "spu_category"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], ondelete='CASCADE', name='spu_category_ibfk_1'),
-        Index('create_time', 'create_time', 'update_time', 'categoryId', 'spu_id', 'pk'),
-        Index('uq_spuId_categoryId', 'spu_id', 'categoryId', unique=True)
+        ForeignKeyConstraint(
+            ["spu_id"],
+            ["spu_info.spuId"],
+            ondelete="CASCADE",
+            name="spu_category_ibfk_1",
+        ),
+        Index(
+            "create_time", "create_time", "update_time", "categoryId", "spu_id", "pk"
+        ),
+        Index("uq_spuId_categoryId", "spu_id", "categoryId", unique=True),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
     categoryId = mapped_column(VARCHAR(50), nullable=False)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment='创建时间')
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'), comment='更新时间')
+    create_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     spu_id = mapped_column(String(50))
 
-    spu: Mapped[Optional['SpuInfo']] = relationship('SpuInfo', back_populates='spu_category')
+    spu: Mapped[Optional["SpuInfo"]] = relationship(
+        "SpuInfo", back_populates="spu_category"
+    )
 
 
 class SpuNewTagInfo(Base):
-    __tablename__ = 'spu_new_tag_info'
+    __tablename__ = "spu_new_tag_info"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], ondelete='CASCADE', name='spu_new_tag_info_ibfk_1'),
-        Index('title', 'title', 'spu_id'),
-        Index('uq_spuId_tagManageId', 'spu_id', 'tagManageId', unique=True)
+        ForeignKeyConstraint(
+            ["spu_id"],
+            ["spu_info.spuId"],
+            ondelete="CASCADE",
+            name="spu_new_tag_info_ibfk_1",
+        ),
+        Index("title", "title", "spu_id"),
+        Index("uq_spuId_tagManageId", "spu_id", "tagManageId", unique=True),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment='创建时间')
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'), comment='更新时间')
+    create_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     spu_id = mapped_column(String(50))
     beginTime = mapped_column(BigInteger)
     endTime = mapped_column(BigInteger)
@@ -192,58 +262,100 @@ class SpuNewTagInfo(Base):
     id = mapped_column(String(50))
     unknow_field = mapped_column(JSON)
 
-    spu: Mapped[Optional['SpuInfo']] = relationship('SpuInfo', back_populates='spu_new_tag_info')
+    spu: Mapped[Optional["SpuInfo"]] = relationship(
+        "SpuInfo", back_populates="spu_new_tag_info"
+    )
 
 
 class SpuPriceInfo(Base):
-    __tablename__ = 'spu_price_info'
+    __tablename__ = "spu_price_info"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], name='FK_spu_price_info_spu_info'),
-        Index('spu_id', 'spu_id', 'price', 'priceType', 'update_time', 'create_time')
+        ForeignKeyConstraint(
+            ["spu_id"], ["spu_info.spuId"], name="FK_spu_price_info_spu_info"
+        ),
+        Index("spu_id", "spu_id", "price", "priceType", "update_time", "create_time"),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment='创建时间')
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'), comment='更新时间')
+    create_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     spu_id = mapped_column(String(50))
     price = mapped_column(Integer)
     priceType = mapped_column(Integer)
     priceTypeName = mapped_column(VARCHAR(255))
     unknow_field = mapped_column(JSON)
 
-    spu: Mapped[Optional['SpuInfo']] = relationship('SpuInfo', back_populates='spu_price_info')
+    spu: Mapped[Optional["SpuInfo"]] = relationship(
+        "SpuInfo", back_populates="spu_price_info"
+    )
 
 
 class SpuStockInfo(Base):
-    __tablename__ = 'spu_stock_info'
+    __tablename__ = "spu_stock_info"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], ondelete='CASCADE', name='spu_stock_info_ibfk_1'),
-        Index('spu_id', 'spu_id', unique=True)
+        ForeignKeyConstraint(
+            ["spu_id"],
+            ["spu_info.spuId"],
+            ondelete="CASCADE",
+            name="spu_stock_info_ibfk_1",
+        ),
+        Index("spu_id", "spu_id", unique=True),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
     spu_id = mapped_column(String(50), nullable=False)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment='创建时间')
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'), comment='更新时间')
+    create_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     safeStockQuantity = mapped_column(Integer)
     soldQuantity = mapped_column(Integer)
     stockQuantity = mapped_column(Integer)
     unknow_field = mapped_column(JSON)
 
-    spu: Mapped['SpuInfo'] = relationship('SpuInfo', back_populates='spu_stock_info')
+    spu: Mapped["SpuInfo"] = relationship("SpuInfo", back_populates="spu_stock_info")
 
 
 class SpuTagInfo(Base):
-    __tablename__ = 'spu_tag_info'
+    __tablename__ = "spu_tag_info"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], ondelete='CASCADE', name='spu_tag_info_ibfk_1'),
-        Index('spu_id_tag_Id', 'spu_id', 'id', unique=True),
-        Index('spu_id_tag_mark', 'spu_id', 'tagMark', unique=True)
+        ForeignKeyConstraint(
+            ["spu_id"],
+            ["spu_info.spuId"],
+            ondelete="CASCADE",
+            name="spu_tag_info_ibfk_1",
+        ),
+        Index("spu_id_tag_Id", "spu_id", "id", unique=True),
+        Index("spu_id_tag_mark", "spu_id", "tagMark", unique=True),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'))
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+    )
+    create_time = mapped_column(
+        TIMESTAMP, nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
     spu_id = mapped_column(String(50))
     id = mapped_column(VARCHAR(50))
     title = mapped_column(VARCHAR(1024))
@@ -255,23 +367,42 @@ class SpuTagInfo(Base):
     beginTime = mapped_column(BigInteger)
     unknow_field = mapped_column(JSON)
 
-    spu: Mapped[Optional['SpuInfo']] = relationship('SpuInfo', back_populates='spu_tag_info')
+    spu: Mapped[Optional["SpuInfo"]] = relationship(
+        "SpuInfo", back_populates="spu_tag_info"
+    )
 
 
 class SpuVideoInfo(Base):
-    __tablename__ = 'spu_video_info'
+    __tablename__ = "spu_video_info"
     __table_args__ = (
-        ForeignKeyConstraint(['spu_id'], ['spu_info.spuId'], ondelete='CASCADE', name='spu_video_info_ibfk_1'),
-        Index('spu_id', 'spu_id')
+        ForeignKeyConstraint(
+            ["spu_id"],
+            ["spu_info.spuId"],
+            ondelete="CASCADE",
+            name="spu_video_info_ibfk_1",
+        ),
+        Index("spu_id", "spu_id"),
     )
 
     pk = mapped_column(BigInteger, primary_key=True)
-    create_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP'), comment='创建时间')
-    update_time = mapped_column(TIMESTAMP, nullable=False, server_default=text('CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP'), comment='更新时间')
+    create_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP"),
+        comment="创建时间",
+    )
+    update_time = mapped_column(
+        TIMESTAMP,
+        nullable=False,
+        server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        comment="更新时间",
+    )
     spu_id = mapped_column(String(50))
     videoUrl = mapped_column(VARCHAR(512))
     videoCover = mapped_column(VARCHAR(512))
     duration = mapped_column(Integer)
     unknow_field = mapped_column(JSON)
 
-    spu: Mapped[Optional['SpuInfo']] = relationship('SpuInfo', back_populates='spu_video_info')
+    spu: Mapped[Optional["SpuInfo"]] = relationship(
+        "SpuInfo", back_populates="spu_video_info"
+    )

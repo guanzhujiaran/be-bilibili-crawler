@@ -207,8 +207,12 @@ async def test_get_others_big_reserve_empty(client):
 @pytest.mark.asyncio
 async def test_zhihu_lot_pins(client):
     """测试获取知乎抽奖"""
-    with mock.patch("controller.common.CommonRouter.zhihu_lotScrapy") as mock_zhihu, \
-         mock.patch("controller.common.CommonRouter.a_pushme", new_callable=mock.AsyncMock):
+    with (
+        mock.patch("controller.common.CommonRouter.zhihu_lotScrapy") as mock_zhihu,
+        mock.patch(
+            "controller.common.CommonRouter.a_pushme", new_callable=mock.AsyncMock
+        ),
+    ):
         mock_zhihu.api_get_all_pins = mock.AsyncMock(return_value=[])
         response = await client.get("/zhihu/get_others_lot_pins")
         assert response.status_code == 200
@@ -222,8 +226,14 @@ async def test_zhihu_lot_pins(client):
 @pytest.mark.asyncio
 async def test_toutiao_lot_ids(client):
     """测试获取头条抽奖"""
-    with mock.patch("controller.common.CommonRouter.toutiaoSpaceFeedLotService") as mock_svc, \
-         mock.patch("controller.common.CommonRouter.a_pushme", new_callable=mock.AsyncMock):
+    with (
+        mock.patch(
+            "controller.common.CommonRouter.toutiaoSpaceFeedLotService"
+        ) as mock_svc,
+        mock.patch(
+            "controller.common.CommonRouter.a_pushme", new_callable=mock.AsyncMock
+        ),
+    ):
         mock_svc.main = mock.AsyncMock(return_value=[])
         response = await client.get("/toutiao/get_others_lot_ids")
         assert response.status_code == 200

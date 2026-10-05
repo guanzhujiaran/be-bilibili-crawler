@@ -2,8 +2,13 @@ import asyncio
 
 from log.base_log import milvus_db_logger
 from Service.LangChainCompo.lottery_data_vec_sql.sql_helper import milvus_sql_helper
-from Service.LangChainCompo.text_embed import save_bili_lot_data_embeddings, lot_data_2_bili_lot_data_ls
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.LangChainCompo.text_embed import (
+    save_bili_lot_data_embeddings,
+    lot_data_2_bili_lot_data_ls,
+)
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Utils.通用.Common import log_max_count_retry_wrapper
 
 
@@ -22,9 +27,9 @@ async def del_outdated_bili_lottery_data():
 
 
 if __name__ == "__main__":
+
     async def _test():
         await sync_bili_lottery_data()
         await del_outdated_bili_lottery_data()
-
 
     asyncio.run(_test())

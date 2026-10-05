@@ -678,9 +678,7 @@ class __SqlHelper(SqlHelperBase):
     # endregion
 
     @log_sql_retry_wrapper()
-    async def isExistSpaceInfoByDynId(
-        self, dynamic_id
-    ) -> TLotuserspaceresp | None:
+    async def isExistSpaceInfoByDynId(self, dynamic_id) -> TLotuserspaceresp | None:
         async with self.async_session() as session:
             sql = (
                 select(TLotuserspaceresp)

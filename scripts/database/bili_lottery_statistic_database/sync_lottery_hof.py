@@ -35,7 +35,9 @@ from sqlalchemy import select, func
 
 from log.base_log import myfastapi_logger
 from Models.lottery_database.bili.LotteryDataModels import BiliLotStatisticLotTypeEnum
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from dao.biliLotteryStatisticRedisObj import lottery_data_statistic_redis
 
@@ -65,7 +67,9 @@ async def refresh_sync_ts() -> None:
             )
         myfastapi_logger.info("已刷新 Redis 中 lottery_hof 各 lot_type 的 sync_ts")
     except Exception as e:  # noqa: BLE001
-        myfastapi_logger.warning(f"刷新 Redis sync_ts 失败（不影响 MySQL 数据同步）: {e}")
+        myfastapi_logger.warning(
+            f"刷新 Redis sync_ts 失败（不影响 MySQL 数据同步）: {e}"
+        )
 
 
 async def main() -> None:
@@ -73,15 +77,21 @@ async def main() -> None:
         description="手动同步 lottery_database/bili/lottery_hof 的中奖榜数据"
     )
     parser.add_argument(
-        "--lottery-id", type=int, default=None,
+        "--lottery-id",
+        type=int,
+        default=None,
         help="仅同步指定抽奖ID的开奖结果；不传则全量同步",
     )
     parser.add_argument(
-        "--skip-sync-ts", action="store_true",default=True,
+        "--skip-sync-ts",
+        action="store_true",
+        default=True,
         help="全量同步后不同步 Redis 的 sync_ts（仅对全量同步生效）",
     )
     parser.add_argument(
-        "--count", action="store_true",default=False,
+        "--count",
+        action="store_true",
+        default=False,
         help="仅统计待同步的源数据条数，不做任何写入",
     )
     args = parser.parse_args()

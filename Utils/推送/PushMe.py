@@ -40,6 +40,7 @@ def server_label() -> str:
     """
     return build_server_label(settings)
 
+
 def async_pushme_try_catch_decorator(func):
     @wraps(func)
     async def wrapper(*args, **kwargs):
@@ -68,8 +69,17 @@ async def a_pushme(
     content: str,
     push_type: Optional[
         Literal[
-            "text", "data", "markdata", "html", "txt", "json",
-            "markdown", "cloudMonitor", "jenkins", "route", "pay",
+            "text",
+            "data",
+            "markdata",
+            "html",
+            "txt",
+            "json",
+            "markdown",
+            "cloudMonitor",
+            "jenkins",
+            "route",
+            "pay",
         ]
     ] = "text",
     subject: str = PushSubject.INFO,
@@ -97,8 +107,17 @@ async def a_push_error(
     subject: str = "运行异常",
     push_type: Optional[
         Literal[
-            "text", "data", "markdata", "html", "txt", "json",
-            "markdown", "cloudMonitor", "jenkins", "route", "pay",
+            "text",
+            "data",
+            "markdata",
+            "html",
+            "txt",
+            "json",
+            "markdown",
+            "cloudMonitor",
+            "jenkins",
+            "route",
+            "pay",
         ]
     ] = "text",
     topic: str = PushSubject.FAILURE,

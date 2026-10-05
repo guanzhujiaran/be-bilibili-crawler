@@ -18,30 +18,31 @@ def format_proxy(proxy_str, protocol: str = None) -> dict | None:
     """
     if type(proxy_str) is str:
         proxy_str = proxy_str.strip()
-    ip_pattern = re.compile(r'^(?:(http|https|socks[45]|sock[45])://)?'  # 协议部分（可选）
-                            r'((?:[0-9]{1,3}\.){3}[0-9]{1,3})'  # 完整的 IP 地址
-                            r'(:[0-9]{1,5})?$'  # 端口号部分（可选）
-                            )
+    ip_pattern = re.compile(
+        r"^(?:(http|https|socks[45]|sock[45])://)?"  # 协议部分（可选）
+        r"((?:[0-9]{1,3}\.){3}[0-9]{1,3})"  # 完整的 IP 地址
+        r"(:[0-9]{1,5})?$"  # 端口号部分（可选）
+    )
 
     match = ip_pattern.match(proxy_str)
     if not match:
         return None
     protocol_in_input = match.group(1)  # 输入中的协议部分，可能为None
     ip_address = match.group(2)
-    port = match.group(3) or ':80'  # 如果没有提供端口，默认使用80
+    port = match.group(3) or ":80"  # 如果没有提供端口，默认使用80
     # 构建基础的代理地址
-    base_protocol = protocol_in_input or protocol or 'http'
+    base_protocol = protocol_in_input or protocol or "http"
     # 创建代理字典
     proxy_dict = {}
-    if base_protocol in ['http', 'https']:
-        proxy_dict['http'] = f'{base_protocol}://{ip_address}{port}'
-        proxy_dict['https'] = f'{base_protocol}://{ip_address}{port}'
-    elif base_protocol in ['sock5', 'socks5']:
-        proxy_dict['sock5'] = f'{base_protocol}://{ip_address}{port}'
-        proxy_dict['socks5'] = f'{base_protocol}://{ip_address}{port}'
-    elif base_protocol in ['sock4', 'socks4']:
-        proxy_dict['sock4'] = f'{base_protocol}://{ip_address}{port}'
-        proxy_dict['socks4'] = f'{base_protocol}://{ip_address}{port}'
+    if base_protocol in ["http", "https"]:
+        proxy_dict["http"] = f"{base_protocol}://{ip_address}{port}"
+        proxy_dict["https"] = f"{base_protocol}://{ip_address}{port}"
+    elif base_protocol in ["sock5", "socks5"]:
+        proxy_dict["sock5"] = f"{base_protocol}://{ip_address}{port}"
+        proxy_dict["socks5"] = f"{base_protocol}://{ip_address}{port}"
+    elif base_protocol in ["sock4", "socks4"]:
+        proxy_dict["sock4"] = f"{base_protocol}://{ip_address}{port}"
+        proxy_dict["socks4"] = f"{base_protocol}://{ip_address}{port}"
     else:
         return None
     return proxy_dict

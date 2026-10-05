@@ -13,15 +13,17 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 # ---- sys.path ----
 _current_dir = Path(__file__).resolve().parent  # alembic/biliopusdb/
-_fastapi_root = _current_dir.parent.parent       # FastapiApp/
+_fastapi_root = _current_dir.parent.parent  # FastapiApp/
 sys.path.insert(0, str(_fastapi_root))
 
 # ---- 目标元数据 ----
 from Service.GetOthersLotDyn.Sql.models import Base
+
 target_metadata = Base.metadata
 
 # ---- 数据库 URL ----
 from CONFIG import CONFIG
+
 _DB_URL: str = CONFIG.database.MYSQL.get_other_lot_URI
 # from sqlalchemy import *
 # from sqlalchemy.schema import *

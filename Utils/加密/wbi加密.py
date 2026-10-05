@@ -103,18 +103,14 @@ mixinKeyEncTab = [
 
 @dataclass
 class WbiKeys:
-    img_key: str = ''
-    sub_key: str = ''
+    img_key: str = ""
+    sub_key: str = ""
 
 
 class My_dm_img_Redis(RedisManagerBase):
-
     def __init__(self):
         super().__init__()
-        self.dm_dict = {
-            "get_ts": 0,
-            "WbiKeys": WbiKeys()
-        }
+        self.dm_dict = {"get_ts": 0, "WbiKeys": WbiKeys()}
 
     class RedisMap(StrEnumAutoDoc):
         WbiKeys = "WbiKeys"
@@ -125,23 +121,28 @@ class My_dm_img_Redis(RedisManagerBase):
             redis_raw = await self._get(self.RedisMap.WbiKeys.value)
             if redis_raw:
                 redis_da = json.loads(redis_raw)
-                if (datetime.now() - datetime.fromtimestamp(redis_da.get('get_ts'))).days >= 1:
+                if (
+                    datetime.now() - datetime.fromtimestamp(redis_da.get("get_ts"))
+                ).days >= 1:
                     img_key, sub_key = await getWbiKeys()
                 else:
-                    img_key = redis_da.get('img_key')
-                    sub_key = redis_da.get('sub_key')
+                    img_key = redis_da.get("img_key")
+                    sub_key = redis_da.get("sub_key")
             else:
                 img_key, sub_key = await getWbiKeys()
-            self.dm_dict["WbiKeys"] = WbiKeys(
-                img_key, sub_key
-            )
+            self.dm_dict["WbiKeys"] = WbiKeys(img_key, sub_key)
             self.dm_dict["get_ts"] = int(datetime.now().timestamp())
-            await self._setex(self.RedisMap.WbiKeys.value,
-                              json.dumps({
-                                  'get_ts': self.dm_dict["get_ts"],
-                                  'img_key': img_key, 'sub_key': sub_key
-                              }), 24 * 3600
-                              )
+            await self._setex(
+                self.RedisMap.WbiKeys.value,
+                json.dumps(
+                    {
+                        "get_ts": self.dm_dict["get_ts"],
+                        "img_key": img_key,
+                        "sub_key": sub_key,
+                    }
+                ),
+                24 * 3600,
+            )
 
         return self.dm_dict["WbiKeys"]
 
@@ -149,7 +150,7 @@ class My_dm_img_Redis(RedisManagerBase):
 my_dm_img_Redis = My_dm_img_Redis()
 
 
-def base64_encode(encoded_str, encode='utf-8'):
+def base64_encode(encoded_str, encode="utf-8"):
     """
     Base64解密函数
     :param encoded_str: Base64编码的字符串
@@ -158,7 +159,7 @@ def base64_encode(encoded_str, encode='utf-8'):
     encoded_str = encoded_str.encode(encode)
     encoded_str = base64.b64encode(encoded_str)
     encoded_str = encoded_str.decode()
-    return encoded_str.strip('=')
+    return encoded_str.strip("=")
 
 
 def getMixinKey(orig: str):
@@ -180,15 +181,14 @@ def encWbi(params: Dict[str, str | int], img_key: str, sub_key: str) -> dict:
     query = urllib.parse.urlencode(params)  # 序列化参数
     wbi_sign = md5((query + mixin_key).encode()).hexdigest()  # 计算 w_rid
     params["w_rid"] = wbi_sign
-    return {
-        "w_rid": wbi_sign,
-        "wts": str(curr_time)
-    }
+    return {"w_rid": wbi_sign, "wts": str(curr_time)}
 
 
 async def getWbiKeys() -> tuple[str, str]:
     "获取最新的 img_key 和 sub_key"
-    resp = await my_async_httpx.get("https://api.bilibili.com/x/web-interface/nav", headers=HEADERS)
+    resp = await my_async_httpx.get(
+        "https://api.bilibili.com/x/web-interface/nav", headers=HEADERS
+    )
     resp.raise_for_status()
     json_content = resp.json()
     img_url: str = json_content["data"]["wbi_img"]["img_url"]
@@ -246,15 +246,11 @@ def gen_dm_args(params: dict, gen_bili_web_cookie_params: GenWebCookieParams):
             "wh": [
                 random.randint(1800, 1920),
                 random.randint(950, 1080),
-                random.randint(20, 150)
+                random.randint(20, 150),
             ],
-            "of": [
-                same_of,
-                random.randint(100, 900),
-                same_of
-            ]
+            "of": [same_of, random.randint(100, 900), same_of],
         },
-        separators=(',', ':')
+        separators=(",", ":"),
     )
     params.update(
         {
@@ -271,9 +267,7 @@ def gen_dm_args(params: dict, gen_bili_web_cookie_params: GenWebCookieParams):
 if __name__ == "__main__":
     import asyncio
 
-
     async def _test():
         print(await getWbiKeys())
-
 
     asyncio.run(_test())

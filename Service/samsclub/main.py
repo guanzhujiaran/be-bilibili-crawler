@@ -29,23 +29,30 @@ class SamsClubCrawlerParams(CustomBaseModelHashable):
 
 class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
     Config = SamsClubCrawlerConfig
+
     async def is_stop(self) -> bool:
         return False
 
-    async def key_params_gen(self, params=None) -> AsyncGenerator[SamsClubCrawlerParams, None]:
+    async def key_params_gen(
+        self, params=None
+    ) -> AsyncGenerator[SamsClubCrawlerParams, None]:
         for grouping_info in self.task_params_list:
             yield SamsClubCrawlerParams(
                 first_category=grouping_info.parentGroupingId,
-                second_category=grouping_info.groupingIdInt
+                second_category=grouping_info.groupingIdInt,
             )
             await asyncio.sleep(next(self.delay_gen))
 
     async def handle_fetch(self, params: SamsClubCrawlerParams) -> WorkerStatus | Any:
-        if {'firstCategoryId': params.first_category,
-            'secondCategoryId': params.second_category} in self.unfinished_tasks:
-            self.log.debug('已经爬取完成的')
+        if {
+            "firstCategoryId": params.first_category,
+            "secondCategoryId": params.second_category,
+        } in self.unfinished_tasks:
+            self.log.debug("已经爬取完成的")
             return WorkerStatus.complete
-        await self.grouping_list_downloader(params.first_category, params.second_category)
+        await self.grouping_list_downloader(
+            params.first_category, params.second_category
+        )
         return WorkerStatus.complete
 
     def __init__(self):
@@ -69,50 +76,63 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
         self.main_lock = asyncio.Lock()
 
     class FilePath:
-        fetch_grouping_id_ts = os.path.join(os.path.dirname(__file__), 'fetch_grouping_id_ts.txt')
+        fetch_grouping_id_ts = os.path.join(
+            os.path.dirname(__file__), "fetch_grouping_id_ts.txt"
+        )
         grouping_data_list = lambda first_cate, second_cate, pn: os.path.join(
             os.path.dirname(__file__),
-            f'csv/'
-            f'{datetime.datetime.now().year}/'
-            f'{datetime.datetime.now().month}/'
-            f'{datetime.datetime.now().day}/{first_cate}_{second_cate}_{pn}.txt'
+            f"csv/"
+            f"{datetime.datetime.now().year}/"
+            f"{datetime.datetime.now().month}/"
+            f"{datetime.datetime.now().day}/{first_cate}_{second_cate}_{pn}.txt",
         )
 
     async def grouping_id_downloader(self):
         if not self.fetch_grouping_id_ts:
             if os.path.exists(self.FilePath.fetch_grouping_id_ts):
-                async with aiofiles.open(self.FilePath.fetch_grouping_id_ts, 'r') as f:
+                async with aiofiles.open(self.FilePath.fetch_grouping_id_ts, "r") as f:
                     if content := await f.read():
                         try:
                             self.fetch_grouping_id_ts = int(content)
                         except Exception as e:
-                            self.log.error(f"读取文件{self.FilePath.fetch_grouping_id_ts}内容失败，{e}")
+                            self.log.error(
+                                f"读取文件{self.FilePath.fetch_grouping_id_ts}内容失败，{e}"
+                            )
                             self.fetch_grouping_id_ts = 0
                     else:
                         self.fetch_grouping_id_ts = 0
         if int(time.time()) - self.fetch_grouping_id_ts < 3 * 24 * 60 * 60:
-            self.log.info(f'grouping_id_downloader 未到更新时间')
+            self.log.info(f"grouping_id_downloader 未到更新时间")
             return
         all_grouping_ids_level_1 = await self.api.grouping_query_navigation()
-        dataList = all_grouping_ids_level_1.json().get('data', {}).get('dataList', [])  # level 1的分类不需要动
+        dataList = (
+            all_grouping_ids_level_1.json().get("data", {}).get("dataList", [])
+        )  # level 1的分类不需要动
         await self.sql_helper.bulk_upsert_grouping_info(dataList)
         for grouping_id_level_1 in dataList:
-            grouping_id = grouping_id_level_1.get('groupingId')
-            navigationId = grouping_id_level_1.get('navigationId')
-            grouping_id_level_2 = await self.api.grouping_query_children(grouping_id, navigationId)
-            level_2_data_list = grouping_id_level_2.json().get('data', {})
+            grouping_id = grouping_id_level_1.get("groupingId")
+            navigationId = grouping_id_level_1.get("navigationId")
+            grouping_id_level_2 = await self.api.grouping_query_children(
+                grouping_id, navigationId
+            )
+            level_2_data_list = grouping_id_level_2.json().get("data", {})
             [x.update({"parentGroupingId": grouping_id}) for x in level_2_data_list]
             await self.sql_helper.bulk_upsert_grouping_info(level_2_data_list)
             for item in level_2_data_list:
-                children = item.get('children')
-                [x.update({"parentGroupingId": item.get('groupingId')}) for x in children]
+                children = item.get("children")
+                [
+                    x.update({"parentGroupingId": item.get("groupingId")})
+                    for x in children
+                ]
                 await self.sql_helper.bulk_upsert_grouping_info(children)
             await asyncio.sleep(next(self.delay_gen))
-        self.log.info(f'grouping_id_downloader 完成')
-        async with aiofiles.open(self.FilePath.fetch_grouping_id_ts, 'w') as f:
+        self.log.info(f"grouping_id_downloader 完成")
+        async with aiofiles.open(self.FilePath.fetch_grouping_id_ts, "w") as f:
             await f.write(str(int(time.time())))
 
-    async def grouping_list_downloader(self, firstCategoryId, secondCategoryId, pageSize: int = 20):
+    async def grouping_list_downloader(
+        self, firstCategoryId, secondCategoryId, pageSize: int = 20
+    ):
         """
             直接按照二级分类底下的`全部`分类去爬取
         :param secondCategoryId: 一级大分类
@@ -120,43 +140,54 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
         :param pageSize:
         :return:
         """
-        task_progress = await self.sql_helper.get_or_create_task_progress(firstCategoryId, secondCategoryId)
+        task_progress = await self.sql_helper.get_or_create_task_progress(
+            firstCategoryId, secondCategoryId
+        )
         if task_progress.is_finished:
             start_page_num = 1
         else:
             start_page_num = task_progress.last_page_num
-        frontCategoryIds = await self.sql_helper.get_front_category_ids(firstCategoryId, secondCategoryId)
+        frontCategoryIds = await self.sql_helper.get_front_category_ids(
+            firstCategoryId, secondCategoryId
+        )
         hasNextPage = True
         while hasNextPage:
-            resp = await self.api.grouping_list(firstCategoryId, secondCategoryId, frontCategoryIds,
-                                                start_page_num, pageSize)
-            dataList = resp.json().get('data', {}).get('dataList', [])
-            self.log.debug(f'插入数据：{dataList}')
+            resp = await self.api.grouping_list(
+                firstCategoryId,
+                secondCategoryId,
+                frontCategoryIds,
+                start_page_num,
+                pageSize,
+            )
+            dataList = resp.json().get("data", {}).get("dataList", [])
+            self.log.debug(f"插入数据：{dataList}")
             if not dataList:
                 self.log.warning(
-                    f'数据内容为空：{firstCategoryId, secondCategoryId, frontCategoryIds, start_page_num, pageSize}')
+                    f"数据内容为空：{firstCategoryId, secondCategoryId, frontCategoryIds, start_page_num, pageSize}"
+                )
             await self.sql_helper.bulk_upsert_spu_info(dataList)
-            file_p = self.FilePath.grouping_data_list(firstCategoryId, secondCategoryId, start_page_num)
-            await asyncio.to_thread(
-                Path(file_p).parent.mkdir,
-                parents=True, exist_ok=True
+            file_p = self.FilePath.grouping_data_list(
+                firstCategoryId, secondCategoryId, start_page_num
             )
-            async with aiofiles.open(file_p, 'w') as f:
+            await asyncio.to_thread(
+                Path(file_p).parent.mkdir, parents=True, exist_ok=True
+            )
+            async with aiofiles.open(file_p, "w") as f:
                 await f.write(json.dumps(dataList, ensure_ascii=False))
-            hasNextPage = resp.json().get('data', {}).get('hasNextPage', False)
+            hasNextPage = resp.json().get("data", {}).get("hasNextPage", False)
             start_page_num += 1
             await self.sql_helper.update_task_progress(
                 first_category_id=firstCategoryId,
                 second_category_id=secondCategoryId,
                 new_page_num=start_page_num,
-                is_finished=not hasNextPage
+                is_finished=not hasNextPage,
             )
             await asyncio.sleep(next(self.delay_gen))
         await self.sql_helper.update_task_progress(
             first_category_id=firstCategoryId,
             second_category_id=secondCategoryId,
             new_page_num=start_page_num,
-            is_finished=True
+            is_finished=True,
         )
 
     async def main(self):
@@ -171,7 +202,8 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
             for task in self.unfinished_tasks:
                 await self.grouping_list_downloader(**task)  # 继续抓取逻辑
             self.task_params_list = await self.sql_helper.get_grouping_infos_by_level(
-                2)  # 只有2级分类的children可以对里面的内容访问，目前没有发现3级分类有children
+                2
+            )  # 只有2级分类的children可以对里面的内容访问，目前没有发现3级分类有children
             await self.run()
 
     async def get_status(self) -> ProgressStatusResp:
@@ -179,10 +211,11 @@ class SamsClubCrawler(UnlimitedCrawler[SamsClubCrawlerParams]):
             succ_count=self.stats_plugin.succ_count,
             start_ts=int(self.stats_plugin.start_time),
             total_num=len(self.task_params_list),
-            progress=0 if not self.task_params_list else self.stats_plugin.processed_items_count / len(
-                self.task_params_list),
+            progress=0
+            if not self.task_params_list
+            else self.stats_plugin.processed_items_count / len(self.task_params_list),
             is_running=self.stats_plugin.is_running,
-            update_ts=int(self.stats_plugin.last_update_time)  # 最后更新时间
+            update_ts=int(self.stats_plugin.last_update_time),  # 最后更新时间
         )
 
 
@@ -195,6 +228,7 @@ class SamsClubSPUDetailCrawlerParams(CustomBaseModelHashable):
 
 class SamsClubSPUDetailCrawler(UnlimitedCrawler[SamsClubSPUDetailCrawlerParams]):
     Config = SamsClubSPUDetailCrawlerConfig
+
     def __init__(self):
         self.api = sams_club_api
         # 设置配置
@@ -216,18 +250,22 @@ class SamsClubSPUDetailCrawler(UnlimitedCrawler[SamsClubSPUDetailCrawlerParams])
     async def is_stop(self) -> bool:
         return False
 
-    async def key_params_gen(self, params=None) -> AsyncGenerator[SamsClubSPUDetailCrawlerParams, None]:
-        is_put_on_sale_spu_ids = await self.sql_helper.get_spu_ids_by_is_put_on_sale(is_put_on_sale=True)
+    async def key_params_gen(
+        self, params=None
+    ) -> AsyncGenerator[SamsClubSPUDetailCrawlerParams, None]:
+        is_put_on_sale_spu_ids = await self.sql_helper.get_spu_ids_by_is_put_on_sale(
+            is_put_on_sale=True
+        )
         for spu_id in is_put_on_sale_spu_ids:
-            yield SamsClubSPUDetailCrawlerParams(
-                spu_id=spu_id
-            )
+            yield SamsClubSPUDetailCrawlerParams(spu_id=spu_id)
             await asyncio.sleep(next(self.delay_gen))
 
-    async def handle_fetch(self, params: SamsClubSPUDetailCrawlerParams) -> WorkerStatus | Any:
+    async def handle_fetch(
+        self, params: SamsClubSPUDetailCrawlerParams
+    ) -> WorkerStatus | Any:
         spu_data_resp = await self.api.spu_query_detail(params.spu_id)
         spu_data_json = spu_data_resp.json()
-        spu_detail_data = spu_data_json.get('data')
+        spu_detail_data = spu_data_json.get("data")
         await self.sql_helper.bulk_upsert_spu_info([spu_detail_data])
         return WorkerStatus.complete
 

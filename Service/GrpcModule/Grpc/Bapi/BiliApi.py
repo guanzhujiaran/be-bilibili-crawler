@@ -21,7 +21,11 @@ from Service.GrpcModule.Grpc.Bapi.Constants import (
     URL_REPLY_MAIN,
 )
 from Service.GrpcModule.Grpc.Bapi.RequestHandler import prepare_request_data
-from Service.GrpcModule.Grpc.Bapi.BapiUtils import request_wrapper, appsign, gen_trace_id
+from Service.GrpcModule.Grpc.Bapi.BapiUtils import (
+    request_wrapper,
+    appsign,
+    gen_trace_id,
+)
 from Service.GrpcModule.Grpc.Bapi.models import LatestVersionBuild
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
@@ -466,7 +470,7 @@ async def resource_abtest_abserver(
 async def xlive_web_interface_v1_index_getWebAreaList(
     request_conf: RequestConf = RequestConf(
         is_use_custom_proxy=False, is_use_available_proxy=False
-    )
+    ),
 ):
     url = URL_GET_WEB_AREA_LIST
     cookie_data, headers = await prepare_request_data(
@@ -517,9 +521,7 @@ if __name__ == "__main__":
         print(resp)
 
     async def _test_get_reservation_info():
-        resp = await reserve_relation_info(
-            ids=5727405
-        )
+        resp = await reserve_relation_info(ids=5727405)
         print(resp)
 
     asyncio.run(_test_get_reservation_info())

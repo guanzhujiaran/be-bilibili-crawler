@@ -6,7 +6,7 @@ Base = declarative_base()
 
 
 class TFEEDDATA(Base):
-    __tablename__ = 'T_FEEDDATA'
+    __tablename__ = "T_FEEDDATA"
 
     pk = mapped_column(Integer, primary_key=True)
     id = mapped_column(Integer, unique=True)

@@ -33,12 +33,12 @@ async def client(app):
 
 
 class TestIPInfo:
-
     @pytest.mark.asyncio
     async def test_get(self, client):
         with mock.patch(
             "controller.v1.ip_info.get_ip_info.get_ipv6_from_redis",
-            new_callable=mock.AsyncMock, return_value="2001:db8::1",
+            new_callable=mock.AsyncMock,
+            return_value="2001:db8::1",
         ):
             response = await client.get("/api/v1/ip_info/get")
         assert response.status_code == 200
@@ -48,7 +48,8 @@ class TestIPInfo:
     async def test_get_empty(self, client):
         with mock.patch(
             "controller.v1.ip_info.get_ip_info.get_ipv6_from_redis",
-            new_callable=mock.AsyncMock, return_value=None,
+            new_callable=mock.AsyncMock,
+            return_value=None,
         ):
             response = await client.get("/api/v1/ip_info/get")
         assert response.status_code == 200
@@ -61,7 +62,6 @@ class TestIPInfo:
 
 
 class TestDamoML:
-
     @pytest.mark.asyncio
     async def test_semantic_get(self, client):
         response = await client.get("/damo/semantic?query=你好")
@@ -91,7 +91,6 @@ class TestDamoML:
 
 
 class TestRpcInfo:
-
     @pytest.mark.asyncio
     async def test_get_methods(self, client):
         response = await client.get("/api/v1/rpc/methods")
@@ -107,11 +106,12 @@ class TestRpcInfo:
 
 
 class TestSamsClub:
-
     @pytest.mark.asyncio
     async def test_set_new_auth_token(self, client):
         # auth_token: str (无 Body 注解 → FastAPI 当作 query parameter)
-        with mock.patch("controller.v1.samsClub.samsClubController.sams_club_crawler") as mock_cr:
+        with mock.patch(
+            "controller.v1.samsClub.samsClubController.sams_club_crawler"
+        ) as mock_cr:
             mock_cr.api.update_auth_token = mock.AsyncMock()
             response = await client.post(
                 "/api/v1/samsClub/set_new_auth_token?auth_token=new_token_123",
@@ -127,8 +127,12 @@ class TestSamsClub:
     @pytest.mark.asyncio
     async def test_api_status(self, client):
         import datetime
-        with mock.patch("controller.v1.samsClub.samsClubController.sams_club_crawler") as mock_cr:
+
+        with mock.patch(
+            "controller.v1.samsClub.samsClubController.sams_club_crawler"
+        ) as mock_cr:
             from Service.samsclub.api.samsclub_api import SamsClubApiStatus
+
             mock_cr.api.status = SamsClubApiStatus(
                 token="test_token",
                 token_stat="有效",
@@ -147,12 +151,13 @@ STAT = "/api/v1/lottery_database/bili"
 
 
 class TestLotteryStatistic:
-
     @pytest.mark.asyncio
     async def test_lottery_hof_basic(self, client):
         """验证抽奖统计路由存在（响应非 404）"""
         response = await client.get(f"{STAT}/lottery_hof/official?rank_type=winners")
-        assert response.status_code != 404, f"Route should exist, got {response.status_code}"
+        assert response.status_code != 404, (
+            f"Route should exist, got {response.status_code}"
+        )
 
     @pytest.mark.asyncio
     async def test_lottery_hof_missing_rank_type(self, client):
@@ -161,7 +166,9 @@ class TestLotteryStatistic:
 
     @pytest.mark.asyncio
     async def test_lottery_result(self, client):
-        response = await client.get(f"{STAT}/lottery_result?uid=12345&lot_type=official&rank_type=winners")
+        response = await client.get(
+            f"{STAT}/lottery_result?uid=12345&lot_type=official&rank_type=winners"
+        )
         assert response.status_code != 404
 
     @pytest.mark.asyncio
@@ -179,13 +186,16 @@ ZHUANLAN = "/api/v1/lottery_database/bili/zhuanlan"
 
 
 class TestZhuanlan:
-
     @pytest.mark.asyncio
     async def test_lottery_article_endpoint_exists(self, client):
         """验证专栏接口路由存在（非 404）"""
-        response = await client.post(f"{ZHUANLAN}/lotteryArticle",
-                                     json={"abstract_msg": "测试", "save_to_local_file": False})
-        assert response.status_code != 404, f"Route should exist, got {response.status_code}"
+        response = await client.post(
+            f"{ZHUANLAN}/lotteryArticle",
+            json={"abstract_msg": "测试", "save_to_local_file": False},
+        )
+        assert response.status_code != 404, (
+            f"Route should exist, got {response.status_code}"
+        )
 
     @pytest.mark.asyncio
     async def test_lottery_article_default_abstract(self, client):

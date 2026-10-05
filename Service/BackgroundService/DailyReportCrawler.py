@@ -8,13 +8,13 @@ from log.base_log import pushme_logger
 
 # 需要监控卡住状态的爬虫调度器名称（官方抽奖 + 第三方爬虫）
 _MONITORED_CRAWLER_NAMES = {
-    "GET_RESERVE_INFO",        # 预约抽奖
-    "GET_DYN",                 # 动态抽奖
-    "GET_TOPIC",               # 话题抽奖
+    "GET_RESERVE_INFO",  # 预约抽奖
+    "GET_DYN",  # 动态抽奖
+    "GET_TOPIC",  # 话题抽奖
     "REFRESH_BILI_LOTDATA_DATABASE",  # 刷新B站抽奖数据库
-    "LOTTERY_API_ROBOT_DYN_SCHEDULER",    # 官方动态抽奖API
+    "LOTTERY_API_ROBOT_DYN_SCHEDULER",  # 官方动态抽奖API
     "LOTTERY_API_ROBOT_RESERVE_SCHEDULER",  # 官方预约抽奖API
-    "SAMSCCLUB_SCHEDULER",     # 山姆会员店（第三方）
+    "SAMSCCLUB_SCHEDULER",  # 山姆会员店（第三方）
     "SAMSCCLUB_SPU_DETAIL_SCHEDULER",  # 山姆SPU详情（第三方）
 }
 
@@ -32,11 +32,15 @@ class CrawlerStuckChecker:
         result: dict[str, GenericCrawlerScheduler] = {}
         members = inspect.getmembers(background_service)
         for name, value in members:
-            if name in _MONITORED_CRAWLER_NAMES and isinstance(value, GenericCrawlerScheduler):
+            if name in _MONITORED_CRAWLER_NAMES and isinstance(
+                value, GenericCrawlerScheduler
+            ):
                 result[name] = value
         return result
 
-    def _get_stats_plugin(self, scheduler: GenericCrawlerScheduler) -> StatsPlugin | None:
+    def _get_stats_plugin(
+        self, scheduler: GenericCrawlerScheduler
+    ) -> StatsPlugin | None:
         """从调度器中获取 StatsPlugin"""
         for plugin in scheduler.crawler.plugins:
             if isinstance(plugin, StatsPlugin):
@@ -76,7 +80,7 @@ class CrawlerStuckChecker:
                     await a_pushme(
                         title=f"爬虫恢复通知",
                         content=f"✅ 爬虫 **{name}** 已恢复正常运行\n\n恢复时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                        push_type='markdown',
+                        push_type="markdown",
                     )
 
             pushme_logger.debug(
@@ -100,7 +104,7 @@ class CrawlerStuckChecker:
         await a_pushme(
             title=f"爬虫卡住告警 - {names_str}",
             content=content,
-            push_type='markdown',
+            push_type="markdown",
         )
 
 

@@ -6,7 +6,9 @@ from sqlalchemy import create_engine
 
 import CONFIG
 
-SQLURI = CONFIG.database.MYSQL.bili_db_URI.replace('+aiomysql', '+pymysql').replace('&autocommit=true', '')
+SQLURI = CONFIG.database.MYSQL.bili_db_URI.replace("+aiomysql", "+pymysql").replace(
+    "&autocommit=true", ""
+)
 
 engine = create_engine(SQLURI, echo=True)
 DbSession = sessionmaker(bind=engine)
@@ -17,30 +19,39 @@ Base = declarative_base()
 
 # 一对多的情况下外键设置在一的那张表上，对上多的那张表的主键即可！
 
+
 class T_topic(Base):
-    __tablename__ = 't_topic'
-    topic_id = mapped_column(Integer, unique=True, primary_key=True, autoincrement=False)
+    __tablename__ = "t_topic"
+    topic_id = mapped_column(
+        Integer, unique=True, primary_key=True, autoincrement=False
+    )
     raw_JSON = mapped_column(JSON)
-    click_area_card_id = mapped_column(ForeignKey('t_click_area_card.id'), )
-    functional_card_id = mapped_column(ForeignKey('t_functional_card.id'), )
-    topic_detail_id = mapped_column(ForeignKey('t_top_details.id'), )
+    click_area_card_id = mapped_column(
+        ForeignKey("t_click_area_card.id"),
+    )
+    functional_card_id = mapped_column(
+        ForeignKey("t_functional_card.id"),
+    )
+    topic_detail_id = mapped_column(
+        ForeignKey("t_top_details.id"),
+    )
 
 
 class T_click_area_card(Base):
-    __tablename__ = 't_click_area_card'
+    __tablename__ = "t_click_area_card"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     json_data = mapped_column(JSON)
 
 
 class T_functional_card(Base):
-    __tablename__ = 't_functional_card'
+    __tablename__ = "t_functional_card"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
-    traffic_card_id = mapped_column(ForeignKey('t_traffic_card.id'))
+    traffic_card_id = mapped_column(ForeignKey("t_traffic_card.id"))
     json_data = mapped_column(JSON)
 
 
 class T_traffic_card(Base):
-    __tablename__ = 't_traffic_card'
+    __tablename__ = "t_traffic_card"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     benefit_point = mapped_column(TEXT)
     card_desc = mapped_column(TEXT)
@@ -51,24 +62,25 @@ class T_traffic_card(Base):
 
 
 class T_top_details(Base):
-    __tablename__ = 't_top_details'
+    __tablename__ = "t_top_details"
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     close_pub_layer_entry = mapped_column(Boolean)
     has_create_jurisdiction = mapped_column(Boolean)
     operation_content = mapped_column(JSON)
     word_color = mapped_column(Integer)
-    topic_item_id = mapped_column(ForeignKey('t_topic_item.pkid'))
-    topic_creator_id = mapped_column(ForeignKey('t_topic_creator.uid'))# many
+    topic_item_id = mapped_column(ForeignKey("t_topic_item.pkid"))
+    topic_creator_id = mapped_column(ForeignKey("t_topic_creator.uid"))  # many
+
 
 class T_topic_creator(Base):
-    __tablename__ = 't_topic_creator'
+    __tablename__ = "t_topic_creator"
     face = mapped_column(TEXT)
     name = mapped_column(TEXT)
-    uid = mapped_column(BigInteger,primary_key=True,autoincrement=False) # 1
+    uid = mapped_column(BigInteger, primary_key=True, autoincrement=False)  # 1
 
 
 class T_topic_item(Base):
-    __tablename__ = 't_topic_item'
+    __tablename__ = "t_topic_item"
     pkid = mapped_column(Integer, primary_key=True, autoincrement=True)
     back_color = mapped_column(TEXT)
     ctime = mapped_column(Integer)
@@ -86,7 +98,7 @@ class T_topic_item(Base):
     view = mapped_column(BigInteger)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 创建数据库命令
     Base.metadata.create_all(checkfirst=True, bind=engine)
-    os.system(f'sqlacodegen_v2 {SQLURI} > models.py')
+    os.system(f"sqlacodegen_v2 {SQLURI} > models.py")

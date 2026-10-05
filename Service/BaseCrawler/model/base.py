@@ -15,7 +15,8 @@ class WorkerStatus(IntEnumAutoDoc):
 
     pending = 3
     fail = 4
-    timeoutError=5
+    timeoutError = 5
+
 
 class WorkerModel(CustomGenericModel, Generic[ParamsType]):
     params: ParamsType | None = None

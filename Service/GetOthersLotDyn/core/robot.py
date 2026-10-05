@@ -24,6 +24,7 @@ from Service.BaseCrawler.config import GetOthersLotDynRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 from pydantic import Field
 
+
 class RobotTaskParams(CustomBaseModelHashable):
     """任务参数包装：直接持有领域对象引用，交由 UnlimitedCrawler 的 worker 池处理"""
 
@@ -269,8 +270,8 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         await SqlHelper.addLotMainInfo(self.nowRound)
         # 抽奖获取结束 尝试将这一轮获取到的非图片抽奖添加进数据库
 
-    _MQ_POLL_INTERVAL = 30        # 秒：轮询 extra_info 间隔
-    _MQ_POLL_MAX_IDLE = 360       # 秒：连续无新增记录时放弃等待
+    _MQ_POLL_INTERVAL = 30  # 秒：轮询 extra_info 间隔
+    _MQ_POLL_MAX_IDLE = 360  # 秒：连续无新增记录时放弃等待
     _MQ_POLL_TOTAL_TIMEOUT = 900  # 秒：总超时（15 分钟）
 
     async def _after_scrapy(self):
@@ -288,13 +289,19 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
         # 官方/预约/充电抽奖不需要等 MQ，直接确认
         official_dyns = [
-            x for x in all_dyn_this_round
-            if x.officialLotType and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value
+            x
+            for x in all_dyn_this_round
+            if x.officialLotType
+            and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value
         ]
         # 普通动态，需要等 MQ 消费者写入 t_lot_extra_info
         common_dyns = [
-            x for x in all_dyn_this_round
-            if not (x.officialLotType and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value)
+            x
+            for x in all_dyn_this_round
+            if not (
+                x.officialLotType
+                and x.officialLotType != OfficialLotType.lot_dyn_origin_dyn.value
+            )
         ]
 
         # 轮询等待 MQ 消费者处理完成
@@ -312,7 +319,8 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
                 if not pending:
                     get_others_lot_log.info(
-                        f"MQ 消费者处理完成，全部 {len(common_dyn_ids)} 条已入库，耗时 {elapsed:.0f}s")
+                        f"MQ 消费者处理完成，全部 {len(common_dyn_ids)} 条已入库，耗时 {elapsed:.0f}s"
+                    )
                     break
 
                 # 有进展则重置空闲计时
@@ -325,18 +333,21 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 if elapsed > self._MQ_POLL_TOTAL_TIMEOUT:
                     get_others_lot_log.warning(
                         f"MQ 消费者处理超时（{elapsed:.0f}s > {self._MQ_POLL_TOTAL_TIMEOUT}s），"
-                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待")
+                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待"
+                    )
                     break
 
                 if idle > self._MQ_POLL_MAX_IDLE:
                     get_others_lot_log.warning(
                         f"MQ 消费者连续 {idle:.0f}s 无进展，"
-                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待")
+                        f"仍有 {len(pending)}/{len(common_dyn_ids)} 条未处理，放弃等待"
+                    )
                     break
 
                 get_others_lot_log.info(
                     f"等待 MQ 消费者处理... ({len(extra_map)}/{len(common_dyn_ids)} 已入库，"
-                    f"已等待 {elapsed:.0f}s，无进展 {idle:.0f}s)")
+                    f"已等待 {elapsed:.0f}s，无进展 {idle:.0f}s)"
+                )
                 await asyncio.sleep(self._MQ_POLL_INTERVAL)
         else:
             extra_map = {}

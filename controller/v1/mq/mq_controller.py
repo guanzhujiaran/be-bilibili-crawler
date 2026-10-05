@@ -2,6 +2,7 @@
 注意事项:
 faststream的@router.publisher装饰器只允许和@router.subscriber装饰器同时使用,单独使用无效,必须通过包装好的router.broker发布消息.
 """
+
 from ApiRoutes import RouterPaths, RouterTags
 from datetime import datetime
 import time
@@ -162,7 +163,6 @@ async def _test_msg_pub(
     model = RabbitMQTestMsgModel(a=int(time.time()), b=ret, c={1: ret}, d=[ret])
     await BiliLotDataPublisher.pub_test_msg(model)
     return model
-
 
 
 __all__ = ["router"]

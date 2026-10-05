@@ -19,45 +19,53 @@ from Service.llm_service import (
     set_llm_apis,
     update_llm_api,
 )
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Service.GrpcModule.GrpcSrc.获取取关对象.GetRmFollowingListV2 import gmflv2
 from Service.MQ.message.message_pub import publish_message
-from Service.toutiao.src.FastApiReturns.SpaceFeedLotService.ToutiaoSpaceFeedLot import \
-    toutiaoSpaceFeedLotService
-from Service.zhihu.获取知乎抽奖想法.根据用户空间获取想法.GetMomentsByUser import zhihu_lotScrapy
+from Service.toutiao.src.FastApiReturns.SpaceFeedLotService.ToutiaoSpaceFeedLot import (
+    toutiaoSpaceFeedLotService,
+)
+from Service.zhihu.获取知乎抽奖想法.根据用户空间获取想法.GetMomentsByUser import (
+    zhihu_lotScrapy,
+)
 from CONFIG import LLMApiConfig, LLMApiConfigPatch, settings
 from Utils.推送.PushMe import a_pushme, server_label
 
 router = new_router()
 
 
-@router.get(RouterPaths.GET_LIVE_LOTS, name=RouterNames.GET_LIVE_LOTS, description='获取redis中的所有直播相关抽奖信息', )
-async def v1_get_live_lots(
-        get_all: bool = False
-):
+@router.get(
+    RouterPaths.GET_LIVE_LOTS,
+    name=RouterNames.GET_LIVE_LOTS,
+    description="获取redis中的所有直播相关抽奖信息",
+)
+async def v1_get_live_lots(get_all: bool = False):
     return []
 
 
 # region 测试类
 
+
 @router.get(RouterPaths.TEST, name=RouterNames.TEST)
 async def app_avaliable_api():
     await asyncio.sleep(1)
-    return 'Service is running!'
+    return "Service is running!"
 
 
 @router.get(RouterPaths.GC, name=RouterNames.GC)
 async def app_avaliable_api():
     await asyncio.to_thread(gc.collect)
-    return 'gc完成！'
+    return "gc完成！"
 
 
 @router.get(
     RouterPaths.GET_LLM_STATS,
     name=RouterNames.GET_LLM_STATS,
     response_model=list[dict],
-    description='获取所有云端 LLM 实例的使用统计：调用次数、成功/失败次数、是否可用、'
-                '速率（最近60秒调用数/平均耗时）、最后使用时间戳、token 消耗量等',
+    description="获取所有云端 LLM 实例的使用统计：调用次数、成功/失败次数、是否可用、"
+    "速率（最近60秒调用数/平均耗时）、最后使用时间戳、token 消耗量等",
 )
 async def api_get_llm_stats():
     return get_llm_stats()
@@ -65,9 +73,9 @@ async def api_get_llm_stats():
 
 # region 云端 LLM 配置 CRUD（内部接口：路径不在网关白名单内，故不对外公开）
 _LLM_CONFIG_DESC = (
-    '【内部接口】云端 LLM 配置在线 CRUD，修改立即生效、无需重启服务；'
-    '仅运行时内存生效，不写回 .env，服务重启后回退为环境变量中的 llm_apis；'
-    'token 一律脱敏返回，路径不在网关转发白名单内，不对外公开。'
+    "【内部接口】云端 LLM 配置在线 CRUD，修改立即生效、无需重启服务；"
+    "仅运行时内存生效，不写回 .env，服务重启后回退为环境变量中的 llm_apis；"
+    "token 一律脱敏返回，路径不在网关转发白名单内，不对外公开。"
 )
 
 
@@ -85,7 +93,7 @@ def _run_llm_config_op(op):
     RouterPaths.LLM_CONFIG,
     name=RouterNames.GET_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 读取全部配置（列表）。',
+    description=f"{_LLM_CONFIG_DESC} 读取全部配置（列表）。",
 )
 async def api_list_llm_config():
     return _run_llm_config_op(get_llm_configs)
@@ -95,10 +103,10 @@ async def api_list_llm_config():
     RouterPaths.LLM_CONFIG_ITEM,
     name=RouterNames.GET_LLM_CONFIG_ITEM,
     response_model=dict,
-    description=f'{_LLM_CONFIG_DESC} 按索引读取单条配置。',
+    description=f"{_LLM_CONFIG_DESC} 按索引读取单条配置。",
 )
 async def api_get_llm_config(
-    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
 ):
     return _run_llm_config_op(lambda: get_llm_config(index))
 
@@ -107,7 +115,7 @@ async def api_get_llm_config(
     RouterPaths.LLM_CONFIG,
     name=RouterNames.CREATE_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 新增一条配置（追加到列表末尾）。',
+    description=f"{_LLM_CONFIG_DESC} 新增一条配置（追加到列表末尾）。",
 )
 async def api_create_llm_config(cfg: LLMApiConfig = Body(...)):
     return _run_llm_config_op(lambda: create_llm_api(cfg))
@@ -117,7 +125,7 @@ async def api_create_llm_config(cfg: LLMApiConfig = Body(...)):
     RouterPaths.LLM_CONFIG,
     name=RouterNames.REPLACE_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 整体替换全部配置（传空列表 [] 表示清空）。',
+    description=f"{_LLM_CONFIG_DESC} 整体替换全部配置（传空列表 [] 表示清空）。",
 )
 async def api_replace_llm_config(apis: list[LLMApiConfig] = Body(...)):
     return _run_llm_config_op(lambda: set_llm_apis(apis))
@@ -127,10 +135,10 @@ async def api_replace_llm_config(apis: list[LLMApiConfig] = Body(...)):
     RouterPaths.LLM_CONFIG_ITEM,
     name=RouterNames.UPDATE_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 整体更新指定索引的单条配置（需提供完整字段）。',
+    description=f"{_LLM_CONFIG_DESC} 整体更新指定索引的单条配置（需提供完整字段）。",
 )
 async def api_update_llm_config(
-    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
     cfg: LLMApiConfig = Body(...),
 ):
     return _run_llm_config_op(lambda: update_llm_api(index, cfg))
@@ -140,10 +148,10 @@ async def api_update_llm_config(
     RouterPaths.LLM_CONFIG_ITEM,
     name=RouterNames.PATCH_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 部分更新指定索引的单条配置（仅传需要修改的字段）。',
+    description=f"{_LLM_CONFIG_DESC} 部分更新指定索引的单条配置（仅传需要修改的字段）。",
 )
 async def api_patch_llm_config(
-    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
     patch: LLMApiConfigPatch = Body(...),
 ):
     return _run_llm_config_op(lambda: patch_llm_api(index, patch))
@@ -153,12 +161,14 @@ async def api_patch_llm_config(
     RouterPaths.LLM_CONFIG_ITEM,
     name=RouterNames.DELETE_LLM_CONFIG,
     response_model=list[dict],
-    description=f'{_LLM_CONFIG_DESC} 删除指定索引的单条配置。',
+    description=f"{_LLM_CONFIG_DESC} 删除指定索引的单条配置。",
 )
 async def api_delete_llm_config(
-    index: int = Path(..., ge=0, description='配置索引（从 0 开始）'),
+    index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
 ):
     return _run_llm_config_op(lambda: delete_llm_api(index))
+
+
 # endregion
 
 
@@ -166,8 +176,8 @@ async def api_delete_llm_config(
     RouterPaths.TEST_PUSH_ERROR,
     name=RouterNames.TEST_PUSH_ERROR,
     tags=[RouterTags.MESSAGE_SERVICE],
-    description='测试接口：故意抛错，并向消息推送微服务(message-service)发送一条测试告警，'
-                '用于验证「异常 -> RabbitMQ(message 队列) -> message-service -> PushMe/PushPlus」推送链路是否正常',
+    description="测试接口：故意抛错，并向消息推送微服务(message-service)发送一条测试告警，"
+    "用于验证「异常 -> RabbitMQ(message 队列) -> message-service -> PushMe/PushPlus」推送链路是否正常",
 )
 async def test_push_error():
     """故意抛错，把测试告警直接发布到 message-service，验证消息推送微服务是否正常工作。
@@ -204,8 +214,14 @@ async def test_push_error():
 
 # endregion
 
+
 # region 基于Grpc api的功能实现
-@router.post(RouterPaths.POST_RM_FOLLOWING_LIST, name=RouterNames.POST_RM_FOLLOWING_LIST, response_model=list, description='获取需要取关的up主列表')
+@router.post(
+    RouterPaths.POST_RM_FOLLOWING_LIST,
+    name=RouterNames.POST_RM_FOLLOWING_LIST,
+    response_model=list,
+    description="获取需要取关的up主列表",
+)
 async def v1_post_rm_following_list(data: list[int | str] = Body()):
     """
     取关接口 调用的是b站appp端的grpc协议接口，没那么容易被风控
@@ -217,6 +233,7 @@ async def v1_post_rm_following_list(data: list[int | str] = Body()):
 
 # endregion
 
+
 # region 获取抽奖内容接口
 @router.post(RouterPaths.UPSERT_LOT_DETAIL, name=RouterNames.UPSERT_LOT_DETAIL)
 async def upsert_lot_detail(request_body: dict):
@@ -226,57 +243,65 @@ async def upsert_lot_detail(request_body: dict):
 
 @router.get(RouterPaths.GET_OTHERS_LOT_DYN, name=RouterNames.GET_OTHERS_LOT_DYN)
 async def api_get_others_lot_dyn():
-    myfastapi_logger.error('GetOthersLotDyn 开始获取B站其他用户的动态抽奖！')
+    myfastapi_logger.error("GetOthersLotDyn 开始获取B站其他用户的动态抽奖！")
     result = await get_others_lot_dyn.get_new_dyn()
     return result
 
 
-@router.get(RouterPaths.GET_OTHERS_OFFICIAL_LOT_DYN, name=RouterNames.GET_OTHERS_OFFICIAL_LOT_DYN)
+@router.get(
+    RouterPaths.GET_OTHERS_OFFICIAL_LOT_DYN,
+    name=RouterNames.GET_OTHERS_OFFICIAL_LOT_DYN,
+)
 async def api_get_others_official_lot_dyn():
-    myfastapi_logger.error('GetOthersLotDyn 开始获取别人的官方动态抽奖！')
+    myfastapi_logger.error("GetOthersLotDyn 开始获取别人的官方动态抽奖！")
     return await get_others_lot_dyn.get_official_lot_dyn()
 
 
 @router.get(RouterPaths.GET_OTHERS_BIG_LOT, name=RouterNames.GET_OTHERS_BIG_LOT)
 async def api_get_others_big_lot():
-    myfastapi_logger.error('GetOthersLotDyn 开始获取别人的大奖！')
+    myfastapi_logger.error("GetOthersLotDyn 开始获取别人的大奖！")
     return await get_others_lot_dyn.get_unignore_Big_lot_dyn()
 
 
 @router.get(RouterPaths.GET_OTHERS_BIG_RESERVE, name=RouterNames.GET_OTHERS_BIG_RESERVE)
 async def api_get_others_big_reserve() -> list[reserveInfo]:
-    myfastapi_logger.error('GetOthersLotDyn 开始获取重要的预约抽奖！')
+    myfastapi_logger.error("GetOthersLotDyn 开始获取重要的预约抽奖！")
     result = await get_others_lot_dyn.get_unignore_reserve_lot_space()
     reserveInfos = []
     for i in result:  # 对df的每一行数据访问
         reserve_info = reserveInfo(
-            reserve_url=f'https://space.bilibili.com/{str(i.upmid)}/dynamic',
+            reserve_url=f"https://space.bilibili.com/{str(i.upmid)}/dynamic",
             etime=i.etime,
             lottery_prize_info=i.text,
             jump_url=i.jumpUrl,
             reserve_sid=i.sid,
-            available=True
+            available=True,
         )
         reserveInfos.append(reserve_info)
     return reserveInfos
 
 
-@router.get(RouterPaths.ZHIHU_GET_OTHERS_LOT_PINS, name=RouterNames.ZHIHU_GET_OTHERS_LOT_PINS, description='获取知乎抽奖内容，返回url列表，直接访问即可')
+@router.get(
+    RouterPaths.ZHIHU_GET_OTHERS_LOT_PINS,
+    name=RouterNames.ZHIHU_GET_OTHERS_LOT_PINS,
+    description="获取知乎抽奖内容，返回url列表，直接访问即可",
+)
 async def zhuhu_avaliable_api():
-    myfastapi_logger.info('开始获取zhihu抽奖内容')
+    myfastapi_logger.info("开始获取zhihu抽奖内容")
     resp = await zhihu_lotScrapy.api_get_all_pins()
-    await a_pushme(f'获取到知乎抽奖{len(resp)}条', '\n'.join(resp)
-                   )
+    await a_pushme(f"获取到知乎抽奖{len(resp)}条", "\n".join(resp))
     return resp
 
 
-@router.get(RouterPaths.TOUTIAO_GET_OTHERS_LOT_IDS, name=RouterNames.TOUTIAO_GET_OTHERS_LOT_IDS)
+@router.get(
+    RouterPaths.TOUTIAO_GET_OTHERS_LOT_IDS, name=RouterNames.TOUTIAO_GET_OTHERS_LOT_IDS
+)
 async def toutiao_get_others_lot_ids():
-    myfastapi_logger.info('开始获取toutiao抽奖内容')
+    myfastapi_logger.info("开始获取toutiao抽奖内容")
     result = await toutiaoSpaceFeedLotService.main()
     result = result if result else []
-    await a_pushme(f'获取到头条抽奖{len(result)}条', '\n'.join(result)
-                   )
+    await a_pushme(f"获取到头条抽奖{len(result)}条", "\n".join(result))
     return result
+
 
 # endregion

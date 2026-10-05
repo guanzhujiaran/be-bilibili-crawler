@@ -8,6 +8,7 @@ from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus
 from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 from Models.base.custom_pydantic import CustomBaseModelHashable
 
+
 class TestParamsType(CustomBaseModelHashable):
     a: int
     test_type: Literal["normal", "timeout", "error"] = (
@@ -20,6 +21,7 @@ class TestParamsType(CustomBaseModelHashable):
 
 class TestCrawlerConfig(CrawlerConfig):
     """测试爬虫配置"""
+
     model_config = ConfigDict(extra="ignore")
     max_sem: int = 2
     requeue_on_fetch_fail: bool = True
@@ -33,6 +35,7 @@ class TestCrawlerConfig(CrawlerConfig):
 
 class TestCrawler(UnlimitedCrawler):
     Config = TestCrawlerConfig
+
     def __init__(self, gen_num: int = 1000000):
         # 配置（max_sem / logger / 插件等）统一由 TestCrawlerConfig 控制；
         # 其中的 StatsPlugin 会按 PluginConfig.plugin_name（"stats_plugin"）自动绑定到 self
@@ -52,12 +55,14 @@ class TestCrawler(UnlimitedCrawler):
 
     async def handle_fetch(self, params: TestParamsType) -> WorkerStatus:
         # 保存原始的 test_type（只在第一次执行时保存）
-        self.log.info(f'处理任务:{params}')
+        self.log.info(f"处理任务:{params}")
         await asyncio.sleep(random.randint(0, 4))
         # 根据测试类型模拟不同的场景
         if params.test_type == "timeout":
             if self.worker_max_timeout:
-                await asyncio.sleep(random.randint(self.worker_max_timeout, self.worker_max_timeout+4))
+                await asyncio.sleep(
+                    random.randint(self.worker_max_timeout, self.worker_max_timeout + 4)
+                )
             raise asyncio.TimeoutError()
             return WorkerStatus.complete
         elif params.test_type == "error":
@@ -117,10 +122,10 @@ class TestCrawler(UnlimitedCrawler):
             ]
             for i, (value, test_type) in enumerate(test_cases):
                 print(
-                    f"[生成器] 准备 yield 第 {i+1} 个任务: a={value}, test_type={test_type}"
+                    f"[生成器] 准备 yield 第 {i + 1} 个任务: a={value}, test_type={test_type}"
                 )
                 yield TestParamsType(a=value, test_type=test_type)
-                print(f"[生成器] 完成 yield 第 {i+1} 个任务")
+                print(f"[生成器] 完成 yield 第 {i + 1} 个任务")
             print(f"[生成器] 所有任务已 yield，生成器结束")
             return
         else:

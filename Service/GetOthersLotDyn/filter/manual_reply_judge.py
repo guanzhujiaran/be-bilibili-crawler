@@ -3,6 +3,7 @@
 使用 MiniRacer 执行 JS 正则表达式判断动态内容是否需要人工回复。
 从 get_other_lot_main.py 中拆分出来，便于独立维护和测试。
 """
+
 from py_mini_racer import MiniRacer
 
 # 判断是否需要人工回复的 JS 函数
@@ -119,4 +120,4 @@ def judge_need_manual_reply(dynamic_content: str) -> bool:
     """
     if not dynamic_content:
         return False
-    return bool(manual_reply_judge.call('manual_reply_judge', dynamic_content))
+    return bool(manual_reply_judge.call("manual_reply_judge", dynamic_content))

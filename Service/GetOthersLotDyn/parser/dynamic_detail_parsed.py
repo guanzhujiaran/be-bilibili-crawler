@@ -2,6 +2,7 @@
 
 替代原先 `__solve_dynamic_item_detail` 返回的 dict 结构，避免字段混乱。
 """
+
 from typing import Any
 
 from pydantic import ConfigDict

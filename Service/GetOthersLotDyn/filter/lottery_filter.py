@@ -9,6 +9,7 @@
 2. push_lot_csv: 使用列表推导 + join 替代循环字符串拼接，减少中间字符串分配
 3. solve_return_lot: 使用 filter + sort 链式调用，逻辑更清晰
 """
+
 import time
 from typing import Sequence
 
@@ -48,9 +49,11 @@ def is_need_lot(lot_det: TLotdyninfo, get_dyn_ts: int) -> bool:
         return True
 
     # 官方抽奖类型直接过滤
-    if lot_type in [OfficialLotType.charge_lot.value,
-                   OfficialLotType.reserve_lot.value,
-                   OfficialLotType.official_lot.value]:
+    if lot_type in [
+        OfficialLotType.charge_lot.value,
+        OfficialLotType.reserve_lot.value,
+        OfficialLotType.official_lot.value,
+    ]:
         return False
 
     # 获取时间和发布时间间隔小于2小时的不按照评论转发数量过滤
@@ -83,8 +86,8 @@ async def push_lot_csv(title: str, content_list: list[TLotdyninfo]) -> None:
     :param title: 推送标题
     :param content_list: 抽奖动态列表
     """
-    tabletitle = '|动态链接<br>up昵称&#124;账号类型<br>发布时间<br>评论数&#124;转发数|动态内容|\n'
-    header = tabletitle + '|:---:|---|\n'
+    tabletitle = "|动态链接<br>up昵称&#124;账号类型<br>发布时间<br>评论数&#124;转发数|动态内容|\n"
+    header = tabletitle + "|:---:|---|\n"
 
     # 使用列表推导构建各行，最后 join，避免循环中反复拼接字符串
     rows = []
@@ -94,11 +97,12 @@ async def push_lot_csv(title: str, content_list: list[TLotdyninfo]) -> None:
         official_verify = i.isOfficialAccount
         pubtime = i.pubTime
         # 转义动态内容中的特殊字符
-        dyncontent = (i.dynContent
-                      .replace('\r', '')
-                      .replace('|', '&#124;')
-                      .replace('\n', '<br>')
-                      .replace('&', '&amp;'))
+        dyncontent = (
+            i.dynContent.replace("\r", "")
+            .replace("|", "&#124;")
+            .replace("\n", "<br>")
+            .replace("&", "&amp;")
+        )
         comment_count = i.commentCount
         rep_count = i.repostCount
         rows.append(
@@ -106,18 +110,19 @@ async def push_lot_csv(title: str, content_list: list[TLotdyninfo]) -> None:
             f"{pubtime}<br></br>{comment_count}&#124;{rep_count}|{dyncontent}|\n"
         )
 
-    content = header + ''.join(rows)
+    content = header + "".join(rows)
 
     try:
-        resp = await a_pushme(title, content, 'markdata')
-        get_others_lot_log.debug(f'PushMe推送成功，title={title}，status_code={resp.status_code}')
+        resp = await a_pushme(title, content, "markdata")
+        get_others_lot_log.debug(
+            f"PushMe推送成功，title={title}，status_code={resp.status_code}"
+        )
     except Exception as e:
-        get_others_lot_log.error(f'PushMe推送失败，title={title}\nerror={e}')
+        get_others_lot_log.error(f"PushMe推送失败，title={title}\nerror={e}")
 
 
 async def solve_return_lot(
-        time_limit: int | None = None,
-        get_dyn_ts: int = 0
+    time_limit: int | None = None, get_dyn_ts: int = 0
 ) -> list[dict]:
     if time_limit is None:
         time_limit = settings.get_others_lot.dyn_time_limit
@@ -129,16 +134,19 @@ async def solve_return_lot(
     :param get_dyn_ts: 上次获取动态的时间戳，用于 is_need_lot 过滤
     :return: 过滤后的抽奖动态列表（dict 格式）
     """
-    all_lot_det: Sequence[TLotdyninfo] = await SqlHelper.getAllLotDynByInsertTime(time_limit)
+    all_lot_det: Sequence[TLotdyninfo] = await SqlHelper.getAllLotDynByInsertTime(
+        time_limit
+    )
     # 使用 filter + sort 链式调用
     filtered_list: list[TLotdyninfo] = list(
-        filter(lambda x: is_need_lot(x, get_dyn_ts), all_lot_det))
+        filter(lambda x: is_need_lot(x, get_dyn_ts), all_lot_det)
+    )
     filtered_list.sort(key=lambda x: x.pubTime, reverse=True)
     # await push_lot_csv(
     #     f"一般动态抽奖信息【{len(filtered_list)}】条",
     #     filtered_list
     # )
-    get_others_lot_log.info(f'第三方抽奖动态过滤完成，共{len(filtered_list)}条有效抽奖')
+    get_others_lot_log.info(f"第三方抽奖动态过滤完成，共{len(filtered_list)}条有效抽奖")
     ret_list = [sqlalchemy_model_2_dict(x) for x in filtered_list]
     if ret_list:
         # await a_pushme(

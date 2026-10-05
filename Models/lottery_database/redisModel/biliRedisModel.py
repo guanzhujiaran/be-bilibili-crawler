@@ -1,4 +1,4 @@
-from bili_common.models import StrEnumAutoDoc,IntEnumAutoDoc
+from bili_common.models import StrEnumAutoDoc, IntEnumAutoDoc
 import json
 from typing import List
 from Utils.redisTool.RedisManager import RedisManagerBase

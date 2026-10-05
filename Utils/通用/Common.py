@@ -217,7 +217,9 @@ async def handle_sql_operational_error(func, log, err: OperationalError) -> bool
             await asyncio.sleep(120)
         case 1213:  # 死锁错误，随机等待后重试
             sleep_time = random.uniform(1, 5)  # 随机等待1-5秒
-            log.error(f"{func_name} \t死锁错误(1213): {err}, 将在{sleep_time:.2f}秒后重试")
+            log.error(
+                f"{func_name} \t死锁错误(1213): {err}, 将在{sleep_time:.2f}秒后重试"
+            )
             await asyncio.sleep(sleep_time)
         case 2013:  # mysql连接丢失(2013)，等待一段时间再重试
             log.error(f"{func_name} \tMySQL 连接丢失(2013)，等待后重试: {err}")

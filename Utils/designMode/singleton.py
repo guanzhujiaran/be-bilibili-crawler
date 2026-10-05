@@ -1,8 +1,9 @@
 import asyncio
 
 _lock = asyncio.Lock()
-class Singleton:
 
+
+class Singleton:
     """
     单例类装饰器，可以用于想实现单例的任何类。注意，不能用于多线程环境。
     使用方式
@@ -23,9 +24,11 @@ class Singleton:
         print(s1 is s2)
 
     """
+
     _instance = None
+
     def __init__(self, cls):
-        """ 需要的参数是一个类 """
+        """需要的参数是一个类"""
         self._cls = cls
 
     def Instance(self):
@@ -38,8 +41,9 @@ class Singleton:
                     self._instance = self._cls()
                     return self._instance
         return self._instance
+
     def __call__(self):
-        raise TypeError('Singletons must be accessed through `Instance()`.')
+        raise TypeError("Singletons must be accessed through `Instance()`.")
 
     def __instancecheck__(self, inst):
         return isinstance(inst, self._decorated)

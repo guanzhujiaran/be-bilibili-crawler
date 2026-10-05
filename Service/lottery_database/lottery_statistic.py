@@ -34,14 +34,15 @@ async def GetLotStatisticInfo(
     :return:
     """
     dyn_lot_sync_ts = await lottery_data_statistic_redis.get_sync_ts(lot_type)
-    bili_user_info_list, total = (
-        await lottery_data_statistic_sql_helper.get_lot_prize_count(
-            offset=offset,
-            limit=limit,
-            date=date,
-            lot_type=lot_type,
-            rank_type=rank_type,
-        )
+    (
+        bili_user_info_list,
+        total,
+    ) = await lottery_data_statistic_sql_helper.get_lot_prize_count(
+        offset=offset,
+        limit=limit,
+        date=date,
+        lot_type=lot_type,
+        rank_type=rank_type,
     )
     return BiliLotStatisticInfoResp(
         winners=[

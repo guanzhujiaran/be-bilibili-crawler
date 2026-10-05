@@ -42,9 +42,7 @@ from Utils.推送.PushMe import a_push_error
 
 T = TypeVar("T")
 # _do_extract 的结果模型类型：随调用入口在两种结果模型间切换
-_TResult = TypeVar(
-    "_TResult", bound=PrizeExtractResult | OfficialPrizeExtractResult
-)
+_TResult = TypeVar("_TResult", bound=PrizeExtractResult | OfficialPrizeExtractResult)
 # 繁体转简体转换器（线程安全，可全局复用）
 _t2s_converter = opencc.OpenCC("t2s.json")
 
@@ -165,7 +163,7 @@ def _build_model_from_scalar_bool(value: bool, result_model: type[_TResult]):
     fields = result_model.model_fields
     if len(fields) != 1:
         return None
-    (name, field_info), = fields.items()
+    ((name, field_info),) = fields.items()
     if field_info.annotation is not bool:
         return None
     try:

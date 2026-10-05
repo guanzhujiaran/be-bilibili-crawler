@@ -5,13 +5,13 @@ from log.base_log import myfastapi_logger
 
 class SleepTimeGenerator:
     def __init__(
-            self,
-            short_wait_range: Tuple[float, float] = (1, 5.0),  # 短等待时间范围 (秒)
-            medium_wait_range: Tuple[float, float] = (7.0, 10.0),  # 中等等待时间范围 (秒)
-            long_wait_range: Tuple[float, float] = (100, 200),  # 长等待时间范围 (秒)
-            medium_wait_frequency: int = 5,  # 每 N 次访问触发一次中等等待 (例如：每 5 次)
-            long_wait_frequency: int = 150,  # 每 M 次访问触发一次长等待 (例如：每 20 次)
-            random_long_wait_probability: float = 0.0,  # 每次访问时随机触发长等待的概率 (0.0 - 1.0)
+        self,
+        short_wait_range: Tuple[float, float] = (1, 5.0),  # 短等待时间范围 (秒)
+        medium_wait_range: Tuple[float, float] = (7.0, 10.0),  # 中等等待时间范围 (秒)
+        long_wait_range: Tuple[float, float] = (100, 200),  # 长等待时间范围 (秒)
+        medium_wait_frequency: int = 5,  # 每 N 次访问触发一次中等等待 (例如：每 5 次)
+        long_wait_frequency: int = 150,  # 每 M 次访问触发一次长等待 (例如：每 20 次)
+        random_long_wait_probability: float = 0.0,  # 每次访问时随机触发长等待的概率 (0.0 - 1.0)
     ):
         """
         初始化一个模拟真人操作的等待时间生成器。
@@ -28,8 +28,12 @@ class SleepTimeGenerator:
         if not (0.0 <= random_long_wait_probability <= 1.0):
             raise ValueError("random_long_wait_probability 必须在 0.0 到 1.0 之间。")
         for r in [short_wait_range, medium_wait_range, long_wait_range]:
-            if not (isinstance(r, tuple) and len(r) == 2 and r[0] >= 0 and r[0] <= r[1]):
-                raise ValueError(f"等待时间范围 {r} 必须是 (min, max) 形式的元组，且 min >= 0, min <= max。")
+            if not (
+                isinstance(r, tuple) and len(r) == 2 and r[0] >= 0 and r[0] <= r[1]
+            ):
+                raise ValueError(
+                    f"等待时间范围 {r} 必须是 (min, max) 形式的元组，且 min >= 0, min <= max。"
+                )
         if not (isinstance(medium_wait_frequency, int) and medium_wait_frequency > 0):
             raise ValueError("medium_wait_frequency 必须是大于 0 的整数。")
         if not (isinstance(long_wait_frequency, int) and long_wait_frequency > 0):
@@ -63,9 +67,13 @@ class SleepTimeGenerator:
             wait_time = random.uniform(self.long_wait_min, self.long_wait_max)
             myfastapi_logger.info(f"Cnt {cnt}: 触发长等待 (固定频率): {wait_time:.2f}s")
         # 其次判断是否达到中等等待频率
-        elif self.medium_wait_freq > 0 and cnt > 0 and (cnt % self.medium_wait_freq == 0):
+        elif (
+            self.medium_wait_freq > 0 and cnt > 0 and (cnt % self.medium_wait_freq == 0)
+        ):
             wait_time = random.uniform(self.medium_wait_min, self.medium_wait_max)
-            myfastapi_logger.info(f"Cnt {cnt}: 触发中等等待 (固定频率): {wait_time:.2f}s")
+            myfastapi_logger.info(
+                f"Cnt {cnt}: 触发中等等待 (固定频率): {wait_time:.2f}s"
+            )
         # 再次判断是否随机触发长等待
         elif random.random() < self.random_long_prob:
             wait_time = random.uniform(self.long_wait_min, self.long_wait_max)

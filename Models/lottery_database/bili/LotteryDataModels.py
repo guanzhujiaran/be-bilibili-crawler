@@ -256,7 +256,9 @@ class GetOthersLotDynDetailReq(BaseModel):
     故入参用 `StrInt` 接受字符串，由后端归一为 int（前端统一以字符串传）。
     """
 
-    dyn_id: StrInt = Field(description="第三方抽奖动态 dynId（biliopusdb.t_lotdyninfo.dynId；雪花 ID，支持字符串传参避免 JS 精度丢失）")
+    dyn_id: StrInt = Field(
+        description="第三方抽奖动态 dynId（biliopusdb.t_lotdyninfo.dynId；雪花 ID，支持字符串传参避免 JS 精度丢失）"
+    )
 
 
 class CommonLotExtraInfoResp(BaseModel):

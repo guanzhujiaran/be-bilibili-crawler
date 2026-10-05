@@ -1,16 +1,17 @@
 """init base stamp
 
 Revision ID: 17be92737db9
-Revises: 
+Revises:
 Create Date: 2026-07-07 14:55:29.237840
 
 """
+
 from typing import Sequence, Union
 from alembic import op
 import sqlalchemy as sa
 
 
-revision: str = '17be92737db9'
+revision: str = "17be92737db9"
 down_revision: Union[str, None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

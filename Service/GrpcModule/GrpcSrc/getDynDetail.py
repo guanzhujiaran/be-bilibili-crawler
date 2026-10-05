@@ -1,6 +1,7 @@
 """
 通过grpc获取所有的图片动态
 """
+
 from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
 
 
@@ -278,8 +279,7 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                 descNode.get("type") == "desc_type_lottery"
                             ):  # 获取官方抽奖，这里的比较全
                                 lot_id = descNode.get("rid")
-                                lot_rid = dynData.get(
-                                    "extend").get("businessId")
+                                lot_rid = dynData.get("extend").get("businessId")
                                 lot_notice_res = await get_lot_notice(
                                     business_type=2,
                                     business_id=lot_rid,
@@ -336,8 +336,7 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         if len(rid_dyn_ids) == 0:
             return []
         ret_dict_list = []
-        dyn_ids = [x["dynamic_id"]
-                   for x in rid_dyn_ids if x["dynamic_id"] != -1]
+        dyn_ids = [x["dynamic_id"] for x in rid_dyn_ids if x["dynamic_id"] != -1]
         rid_dyn_ids = [
             {"rid": str(x["rid"]), "dynamic_id": x["dynamic_id"]} for x in rid_dyn_ids
         ]
@@ -346,9 +345,12 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         resp_list = await self.BiliGrpc.grpc_api_get_DynDetails(dyn_ids)
         if resp_list.get("list"):
             for resp_data in resp_list["list"]:
-                temp_rid, lot_id, dynamic_id, dynamic_created_time = (
-                    await self.resolve_dynamic_details_card(resp_data)
-                )
+                (
+                    temp_rid,
+                    lot_id,
+                    dynamic_id,
+                    dynamic_created_time,
+                ) = await self.resolve_dynamic_details_card(resp_data)
                 tempdetail_dict = dynAllDetail(
                     rid=temp_rid,
                     dynamic_id=dynamic_id,
@@ -385,9 +387,12 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         dynamic_created_time = None
         if resp_list.get("item"):
             resp_data = resp_list.get("item")
-            temp_rid, lot_id, dynamic_id, dynamic_created_time = (
-                await self.resolve_dynamic_details_card(resp_data)
-            )
+            (
+                temp_rid,
+                lot_id,
+                dynamic_id,
+                dynamic_created_time,
+            ) = await self.resolve_dynamic_details_card(resp_data)
             tempdetail_dict = dynAllDetail(
                 rid=temp_rid,
                 dynamic_id=dynamic_id,
@@ -438,9 +443,12 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         dynamic_created_time = None
         if resp_list.get("item"):
             resp_data = resp_list.get("item")
-            temp_rid, lot_id, dynamic_id, dynamic_created_time = (
-                await self.resolve_dynamic_details_card(resp_data)
-            )
+            (
+                temp_rid,
+                lot_id,
+                dynamic_id,
+                dynamic_created_time,
+            ) = await self.resolve_dynamic_details_card(resp_data)
             temp_detail_dict = dynAllDetail(
                 rid=temp_rid,
                 dynamic_id=dynamic_id,
@@ -491,8 +499,7 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                         dynamic_id=detail.get("dynamic_id"),
                         dynData=detail.get("dynData"),
                         lot_id=detail.get("lot_id"),
-                        dynamic_created_time=detail.get(
-                            "dynamic_created_time"),
+                        dynamic_created_time=detail.get("dynamic_created_time"),
                     )
                 return rid_list
             except Exception as e:
@@ -508,14 +515,14 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         task_args_list = []  # [[1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15],...]
         for rid_index in range(len(all_rids) // self.offset + 1):
             rids_list = all_rids[
-                self.offset * rid_index: self.offset * (rid_index + 1)
+                self.offset * rid_index : self.offset * (rid_index + 1)
             ]
             task_args_list.append(rids_list)
         thread_num = 50
         task_list = []
         for task_index in range(len(task_args_list) // thread_num + 1):
             args_list = task_args_list[
-                thread_num * task_index: thread_num * (task_index + 1)
+                thread_num * task_index : thread_num * (task_index + 1)
             ]  # 将task切片成[[0...49],[50....99]]
             for args in args_list:
                 self.log.info(args)
@@ -568,8 +575,7 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             self.succ_counter.is_running = True
             self.log.info("开始执行获取动态详情")
             self.log.debug(f"爬虫，启动！最后的rid为：{latest_rid}\t往前回滚500个rid！")
-            task3 = asyncio.create_task(
-                self.run(DynDetailParams(rid=latest_rid)))
+            task3 = asyncio.create_task(self.run(DynDetailParams(rid=latest_rid)))
             task_list.append(task3)
             await asyncio_gather(*task_list, log=self.log)
             self.log.error("爬取动态任务全部完成！")
@@ -596,14 +602,14 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         task_args_list = []  # [[1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15],...]
         for rid_index in range(len(all_rids) // self.offset + 1):
             rids_list = all_rids[
-                self.offset * rid_index: self.offset * (rid_index + 1)
+                self.offset * rid_index : self.offset * (rid_index + 1)
             ]
             task_args_list.append(rids_list)
         thread_num = 50
         task_list = []
         for task_index in range(len(task_args_list) // thread_num + 1):
             args_list = task_args_list[
-                thread_num * task_index: thread_num * (task_index + 1)
+                thread_num * task_index : thread_num * (task_index + 1)
             ]  # 将task切片成[[0...49],[50....99]]
             for args in args_list:
                 self.log.info(args)

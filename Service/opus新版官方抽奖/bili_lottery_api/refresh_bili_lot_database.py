@@ -40,13 +40,14 @@ class RBDParamsType(CustomBaseModelHashable):
 
 class RefreshBiliLotDatabaseCrawler(UnlimitedCrawler[RBDParamsType]):
     Config = RefreshBiliLotDatabaseConfig
+
     def __init__(self):
         # 配置（logger / 超时 / 重试 / 插件等）统一由 RefreshBiliLotDatabaseConfig 控制
         super().__init__()
         self.reserve_robot = reserve_robot
         self.extract_official_lottery = ExtractOfficialLottery()
 
-    async def is_stop(self) -> bool: 
+    async def is_stop(self) -> bool:
         return False
 
     async def key_params_gen(self, params=None) -> AsyncGenerator[RBDParamsType, None]:
@@ -98,7 +99,7 @@ class RefreshBiliLotDatabaseCrawler(UnlimitedCrawler[RBDParamsType]):
                     )
                     for _lot_type in BiliLotStatisticLotTypeEnum
                 ],
-                log=self.log
+                log=self.log,
             )
         await sync_bili_lottery_data()  # 同步数据到向量数据库
         await del_outdated_bili_lottery_data()  # 删除向量数据库里面过期的数据

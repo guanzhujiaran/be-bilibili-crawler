@@ -114,15 +114,12 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                     self._cur_stop_times += 1
                     self.latest_ts = stime
             else:
-                self.log.error(
-                    f"business_id：{data} 获取预约时间失败：{reserve_resp}"
-                )
+                self.log.error(f"business_id：{data} 获取预约时间失败：{reserve_resp}")
             await self.redis_helper.set_id(
                 self.redis_helper.RedisMap.reserve_sid, reserve_sid_int
             )
             return WorkerStatus.complete
         else:
-
             self.log.error(
                 f"origin lottery_notice data：{data}"
                 f"\nlottery notice api data: {reserve_resp}"
@@ -141,7 +138,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                 f"params 【{business_type},{business_id}】\n"
                 f" {resp_dict} \n"
                 f"latest_ts:{self.latest_ts}\n"
-                f'{time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.latest_ts))}'
+                f"{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.latest_ts))}"
             )
             if data := resp_dict.get("data"):
                 await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(

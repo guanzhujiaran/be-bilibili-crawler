@@ -32,5 +32,5 @@ __all__ = [
     "LotDataDynamicReq",
     "TopicLotData",
     "VoucherInfo",
-    "RabbitMQTestMsgModel"
+    "RabbitMQTestMsgModel",
 ]

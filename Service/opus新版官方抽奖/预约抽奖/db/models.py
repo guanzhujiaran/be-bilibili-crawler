@@ -1,6 +1,14 @@
 from typing import List, Optional
 
-from sqlalchemy import BigInteger, Column, ForeignKeyConstraint, Index, Integer, JSON, Text
+from sqlalchemy import (
+    BigInteger,
+    Column,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    JSON,
+    Text,
+)
 from sqlalchemy.dialects.mysql import TINYINT
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 
@@ -8,10 +16,8 @@ Base = declarative_base()
 
 
 class TReserveRoundInfo(Base):
-    __tablename__ = 't_reserve_round_info'
-    __table_args__ = (
-        Index('round_id', 'round_id', unique=True),
-    )
+    __tablename__ = "t_reserve_round_info"
+    __table_args__ = (Index("round_id", "round_id", unique=True),)
 
     id = mapped_column(Integer, primary_key=True)
     round_id = mapped_column(Integer, nullable=False)
@@ -20,14 +26,20 @@ class TReserveRoundInfo(Base):
     round_add_num = mapped_column(Integer, nullable=False)
     round_lot_num = mapped_column(Integer, nullable=False)
 
-    t_up_reserve_relation_info: Mapped[List['TUpReserveRelationInfo']] = relationship('TUpReserveRelationInfo', uselist=True, back_populates='reserve_round')
+    t_up_reserve_relation_info: Mapped[List["TUpReserveRelationInfo"]] = relationship(
+        "TUpReserveRelationInfo", uselist=True, back_populates="reserve_round"
+    )
 
 
 class TUpReserveRelationInfo(Base):
-    __tablename__ = 't_up_reserve_relation_info'
+    __tablename__ = "t_up_reserve_relation_info"
     __table_args__ = (
-            ForeignKeyConstraint(['reserve_round_id'], ['t_reserve_round_info.round_id'], name='t_up_reserve_relation_info_ibfk_1'),
-        Index('reserve_round_id', 'reserve_round_id')
+        ForeignKeyConstraint(
+            ["reserve_round_id"],
+            ["t_reserve_round_info.round_id"],
+            name="t_up_reserve_relation_info_ibfk_1",
+        ),
+        Index("reserve_round_id", "reserve_round_id"),
     )
 
     ids = mapped_column(Integer, primary_key=True)
@@ -63,6 +75,8 @@ class TUpReserveRelationInfo(Base):
     reserve_products = mapped_column(JSON)
     raw_JSON = mapped_column(JSON)
     reserve_round_id = mapped_column(Integer)
-    new_field = mapped_column(JSON, comment='是否有新的字段')
+    new_field = mapped_column(JSON, comment="是否有新的字段")
 
-    reserve_round: Mapped[Optional['TReserveRoundInfo']] = relationship('TReserveRoundInfo', back_populates='t_up_reserve_relation_info')
+    reserve_round: Mapped[Optional["TReserveRoundInfo"]] = relationship(
+        "TReserveRoundInfo", back_populates="t_up_reserve_relation_info"
+    )

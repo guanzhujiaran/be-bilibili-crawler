@@ -1,6 +1,7 @@
 import asyncio
 from dao.IpInfoRedisObj import ip_info_redis
 
+
 async def get_ipv6_from_redis() -> str:
     """
     返回类似2409:8a1e:2e94:e320::/60这种cidr格式的ipv6地址

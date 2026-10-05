@@ -2,6 +2,7 @@
 """
 异步sqlalchemy操作方法
 """
+
 from bili_common.models import StrEnumAutoDoc
 import ast
 import asyncio
@@ -115,9 +116,7 @@ class SubRedisStore(RedisManagerBase):
         proxy_key = self.to_proxy_key(proxy_info_dict)
         if not proxy_key:
             return None
-        value = await self._hmget(
-            self.RedisMap.bili_proxy_changed_hm.value, proxy_key
-        )
+        value = await self._hmget(self.RedisMap.bili_proxy_changed_hm.value, proxy_key)
         if value:
             return ProxyTab(**json.loads(value))
         return None
@@ -148,9 +147,7 @@ class SubRedisStore(RedisManagerBase):
     async def redis_zadd_proxy_key(self, proxy_key: str, score: int | float) -> int:
         if not proxy_key:
             return 0
-        return await self._zadd(
-            self.RedisMap.bili_proxy_zset.value, {proxy_key: score}
-        )
+        return await self._zadd(self.RedisMap.bili_proxy_zset.value, {proxy_key: score})
 
     async def redis_zrem_proxy_key(self, proxy_key: str) -> int:
         """把代理从 zset 移除（僵尸清理 / 标记不可用）"""
@@ -383,7 +380,7 @@ class SQLHelperClass(SqlHelperBase):
                             self.is_checking_redis_data = False
                     else:
                         sql_log.debug(
-                            f'上次同步时间：{datetime.datetime.fromtimestamp(self.sub_redis_store.sync_ts, tz=ZoneInfo("Asia/Shanghai"))}\n距离上次同步时间小于{self.sub_redis_store.sync_sep_ts}秒，无需同步'
+                            f"上次同步时间：{datetime.datetime.fromtimestamp(self.sub_redis_store.sync_ts, tz=ZoneInfo('Asia/Shanghai'))}\n距离上次同步时间小于{self.sub_redis_store.sync_sep_ts}秒，无需同步"
                         )
 
     @log_sql_retry_wrapper()
@@ -431,9 +428,7 @@ class SQLHelperClass(SqlHelperBase):
         """
         if not proxy_key:
             return None
-        sql = (
-            select(ProxyTab).where(ProxyTab.computed_proxy_str == proxy_key).limit(1)
-        )
+        sql = select(ProxyTab).where(ProxyTab.computed_proxy_str == proxy_key).limit(1)
         async with self.async_session() as session:
             res = await session.execute(sql)
         return res.scalars().first()
@@ -654,7 +649,9 @@ class SQLHelperClass(SqlHelperBase):
             if base is None:
                 # MySQL 里也没有这条代理（已被清理）：无法更新。
                 # 旧任务 / 缓存会反复触发到这里，属可预期噪音，只留 DEBUG 明细。
-                sql_log.debug(f"代理在 MySQL 与 Redis 均不存在，跳过分数更新：{proxy_key}")
+                sql_log.debug(
+                    f"代理在 MySQL 与 Redis 均不存在，跳过分数更新：{proxy_key}"
+                )
                 return False
             return bool(
                 await self.sub_redis_store.redis_update_proxy(

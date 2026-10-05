@@ -16,15 +16,14 @@ Base = declarative_base()
 
 
 class FeedData(Base):
-    __tablename__ = 'T_FEEDDATA'
-    pk = mapped_column(Integer, primary_key=True,autoincrement=True)
+    __tablename__ = "T_FEEDDATA"
+    pk = mapped_column(Integer, primary_key=True, autoincrement=True)
     id = mapped_column(Integer, unique=True)
     publish_time = mapped_column(Integer)
     zippedData = mapped_column(BLOB)
 
 
-
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 创建数据库命令
     Base.metadata.create_all(checkfirst=True, bind=engine)
-    os.system(f'sqlacodegen_v2 {SQLITE_URI} > models.py')
+    os.system(f"sqlacodegen_v2 {SQLITE_URI} > models.py")

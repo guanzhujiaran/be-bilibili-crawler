@@ -10,43 +10,46 @@ API路由统一枚举定义模块
 使用方式：
 from bili_common.models import StrEnumAutoDoc
     from ApiRoutes import RouterPrefix, RouterTags, RouterNames
-    
+
     # 引用路由前缀
     prefix = RouterPrefix.BILI_LOTTERY
-    
+
     # 引用路由标签
     tags = [RouterTags.V1_BILI]
-    
+
     # 引用路由名称
     name = RouterNames.GET_COMMON_LOTTERY
 """
+
 from bili_common.models import StrEnumAutoDoc
 
 
 class RouterPrefix(StrEnumAutoDoc):
     """API路由前缀枚举"""
-    
+
     # ==================== V1 版本路由前缀 ====================
     # B站抽奖数据库相关前缀
     BILI_LOTTERY = "/api/v1/lottery_database/bili"  # B站抽奖数据主前缀
-    BILI_LOTTERY_STATISTIC = "/api/v1/lottery_database/bili/lottery_statistic/rank"  # B站抽奖统计前缀
+    BILI_LOTTERY_STATISTIC = (
+        "/api/v1/lottery_database/bili/lottery_statistic/rank"  # B站抽奖统计前缀
+    )
     BILI_ZHUANLAN = "/api/v1/lottery_database/bili/zhuanlan"  # B站专栏前缀
-    
+
     # IP信息前缀
     IP_INFO = "/api/v1/ip_info"  # IP信息前缀
-    
+
     # 后台服务前缀
     BACKGROUND_SERVICE = "/api/v1/background_service"  # 后台服务前缀
-    
+
     # 验证码前缀
     CAPTCHA = "/api/v1/captcha"  # 验证码前缀
-    
+
     #  Sams Club前缀
     SAMS_CLUB = "/api/v1/samsClub"  # Sams Club前缀
-    
+
     # ChatGPT/LLM前缀
     CHATGPT = "/api/v1/ChatGpt3_5"  # ChatGPT接口前缀
-    
+
     # ==================== 其他路由前缀 ====================
     # 达摩模型前缀
     DAMO = "/damo"  # 达摩机器学习前缀
@@ -57,7 +60,7 @@ class RouterPrefix(StrEnumAutoDoc):
 
 class RouterTags(StrEnumAutoDoc):
     """API路由标签枚举 - 用于OpenAPI文档分组"""
-    
+
     # ==================== V1 版本路由标签 ====================
     V1_IP = "V1Ip"  # IP信息服务
     V1_BILI = "V1Bili"  # B站抽奖数据服务
@@ -65,7 +68,7 @@ class RouterTags(StrEnumAutoDoc):
     CAPTCHA = "Captcha"  # 验证码服务
     SAMS_CLUB = "SamsClub"  # Sams Club服务
     V1_CHATGPT = "V1ChatGPT"  # ChatGPT/LLM服务
-    
+
     # ==================== 其他路由标签 ====================
     COMMON = "CommonRouter"  # 公共路由
     MQ_TEST = "MQ测试"  # 消息队列测试
@@ -77,21 +80,21 @@ class RouterTags(StrEnumAutoDoc):
 class RouterPaths(StrEnumAutoDoc):
     """
     API路由路径枚举 - 用于定义具体的路由路径
-    
+
     命名规范:
     - 使用PascalCase格式，与路由路径保持一致
     - 示例: GET_IP = "/get", GET_COMMON_LOTTERY = "/GetCommonLottery"
     """
-    
+
     # ==================== Damo 达摩路由 ====================
     DAMO_SEMANTIC = "/semantic"  # 情感分析
-    
+
     # ==================== ChatGPT/LLM 路由 ====================
     CHATGPT_REPLY_SINGLE = "/ReplySingle"  # 单轮回复
     CHATGPT_LLM_STATUS = "/LLMStatus"  # LLM状态
     CHATGPT_RESET_LLM_STATUS = "/ResetLLMStatus"  # 重置LLM状态
     CHATGPT_HELLO_WORLD = "/helloWorld"  # 健康检查
-    
+
     # ==================== B站抽奖数据路由 ====================
     # --- 获取类路由 ---
     GET_RESERVE_LOTTERY = "/GetReserveLottery"  # 获取预约抽奖
@@ -102,11 +105,15 @@ class RouterPaths(StrEnumAutoDoc):
     GET_ALL_LOTTERY = "/GetAllLottery"  # 获取所有抽奖
     GET_SINGLE_SCRAPY_STATUS = "/GetSingleScrapyStatus"  # 查询单个爬虫状态（按参数）
     GET_ALL_LOT_SCRAPY_STATUS = "/GetAllLotScrapyStatus"  # 获取所有爬虫状态
-    GET_OTHERS_LOT_DYN_LIST = "/GetOthersLotDynList"  # 获取第三方抽奖动态列表（分页+排序）
+    GET_OTHERS_LOT_DYN_LIST = (
+        "/GetOthersLotDynList"  # 获取第三方抽奖动态列表（分页+排序）
+    )
     GET_LOTTERY_FILTER_PARAMS = "/GetLotteryFilterParams"  # 获取抽奖查询筛选参数元数据
     GET_LOTTERY_DETAIL = "/GetLotteryDetail"  # 按 lottery_id 获取单个抽奖卡片详情
-    GET_OTHERS_LOT_DYN_DETAIL = "/GetOthersLotDynDetail"  # 按 dynId 获取单个第三方抽奖动态详情
-    
+    GET_OTHERS_LOT_DYN_DETAIL = (
+        "/GetOthersLotDynDetail"  # 按 dynId 获取单个第三方抽奖动态详情
+    )
+
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "/AddDynamicLottery"  # 提交抽奖动态
     BULK_ADD_DYNAMIC_LOTTERY = "/BulkAddDynamicLottery"  # 批量提交抽奖动态
@@ -115,47 +122,47 @@ class RouterPaths(StrEnumAutoDoc):
     ADD_OTHERS_LOT_DYN = "/AddOthersLotDyn"  # 提交第三方抽奖动态
     BULK_ADD_OTHERS_LOT_DYN = "/BulkAddOthersLotDyn"  # 批量提交第三方抽奖动态
     SEARCH_LOTTERY_BY_KEYWORD = "/SearchLotteryByKeyword"  # 关键词搜索
-    
+
     # ==================== B站抽奖统计路由 ====================
     GET_LOTTERY_HOF = "/lottery_hof/{lot_type}"  # 获取官方抽奖统计
     GET_LOTTERY_RESULT = "/lottery_result"  # 获取uid中奖数据
-    
+
     # ==================== B站专栏路由 ====================
     GET_LOTTERY_ARTICLE = "/lotteryArticle"  # 获取专栏文章
-    
+
     # ==================== IP信息路由 ====================
     GET_IP = "/get"  # 获取IPv6地址信息
-    
+
     # ==================== 后台服务路由 ====================
     # --- 爬虫状态获取 ---
     GET_PROXY_STATUS = "/GetProxyStatus"  # 代理状态
-    
+
     # --- 定时任务 ---
     GET_GLOBAL_JOBS = "/GlobalSchedule/GetJobs"  # 全局定时任务
     GET_GLOBAL_SCHEDULER_STATUS = "/GlobalScheduler/Status"  # 全局定时任务详细状态
-    
+
     # --- 服务控制 ---
     GET_ALL_STAT = "/BackgroundService/AllStat"  # 后台服务状态
     START_SERVICE = "/BackgroundService/Start"  # 启动服务
     STOP_SERVICE = "/BackgroundService/Stop"  # 停止服务
     RESTART_SERVICE = "/BackgroundService/Restart"  # 重启服务
-    
+
     # ==================== 验证码路由 ====================
     GEN_CAPTCHA = "/gen"  # 生成验证码
     VERIFY_CAPTCHA = "/verify"  # 验证验证码
-    
+
     # ==================== Sams Club路由 ====================
     SET_NEW_AUTH_TOKEN = "/set_new_auth_token"  # 更新auth_token
     SAMSCLUB_GRAPHQL = "/graphql"  # GraphQL接口
     SAMSCLUB_API_STATUS = "/samsclub_api_status"  # API状态
-    
+
     # ==================== MQ测试路由 ====================
     RABBITMQ_TEST_PUBLISH = "/rabbitmq_test_publish"  # RabbitMQ测试消息发布
     TEST_PUSH_ERROR = "/test_push_error"  # 测试消息推送微服务(故意抛错)
 
     # ==================== RPC 服务路由 ====================
     GET_RPC_METHODS = "/methods"  # 获取所有 RPC 方法信息
-    
+
     # ==================== 公共路由 ====================
     GET_LIVE_LOTS = "/v1/get/live_lots"  # 获取直播抽奖
     TEST = "/test"  # 服务可用性测试
@@ -169,29 +176,31 @@ class RouterPaths(StrEnumAutoDoc):
     ZHIHU_GET_OTHERS_LOT_PINS = "/zhihu/get_others_lot_pins"  # 获取知乎抽奖
     TOUTIAO_GET_OTHERS_LOT_IDS = "/toutiao/get_others_lot_ids"  # 获取头条抽奖
     GET_LLM_STATS = "/llm/stats"  # 获取云端LLM实例使用统计
-    LLM_CONFIG = "/llm/config"  # 云端LLM配置列表/新增/整体替换（内部接口，网关白名单不转发）
+    LLM_CONFIG = (
+        "/llm/config"  # 云端LLM配置列表/新增/整体替换（内部接口，网关白名单不转发）
+    )
     LLM_CONFIG_ITEM = "/llm/config/{index}"  # 云端LLM配置单条：按索引读取/更新/删除
 
 
 class RouterNames(StrEnumAutoDoc):
     """
     API路由名称枚举 - 用于reverse生成URL或标识路由
-    
+
     命名规范:
     - 使用全大写+下划线格式
     - 格式: {HTTP_METHOD}_{RESOURCE}_{ACTION}
     - 示例: GET_LOTTERY_HOF, POST_ADD_DYNAMIC_LOTTERY
     """
-    
+
     # ==================== Damo 达摩路由 ====================
     DAMO_SEMANTIC = "damo_semantic"  # 情感分析
-    
+
     # ==================== ChatGPT/LLM 路由 ====================
     CHATGPT_REPLY_SINGLE = "reply_single"  # 单轮回复
     CHATGPT_LLM_STATUS = "llm_status"  # LLM状态
     CHATGPT_RESET_LLM_STATUS = "reset_llm_status"  # 重置LLM状态
     CHATGPT_HELLO_WORLD = "hello_world"  # 健康检查
-    
+
     # ==================== B站抽奖数据路由 ====================
     # --- 获取类路由 ---
     GET_RESERVE_LOTTERY = "get_reserve_lottery"  # 获取预约抽奖
@@ -202,10 +211,14 @@ class RouterNames(StrEnumAutoDoc):
     GET_ALL_LOTTERY = "get_all_lottery"  # 获取所有抽奖
     GET_ALL_LOT_SCRAPY_STATUS = "get_all_lot_scrapy_status"  # 获取所有爬虫状态
     GET_OTHERS_LOT_DYN_LIST = "get_others_lot_dyn_list"  # 获取第三方抽奖动态列表
-    GET_LOTTERY_FILTER_PARAMS = "get_lottery_filter_params"  # 获取抽奖查询筛选参数元数据
+    GET_LOTTERY_FILTER_PARAMS = (
+        "get_lottery_filter_params"  # 获取抽奖查询筛选参数元数据
+    )
     GET_LOTTERY_DETAIL = "get_lottery_detail"  # 按 lottery_id 获取单个抽奖卡片详情
-    GET_OTHERS_LOT_DYN_DETAIL = "get_others_lot_dyn_detail"  # 按 dynId 获取单个第三方抽奖动态详情
-    
+    GET_OTHERS_LOT_DYN_DETAIL = (
+        "get_others_lot_dyn_detail"  # 按 dynId 获取单个第三方抽奖动态详情
+    )
+
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "add_dynamic_lottery"  # 提交抽奖动态
     BULK_ADD_DYNAMIC_LOTTERY = "bulk_add_dynamic_lottery"  # 批量提交抽奖动态
@@ -214,46 +227,46 @@ class RouterNames(StrEnumAutoDoc):
     ADD_OTHERS_LOT_DYN = "add_others_lot_dyn"  # 提交第三方抽奖动态
     BULK_ADD_OTHERS_LOT_DYN = "bulk_add_others_lot_dyn"  # 批量提交第三方抽奖动态
     SEARCH_LOTTERY_BY_KEYWORD = "search_lottery_by_keyword"  # 关键词搜索
-    
+
     # ==================== B站抽奖统计路由 ====================
     GET_LOTTERY_HOF = "lottery_hof"  # 获取官方抽奖统计
     GET_LOTTERY_RESULT = "lottery_result"  # 获取uid中奖数据
-    
+
     # ==================== B站专栏路由 ====================
     GET_LOTTERY_ARTICLE = "lottery_article"  # 获取专栏文章
-    
+
     # ==================== IP信息路由 ====================
     GET_IP = "get_ip"  # 获取IPv6地址信息
-    
+
     # ==================== 后台服务路由 ====================
     # --- 爬虫状态获取 ---
     GET_SINGLE_SCRAPY_STATUS = "get_single_scrapy_status"  # 查询单个爬虫状态（按参数）
     GET_ALL_SCRAPY_STATUS = "get_all_scrapy_status"  # 所有爬虫状态
     GET_PROXY_STATUS = "get_proxy_status"  # 代理状态
-    
+
     # --- 定时任务 ---
     GET_GLOBAL_JOBS = "get_global_jobs"  # 全局定时任务
     GET_GLOBAL_SCHEDULER_STATUS = "get_global_scheduler_status"  # 全局定时任务详细状态
-    
+
     # --- 服务控制 ---
     GET_ALL_STAT = "all_stat"  # 后台服务状态
     START_SERVICE = "start_service"  # 启动服务
     STOP_SERVICE = "stop_service"  # 停止服务
     RESTART_SERVICE = "restart_service"  # 重启服务
-    
+
     # ==================== 验证码路由 ====================
     GEN_CAPTCHA = "gen_captcha"  # 生成验证码
     VERIFY_CAPTCHA = "verify_captcha"  # 验证验证码
-    
+
     # ==================== Sams Club路由 ====================
     SET_NEW_AUTH_TOKEN = "set_new_auth_token"  # 更新auth_token
     GRAPHQL = "graphql"  # GraphQL接口
     SAMSCLUB_API_STATUS = "samsclub_api_status"  # API状态
-    
+
     # ==================== MQ测试路由 ====================
     RABBITMQ_TEST_PUBLISH = "rabbitmq_test_publish"  # RabbitMQ测试消息发布
     TEST_PUSH_ERROR = "test_push_error"  # 测试消息推送微服务(故意抛错)
-    
+
     # ==================== 公共路由 ====================
     GET_LIVE_LOTS = "v1_get_live_lots"  # 获取直播抽奖
     TEST = "test"  # 服务可用性测试
@@ -278,14 +291,18 @@ class RouterNames(StrEnumAutoDoc):
 
 class RouterModule(StrEnumAutoDoc):
     """API路由模块枚举 - 用于标识路由所属的控制器模块"""
-    
+
     DAMO = "controller.damo.DamoML"  # 达摩模块
     CHATGPT = "controller.v1.ChatGpt3_5.ReplySingle"  # ChatGPT模块
     LOTTERY_DATA = "controller.v1.lotttery_database.bili.LotteryData"  # 抽奖数据模块
     LOTTERY_STATISTIC = "controller.v1.lotttery_database.bili.lottery_statistic.LotteryStatistic"  # 抽奖统计模块
-    ZHUILAN = "controller.v1.lotttery_database.bili.zhuanlan.zhuanlanController"  # 专栏模块
+    ZHUILAN = (
+        "controller.v1.lotttery_database.bili.zhuanlan.zhuanlanController"  # 专栏模块
+    )
     IP_INFO = "controller.v1.ip_info.get_ip_info"  # IP信息模块
-    BACKGROUND_SERVICE = "controller.v1.background_service.BackgroundServiceController"  # 后台服务模块
+    BACKGROUND_SERVICE = (
+        "controller.v1.background_service.BackgroundServiceController"  # 后台服务模块
+    )
     MQ_CONTROLLER = "controller.v1.mq.mq_controller"  # MQ控制器模块
     COMMON = "controller.common.CommonRouter"  # 公共路由模块
     CAPTCHA = "controller.v1.captcha.captchaController"  # 验证码模块

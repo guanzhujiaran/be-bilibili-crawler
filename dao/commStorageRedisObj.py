@@ -5,12 +5,14 @@ from Utils.redisTool.RedisManager import RedisManagerBase
 
 class CommStorageRedisObj(RedisManagerBase):
     class RedisMap(StrEnumAutoDoc):
-        reserve_scrapy_bot_rid_ls='reserve_scrapy_bot_rid_ls'
+        reserve_scrapy_bot_rid_ls = "reserve_scrapy_bot_rid_ls"
 
     def __init__(self):
-        super().__init__(db=CONFIG.database.commStorageRedis.db,
-                         host=CONFIG.database.commStorageRedis.host,
-                         port=CONFIG.database.commStorageRedis.port, )
+        super().__init__(
+            db=CONFIG.database.commStorageRedis.db,
+            host=CONFIG.database.commStorageRedis.host,
+            port=CONFIG.database.commStorageRedis.port,
+        )
         self.redis_pref = self.__class__.__name__
 
     def to_redis_key(self, key_name: str | RedisMap):

@@ -1,9 +1,12 @@
 import math
 import time
 
+
 class BaseStopCounter:
     _stop_flag: bool = False
-    _max_stop_continuous_num: int = 30  # 短时间内超过30个动态都满足条件，则将stop_flag设置为True
+    _max_stop_continuous_num: int = (
+        30  # 短时间内超过30个动态都满足条件，则将stop_flag设置为True
+    )
     cur_stop_continuous_num: int = 0
 
     def __init__(self, max_stop_continuous_num: int = 30):
@@ -24,13 +27,11 @@ class BaseStopCounter:
         self.cur_stop_continuous_num = self._max_stop_continuous_num
 
 
-
-
 class BaseSuccCounter:
     start_ts = int(time.time())
     _succ_count = 0
-    update_ts:int=0
-    is_running:bool = False
+    update_ts: int = 0
+    is_running: bool = False
 
     @property
     def succ_count(self):
@@ -65,13 +66,13 @@ class BaseSuccCounter:
         pass
 
 
-
 class ProgressCounter(BaseSuccCounter):
     _total_num: int = 0
 
     def __init__(self):
         super().__init__()
         self.running_params = set()
+
     @property
     def total_num(self):
         # 返回私有变量_total_num的值
@@ -84,4 +85,8 @@ class ProgressCounter(BaseSuccCounter):
         self._total_num = value
 
     def show_pace(self):
-        return math.floor(self.succ_count / self.total_num * 100) / 100 if self.total_num else 0
+        return (
+            math.floor(self.succ_count / self.total_num * 100) / 100
+            if self.total_num
+            else 0
+        )

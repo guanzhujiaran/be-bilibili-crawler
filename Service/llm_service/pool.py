@@ -71,7 +71,9 @@ class RemovedLLMRecord(BaseModel):
     fingerprint: str = Field(description="槽位指纹（sha256 前 16 位）")
     model_name: str = Field(description="模型名")
     base_url: str = Field(description="接口地址")
-    reason: str | None = Field(default=None, description="删除原因（错误分类 + 服务端返回）")
+    reason: str | None = Field(
+        default=None, description="删除原因（错误分类 + 服务端返回）"
+    )
     removed_at: float = Field(description="删除时间戳（unix 秒）")
 
 
@@ -366,9 +368,7 @@ def set_llm_apis(apis: list[LLMApiConfig]) -> list[dict[str, Any]]:
     返回：更新后的配置（token 已脱敏）。
     """
     invalid = [
-        f"[{i}]"
-        for i, cfg in enumerate(apis)
-        if not cfg.base_url or not cfg.model_name
+        f"[{i}]" for i, cfg in enumerate(apis) if not cfg.base_url or not cfg.model_name
     ]
     if invalid:
         raise ValueError(
@@ -422,11 +422,7 @@ def patch_llm_api(index: int, patch: LLMApiConfigPatch) -> list[dict[str, Any]]:
     apis = list(settings.llm_apis)
     merged = apis[index].model_dump()
     merged.update(
-        {
-            k: v
-            for k, v in patch.model_dump(exclude_unset=True).items()
-            if v is not None
-        }
+        {k: v for k, v in patch.model_dump(exclude_unset=True).items() if v is not None}
     )
     apis[index] = LLMApiConfig(**merged)
     return set_llm_apis(apis)
@@ -449,5 +445,7 @@ if __name__ == "__main__":
         llm.bind(**SamplingPreset.TEXT_NON_THINKING.to_kwargs(num_predict=256))
         res = await llm.ainvoke("1+1=?")
         print(res)
+
     import asyncio
+
     asyncio.run(_test())

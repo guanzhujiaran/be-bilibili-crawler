@@ -6,7 +6,7 @@ import os
 
 
 def _get_zip_path():
-    return os.path.join(CONFIG.root_dir, 'scripts/database/dyn_backup')
+    return os.path.join(CONFIG.root_dir, "scripts/database/dyn_backup")
 
 
 class MainConf(CustomBaseModel):

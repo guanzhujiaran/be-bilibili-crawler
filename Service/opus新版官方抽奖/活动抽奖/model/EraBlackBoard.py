@@ -5,7 +5,7 @@ from Models.base.custom_pydantic import CustomBaseModel
 class EraTaskIndicator(CustomBaseModel):
     cur_value: int
     limit: int
-    name: Optional[str] = ''
+    name: Optional[str] = ""
 
 
 class EraTaskCheckPoint(CustomBaseModel):
@@ -28,6 +28,7 @@ class EraTask(CustomBaseModel):
     """
     话题抽奖任务
     """
+
     accumulativeCount: int
     awardName: str
     btnBehavior: Optional[List[str]] = [""]
@@ -57,6 +58,7 @@ class EraLotteryConfig(CustomBaseModel):
     """
     话题抽奖内容
     """
+
     activity_id: str
     gifts: List[EraLotteryConfigGift]
     icon: str
@@ -77,6 +79,7 @@ class EraVideoSourceCONFIG(CustomBaseModel):
     """
     视频投稿播放量瓜分现金活动
     """
+
     poolList: List[EraVideoSourcePool]
     topic_id: int
     topic_name: str
@@ -96,12 +99,14 @@ class H5ActivityLottery(CustomBaseModel):
     """
     activity的转盘抽奖
     """
+
     lotteryId: str
     continueTimes: List[int]
     list: List[H5ActivityLotteryGiftSource]
 
 
 # endregion
+
 
 class MatchLotteryTask(CustomBaseModel):
     """
@@ -133,6 +138,7 @@ class EvaContainerTruck(CustomBaseModel):
     """
     集卡活动
     """
+
     activityUrl: str
     jikaId: str
     topId: int

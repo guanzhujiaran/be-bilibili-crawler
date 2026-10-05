@@ -26,6 +26,7 @@ if str(_project_root) not in sys.path:
 # 公开入口
 # ================================================================
 
+
 async def run_alembic_upgrade_head() -> bool:
     """对所有数据库执行一次 alembic upgrade head（增量迁移），全部成功返回 True"""
     myfastapi_logger.info("===== 开始执行 alembic upgrade head =====")
@@ -57,16 +58,20 @@ async def check_schemas() -> bool:
 # Schema 一致性校验
 # ================================================================
 
+
 def _normalize_column_type(col_type_str: str) -> str:
     """将 SQLAlchemy 列类型字符串归一化，便于跨驱动比较"""
     s = col_type_str.upper().strip()
     s = re.sub(r"\s+COLLATE\s+.*$", "", s)
     s = re.sub(r"\(.*\)", "", s)
     aliases = {
-        "LONGTEXT": "TEXT", "MEDIUMTEXT": "TEXT", "TINYTEXT": "TEXT",
+        "LONGTEXT": "TEXT",
+        "MEDIUMTEXT": "TEXT",
+        "TINYTEXT": "TEXT",
         "INTEGER": "INT",
         "TIMESTAMP": "DATETIME",
-        "BOOL": "TINYINT", "BOOLEAN": "TINYINT",
+        "BOOL": "TINYINT",
+        "BOOLEAN": "TINYINT",
     }
     return aliases.get(s, s)
 
@@ -116,7 +121,9 @@ async def _check_single_db_schema(db_key: str) -> tuple[list[str], list[str]]:
                 # 模型中声明但 DB 不存在的表
                 missing_tables = model_tables - db_tables
                 if missing_tables:
-                    critical.append(f"模型中声明但数据库中不存在的表: {sorted(missing_tables)}")
+                    critical.append(
+                        f"模型中声明但数据库中不存在的表: {sorted(missing_tables)}"
+                    )
 
                 for table_name in sorted(model_tables & db_tables):
                     db_cols = {
@@ -130,15 +137,21 @@ async def _check_single_db_schema(db_key: str) -> tuple[list[str], list[str]]:
                     mcs, dcs = set(model_cols), set(db_cols)
                     # 模型中存在但 DB 缺少的列
                     for col in sorted(mcs - dcs):
-                        critical.append(f"{table_name}: 模型中存在但DB缺少列 '{col}' ({model_cols[col]})")
+                        critical.append(
+                            f"{table_name}: 模型中存在但DB缺少列 '{col}' ({model_cols[col]})"
+                        )
                     # DB 中存在但模型未声明的列
                     for col in sorted(dcs - mcs):
-                        non_critical.append(f"{table_name}: DB中存在但模型中未声明的列 '{col}' ({db_cols[col]})")
+                        non_critical.append(
+                            f"{table_name}: DB中存在但模型中未声明的列 '{col}' ({db_cols[col]})"
+                        )
                     # 类型不匹配
                     for col in sorted(mcs & dcs):
                         mt, dt = model_cols[col], db_cols[col]
                         if mt != dt and not _is_type_compatible(mt, dt):
-                            critical.append(f"{table_name}.{col}: 类型不匹配 模型={mt}, DB={dt}")
+                            critical.append(
+                                f"{table_name}.{col}: 类型不匹配 模型={mt}, DB={dt}"
+                            )
 
             await connection.run_sync(_inspect_sync)
     except Exception as e:

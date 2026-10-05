@@ -115,17 +115,17 @@ async def get_reserve_lottery(
     all_lots, total_num = await bos.query_lottery(q)
     # 与主表解耦，批量查询 extra_info（t_lot_extra_info）
     extra_map = await bos.get_extra_info_map([x.lottery_id for x in all_lots])
-    reserve_info_list: list[tuple[TUpReserveRelationInfo, dict]] = (
-        await reserve_robot.bulk_handle_fetch_reserve_info(
-            [x.business_id for x in all_lots], False,background_task
-        )
+    reserve_info_list: list[
+        tuple[TUpReserveRelationInfo, dict]
+    ] = await reserve_robot.bulk_handle_fetch_reserve_info(
+        [x.business_id for x in all_lots], False, background_task
     )
     reserve_info_text_list: List[str] = [
         f"预约有奖：{x.first_prize_cmt}*{x.first_prize}份{f'、{str(x.second_prize_cmt)}' if x.second_prize_cmt else ''}{f'*{str(x.second_prize)}份' if x.second_prize else ''}{f'、{str(x.third_prize_cmt)}' if x.third_prize_cmt else ''}{f'*{str(x.third_prize)}' + '份' if x.third_prize else ''}"
         for x in all_lots
     ]
     ret_reserve_infos: List[ReserveInfoResp] = []
-    for x,_ in reserve_info_list:
+    for x, _ in reserve_info_list:
         if x.text is None:
             if background_task:
                 background_task.add_task(
@@ -138,10 +138,10 @@ async def get_reserve_lottery(
                     business_id=x.ids,
                     business_type=q.business_type,
                 )
-    for i, t in zip(all_lots,reserve_info_text_list):
+    for i, t in zip(all_lots, reserve_info_text_list):
         dynamic_id = None
         total = None
-        for x,_ in reserve_info_list:
+        for x, _ in reserve_info_list:
             if x.ids == i.business_id:
                 dynamic_id = int(x.dynamicId) if x.dynamicId else None
                 total = x.total or None
@@ -175,15 +175,15 @@ async def get_official_lottery(
 ) -> tuple[list[OfficialLotteryResp], int]:
     # 先查主表 lotdata，再通过独立批量查询获取 extra_info，与主表解耦
     all_lots, total_num = await bos.query_official_lottery_by_timelimit_page_offset(q)
-    extra_map = await bos.get_extra_info_map(
-        [x.lottery_id for x in all_lots]
-    )
+    extra_map = await bos.get_extra_info_map([x.lottery_id for x in all_lots])
     ret_list = [
         OfficialLotteryResp(
             dynId=(
                 str(x.business_id)
                 if x.business_id and len(str(x.business_id)) > 10
-                else x.bilidyndetail.dynamic_id if x.bilidyndetail else "-1"
+                else x.bilidyndetail.dynamic_id
+                if x.bilidyndetail
+                else "-1"
             ),
             lottery_time=x.lottery_time,
             sender_uid=str(x.sender_uid),
@@ -216,9 +216,7 @@ async def get_charge_lottery(
 ) -> tuple[list[ChargeLotteryResp], int]:
     # 先查主表 lotdata，再通过独立批量查询获取 extra_info，与主表解耦
     all_lots, total_num = await bos.query_charge_lottery_by_timelimit_page_offset(q)
-    extra_map = await bos.get_extra_info_map(
-        [x.lottery_id for x in all_lots]
-    )
+    extra_map = await bos.get_extra_info_map([x.lottery_id for x in all_lots])
     ret_list = []
     for x in all_lots:
         try:
@@ -264,10 +262,14 @@ async def get_charge_lottery(
 
 
 async def get_topic_lottery(
-    page_num: int = 0, page_size: int = 0, keyword: str | None = None,
+    page_num: int = 0,
+    page_size: int = 0,
+    keyword: str | None = None,
 ) -> tuple[list[TopicLotteryResp], int]:
     all_lots, total_num = await bts.get_all_available_traffic_info_by_page(
-        page_num, page_size, keyword=keyword,
+        page_num,
+        page_size,
+        keyword=keyword,
     )
     all_charge_lottery_resp_infos: List[CvTopicItem] = [
         GenerateTopicLotCv.gen_cv_item(x) for x in all_lots
@@ -380,7 +382,11 @@ async def get_all_lottery(
         effective_pub_time_start = int(time.time() - 30 * 86400)
 
     # 三个查询并行执行：普通抽奖 / 预约抽奖 / 官方抽奖
-    (common_lotterys, common_extra_map), (reserve_lottery_resp_infos, _), (official_lottery_resp_infos, _) = await asyncio.gather(
+    (
+        (common_lotterys, common_extra_map),
+        (reserve_lottery_resp_infos, _),
+        (official_lottery_resp_infos, _),
+    ) = await asyncio.gather(
         bds.getAllLotDynByInsertTimeRange(
             created_at_start=effective_created_at_start,
             created_at_end=created_at_end,
@@ -454,8 +460,7 @@ async def get_all_lottery(
         paged_common_lottery: list[CommonLotteryResp] = comon_lottery_resp[:1000]
 
     must_join_common_lottery: list[CommonLotteryResp] = [
-        x for x in paged_common_lottery
-        if x.extra_info and x.extra_info.is_grand_prize
+        x for x in paged_common_lottery if x.extra_info and x.extra_info.is_grand_prize
     ]
 
     # 合并

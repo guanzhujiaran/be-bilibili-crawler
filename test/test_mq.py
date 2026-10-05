@@ -33,6 +33,7 @@ from Service.MQ.base.MQClient.BiliLotDataPublisher import (
     publisher_producer,
     serialize_cached_message,
 )
+
 # 以「模块」身份导入，便于 monkeypatch 替换其中的模块级 get_broker / redis_obj
 import Service.MQ.base.MQClient.BiliLotDataPublisher as publisher_module
 from Service.MQ.utils.RabbitmqPubCacheRedis import CachedMessage, redis_obj
@@ -47,9 +48,7 @@ from Service.MQ.utils.RabbitmqPubCacheRedis import CachedMessage, redis_obj
 async def test_rabbitmq_test_msg_model_roundtrip():
     """字段类型（int/str/dict/list[str]）正确，model_dump / model_validate 往返一致。"""
     # 注意：dict 字段用字符串键，避免 JSON 往返时整型键被转为字符串导致不相等
-    msg = RabbitMQTestMsgModel(
-        a=42, b="hello", c={"1": "x", "2": "y"}, d=["p", "q"]
-    )
+    msg = RabbitMQTestMsgModel(a=42, b="hello", c={"1": "x", "2": "y"}, d=["p", "q"])
 
     # 注意：CustomBaseModel 带 computed_field「extra_fields」且 extra="allow"，
     # 直接往返会把 extra_fields 再次当作 extra 字段，导致递归嵌套。
@@ -299,6 +298,7 @@ async def test_retry_pending_messages_republishes_and_clears(monkeypatch):
 # ============================================================================
 # B. 集成测试（需要 docker 起的 rabbitmq；RUN_MQ_INTEGRATION=1 开启）
 # ============================================================================
+
 
 def _logical_model(m):
     """排除 CustomBaseModel 的 computed extra_fields，做业务字段比较。"""

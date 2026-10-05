@@ -352,9 +352,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             *[x.on_run_end(end_param) for x in self._plugins], log=self.log
         )
 
-    async def worker(
-        self, queue: asyncio.Queue[WorkerModel | None] | None = None
-    ):
+    async def worker(self, queue: asyncio.Queue[WorkerModel | None] | None = None):
         """
         Worker 协程，固定池模式，持续从队列中获取任务并处理
 
@@ -394,16 +392,24 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             try:
                 async with self.sem:
                     try:
-                        self.log.debug(self.format_log(f"开始处理任务: {worker_model.params}"))
+                        self.log.debug(
+                            self.format_log(f"开始处理任务: {worker_model.params}")
+                        )
                         await self.on_worker_start(worker_model)
-                        worker_model.fetchStatus = await self._execute_fetch(worker_model)
-                        self.log.debug(self.format_log(f"完成任务状态: {worker_model.fetchStatus}"))
+                        worker_model.fetchStatus = await self._execute_fetch(
+                            worker_model
+                        )
+                        self.log.debug(
+                            self.format_log(f"完成任务状态: {worker_model.fetchStatus}")
+                        )
                         should_requeue = self._should_requeue(worker_model)
                     finally:
                         queue.task_done()
 
                 if should_requeue:
-                    self.log.debug(self.format_log(f"任务需要重试: {worker_model.params}"))
+                    self.log.debug(
+                        self.format_log(f"任务需要重试: {worker_model.params}")
+                    )
                     await self._handle_requeue(worker_model, queue)
             except asyncio.CancelledError:
                 # 取消（如调度器"杀旧开新"）必须向上传播，此时不再触发统计回调，
@@ -414,7 +420,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 # 兜底：任何未捕获异常都不能让 worker 协程静默退出（否则并发度永久 -1、
                 # 该任务也完全不进入统计）。标记失败后继续走统计回调。
                 self.log.exception(
-                    self.format_log(f"worker 处理任务异常: {worker_model.params}, {e!r}")
+                    self.format_log(
+                        f"worker 处理任务异常: {worker_model.params}, {e!r}"
+                    )
                 )
                 if worker_model.fetchStatus == WorkerStatus.pending:
                     worker_model.fetchStatus = WorkerStatus.fail
@@ -428,7 +436,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 fetch_result = await self.handle_fetch(worker_model.params)
         except asyncio.TimeoutError:
             if self.log_timeout_error:
-                self.log.exception(self.format_log(f"爬取超时：{self.worker_max_timeout}s"))
+                self.log.exception(
+                    self.format_log(f"爬取超时：{self.worker_max_timeout}s")
+                )
             return WorkerStatus.timeoutError
         except Exception as e:
             if self.log_error:
@@ -540,8 +550,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         - seqId 用于标识任务的顺序，从 0 开始递增
         - 支持暂停：通过 self._is_pause 标志控制，暂停时每 10 秒检查一次
         """
-        self.log.info(self.format_log(
-            f"starting with init_params: {init_params}"))
+        self.log.info(self.format_log(f"starting with init_params: {init_params}"))
 
         seqId = 0
         worker_model = WorkerModel(params=init_params, seqId=seqId)
@@ -567,13 +576,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         await asyncio_gather(
             *[x.on_run_start(worker_model) for x in self._plugins], log=self.log
         )
-        
+
         # 创建固定数量的 worker 池
         # 确保 worker 数量不超过信号量大小，也不超过一个合理上限
         worker_count = self.max_sem
-        
+
         task_set = set()
-        
+
         # 启动固定数量的 worker
         for _ in range(worker_count):
             task = asyncio.create_task(self.worker(queue))
@@ -581,12 +590,12 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             self._worker_tasks.add(task)
             task.add_done_callback(task_set.discard)
             task.add_done_callback(self._worker_tasks.discard)
-        
+
         # 处理初始参数（仅当 init_params 不为 None 时才入队执行）
         if init_params is not None:
             seqId += 1
             await queue.put(worker_model)
-            
+
         # 开始循环生成任务
         try:
             async for param in self.key_params_gen(init_params):
@@ -604,27 +613,29 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 if True in should_stop_results:
                     self.log.info(self.format_log("触发终止条件，停止生成新任务。"))
                     break
-                
+
                 if self._is_pause:
                     while self._is_pause:
                         await asyncio.sleep(10)
-                
+
                 # 智能背压控制：根据队列大小动态调整生成速度
                 queue_size = queue.qsize()
                 if queue_size >= worker_count:
                     # 队列达到max_sem限制，暂停生成直到有空间
                     while queue.qsize() >= worker_count:
                         await asyncio.sleep(0.1)
-                
+
                 await queue.put(worker_model)
-                
+
         except Exception as e:
             self.log.exception(self.format_log(f"任务生成器异常: {e}"))
-        
-        self.log.info(self.format_log(
-            f"任务生成完成。正在等待剩余任务完成，当前活跃任务数：{len(task_set)}，队列大小：{self.task_queue.qsize()}"
-        ))
-        
+
+        self.log.info(
+            self.format_log(
+                f"任务生成完成。正在等待剩余任务完成，当前活跃任务数：{len(task_set)}，队列大小：{self.task_queue.qsize()}"
+            )
+        )
+
         # 等待队列中的所有任务被处理完毕。
         # join() 与失败任务重排入队之间存在竞态：join 的等待 future 已被唤醒、但协程尚未
         # 恢复时，worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务。
@@ -638,22 +649,22 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                     f"join 后仍有 {queue.qsize()} 个任务，继续等待（重排竞态）。"
                 )
             )
-        
+
         # 发送哨兵值通知所有 worker 退出
         # 发送 worker_count 个哨兵值，确保所有 worker 都能收到退出信号
         for _ in range(worker_count):
             await queue.put(None)
-        
+
         # 等待所有活跃的 worker 任务完成
         if task_set:
             await asyncio.gather(*task_set, return_exceptions=True)
-        
+
         self.log.info(self.format_log("所有任务已完成。"))
 
         await self.on_run_end(worker_model)
 
         self.log.info(self.format_log("run finished."))
-        
+
         # 清理队列中可能残留的项目（理论上应该为空，因为所有worker已完成）
         while not queue.empty():
             await queue.get()

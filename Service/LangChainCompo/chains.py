@@ -6,6 +6,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from typing import List
 from operator import itemgetter
 
+
 class CustomStrOutputParser(BaseTransformOutputParser[str]):
     """OutputParser that parses LLMResult into the top likely string."""
 
@@ -26,19 +27,19 @@ class CustomStrOutputParser(BaseTransformOutputParser[str]):
 
     def parse(self, text: str) -> str:
         """Returns the input text with no changes."""
-        return re.sub(r'<think>.*?</think>', '', text, flags=re.S)
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.S)
 
 
 class SentimentOutputParser(StrOutputParser):
     """解析情感分析结果的输出解析器"""
-    
+
     def parse(self, text: str) -> bool:
         """
         解析模型输出，判断是否为积极情感
-        
+
         Args:
             text: 模型输出的文本
-            
+
         Returns:
             bool: True表示积极情感，False表示消极情感
         """
@@ -46,7 +47,6 @@ class SentimentOutputParser(StrOutputParser):
 
 
 class myChains:
-
     @staticmethod
     def single_chain(LLM: BaseChatModel):
         """
@@ -56,7 +56,7 @@ class myChains:
         """
         chain = LLM | CustomStrOutputParser()
         return chain
-        
+
     @staticmethod
     def sentiment_analysis_chain(LLM: BaseChatModel):
         """
@@ -68,13 +68,8 @@ class myChains:
         prompt = ChatPromptTemplate.from_template(
             "请分析以下文本的情感倾向，只回答'positive'表示积极或'negative'表示消极：\n\n{text}"
         )
-        
+
         # 创建链式处理流程
-        chain = (
-            {"text": itemgetter("text")}
-            | prompt
-            | LLM
-            | SentimentOutputParser()
-        )
-        
+        chain = {"text": itemgetter("text")} | prompt | LLM | SentimentOutputParser()
+
         return chain

@@ -41,6 +41,7 @@ RPC handler 注册方式：在 mq_controller.py 末尾导入 lottery_data 模块
     async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
         ...
 """
+
 import asyncio
 from faststream import AckPolicy
 from pydantic import BaseModel
@@ -85,7 +86,11 @@ def rpc_subscriber(
         async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
             ...
     """
-    method_name_str = method_name.value if isinstance(method_name, RpcMethodName) else str(method_name)
+    method_name_str = (
+        method_name.value
+        if isinstance(method_name, RpcMethodName)
+        else str(method_name)
+    )
     routing_key = f"{ROUTING_KEY_PREFIX}.{method_name_str}"
 
     def decorator(func):
@@ -103,9 +108,7 @@ def rpc_subscriber(
                     params_repr = params.model_dump_json(indent=2)
                 except Exception:
                     params_repr = f"<{type(params).__name__} (序列化失败)>"
-                logger.info(
-                    f"[RpcServer] 收到 RPC 请求: {routing_key}\n{params_repr}"
-                )
+                logger.info(f"[RpcServer] 收到 RPC 请求: {routing_key}\n{params_repr}")
                 # asyncio.wait_for 在独立的内部 Task 上运行 handler，
                 # 超时只取消内部 Task（CancelledError 中断 handler 内所有 await，
                 # 释放 DB 连接、HTTP 客户端等资源），不影响当前 FastStream subscriber task，
@@ -123,12 +126,14 @@ def rpc_subscriber(
                 logger.exception(f"[RpcServer] handler 参数缺失: {routing_key} - {e}")
                 return CommonResponseModel(code=400, msg=f"参数缺失: {e}")
             except ValueError as e:
-                logger.exception(f"[RpcServer] handler 参数格式错误: {routing_key} - {e}")
+                logger.exception(
+                    f"[RpcServer] handler 参数格式错误: {routing_key} - {e}"
+                )
                 return CommonResponseModel(code=400, msg=f"参数格式错误: {e}")
             except Exception as e:
                 logger.exception(f"[RpcServer] handler 执行异常: {routing_key} - {e}")
                 return CommonResponseModel(code=500, msg=f"handler 执行异常: {e}")
-            
+
         return wrapper
 
     return decorator

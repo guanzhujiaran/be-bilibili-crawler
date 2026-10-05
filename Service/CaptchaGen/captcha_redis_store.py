@@ -3,13 +3,13 @@ from Utils.redisTool.RedisManager import RedisManagerBase
 
 class RedisHelper(RedisManagerBase):
     class RedisMap(RedisManagerBase.RedisMap):
-        captcha_id = 'captcha:id:{id}'
+        captcha_id = "captcha:id:{id}"
 
     async def get_captcha(self, _id: str) -> str:
         if result := await self._get(self.RedisMap.captcha_id.format(id=_id)):
             return result
         else:
-            return ''
+            return ""
 
     async def set_id(self, _id: str, value: str, _timeout: int = 600):
         """

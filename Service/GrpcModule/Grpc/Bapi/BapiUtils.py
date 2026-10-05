@@ -6,8 +6,12 @@ import uuid
 import asyncio
 from typing import Callable
 from log.base_log import bapi_log
-from Service.GrpcModule.Models.CustomRequestErrorModel import RequestKnownError, Request412Error, Request352Error, \
-    RequestProxyResponseError
+from Service.GrpcModule.Models.CustomRequestErrorModel import (
+    RequestKnownError,
+    Request412Error,
+    Request352Error,
+    RequestProxyResponseError,
+)
 from Service.GrpcModule.Grpc.Bapi.Constants import APP_KEY, APP_SEC
 
 
@@ -62,7 +66,12 @@ def request_wrapper(func: Callable, max_error_retries: int = 3):
                         f"方法：【{func.__name__}】 在 {known_error_retry_count} 次可忽略错误重试后成功"
                     )
                 return resp_dict
-            except (RequestKnownError, Request412Error, Request352Error, RequestProxyResponseError) as known_err:
+            except (
+                RequestKnownError,
+                Request412Error,
+                Request352Error,
+                RequestProxyResponseError,
+            ) as known_err:
                 # 已知可忽略的错误：继续重试，但要留下可观测的痕迹
                 known_error_retry_count += 1
                 if known_error_retry_count % _KNOWN_ERROR_RETRY_LOG_INTERVAL == 1:
@@ -71,9 +80,7 @@ def request_wrapper(func: Callable, max_error_retries: int = 3):
                         f"（{type(known_err).__name__}: {known_err}），"
                         f"已连续重试 {known_error_retry_count} 次，继续重试..."
                     )
-                await asyncio.sleep(
-                    random.uniform(*_KNOWN_ERROR_RETRY_BACKOFF)
-                )
+                await asyncio.sleep(random.uniform(*_KNOWN_ERROR_RETRY_BACKOFF))
                 continue
             except TypeError as type_err:
                 raise type_err

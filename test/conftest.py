@@ -26,7 +26,9 @@ if str(_fastapi_app_path) not in sys.path:
     sys.path.insert(0, str(_fastapi_app_path))
 
 # 将 GrpcProto 目录添加到 Python 路径（protobuf 生成的 bilibili 模块需要）
-_grpc_proto_path = str(_fastapi_app_path / "Service" / "GrpcModule" / "Grpc" / "GrpcProto")
+_grpc_proto_path = str(
+    _fastapi_app_path / "Service" / "GrpcModule" / "Grpc" / "GrpcProto"
+)
 if _grpc_proto_path not in sys.path:
     sys.path.insert(0, _grpc_proto_path)
 

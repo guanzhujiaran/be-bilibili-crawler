@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 class PrizeExtractResult(BaseModel):
     """抽奖信息提取结果（普通/预约抽奖用：字段完整）"""
+
     prize_names: list[str] = Field(default_factory=list, description="奖品名称列表")
     lottery_time: str | None = Field(
         default=None, description="开奖时间，格式YYYY-MM-DD，没有则为None"

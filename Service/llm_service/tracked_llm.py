@@ -60,9 +60,7 @@ def _secret_value(value: Any) -> str:
     return str(value)
 
 
-def slot_fingerprint(
-    base_url: str | None, model_name: str | None, token: Any
-) -> str:
+def slot_fingerprint(base_url: str | None, model_name: str | None, token: Any) -> str:
     """槽位指纹：``sha256("base_url|model_name|token")`` 取前 16 位十六进制。
 
     槽位 = 一条云端 LLM 配置；指纹是它的运行时身份（删除配置、统计观测等按它定位）。
@@ -435,9 +433,7 @@ class TrackedChatOpenAI(ChatOpenAI):
         try:
             handler(self, previous, current)
         except Exception as e:  # noqa: BLE001 - 副作用失败不应影响调用结果与状态机
-            logger.warning(
-                "LLM 槽位状态迁移回调执行失败：{}: {}", type(e).__name__, e
-            )
+            logger.warning("LLM 槽位状态迁移回调执行失败：{}: {}", type(e).__name__, e)
 
     def _failure_context(self) -> str:
         """把定位所需的少量统计压成一行，避免整份 stats 反复刷屏。"""

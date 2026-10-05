@@ -516,9 +516,7 @@ class LLMHealth(BaseModel):
                 SUSPENDED_BASE_SECONDS * (2 ** (escalation - 1)),
                 SUSPENDED_MAX_SECONDS,
             )
-            self._set_state(
-                LLMState.SUSPENDED, reason=reason, resume_at=now + cooldown
-            )
+            self._set_state(LLMState.SUSPENDED, reason=reason, resume_at=now + cooldown)
             return self._state
 
         if kind is LLMFailureKind.QUOTA_EXHAUSTED:

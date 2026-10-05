@@ -122,7 +122,9 @@ def _lock_key(params: PrizeExtractParams) -> str:
     return f"biliopusdb:{params.ref_id}:{params.lot_type}"
 
 
-async def _wait_own_lock(module_name: str, lock_key: str, budget: ConsumeBudget) -> None:
+async def _wait_own_lock(
+    module_name: str, lock_key: str, budget: ConsumeBudget
+) -> None:
     """一直重试到抢到去重锁为止（同一条记录可能正被另一个副本处理）。
 
     抢不到时本机退避重试，**不 ack、不 nack**：重复副本的正确归宿是「处理」或
@@ -179,11 +181,11 @@ async def _do_extract_and_store(
         if lottery_id is None:
             MQ_logger.warning(f"【dyndetail】缺少 lottery_id，跳过提取: {params}")
             return PrizeExtractResult()
-        result: PrizeExtractResp[OfficialPrizeExtractResult] = (
-            await extract_prize_info_for_lotdata(
-                dyn_content=params.lottery_text,
-                max_wait=max_wait,
-            )
+        result: PrizeExtractResp[
+            OfficialPrizeExtractResult
+        ] = await extract_prize_info_for_lotdata(
+            dyn_content=params.lottery_text,
+            max_wait=max_wait,
         )
         await grpc_sql_helper.save_extra_info(
             lottery_id=lottery_id,

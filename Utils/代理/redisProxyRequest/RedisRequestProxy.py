@@ -56,7 +56,6 @@ from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHel
 
 
 class RequestWithProxy:
-
     def __init__(self):
         self.use_p_dict_flag = False
         self.channel = "bili"
@@ -194,7 +193,7 @@ class RequestWithProxy:
                     if cookie_data:
                         cookie_data.times_352 += 1
                     status = -412
-                    err_msg = f'{req_dict.get("code")}报错,换个ip\t{proxy}\t{self._timeshift(time.time())}\t{req_dict}\n{kwargs}\n{req.headers}'
+                    err_msg = f"{req_dict.get('code')}报错,换个ip\t{proxy}\t{self._timeshift(time.time())}\t{req_dict}\n{kwargs}\n{req.headers}"
                     if req_dict.get("code") == 65539:
                         pass
                     if req_dict.get("code") == -412:
@@ -223,7 +222,7 @@ class RequestWithProxy:
                     raise Request412Error(err_msg, req_dict.get("code"))
         except (Request412Error, Request352Error) as _err:
             if proxy:
-                match (_err.code):
+                match _err.code:
                     case -412:
                         await handle_proxy_412(
                             proxy_tab=proxy,

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
-from Service.BaseCrawler.plugin.statusPlugin import SequentialNullStopPlugin, StatsPlugin
+from Service.BaseCrawler.plugin.statusPlugin import (
+    SequentialNullStopPlugin,
+    StatsPlugin,
+)
 import asyncio
 import os
 import time
@@ -63,6 +66,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
     Config = ReserveScrapyRobotConfig
     stats_plugin: StatsPlugin | None = None
     null_stop_plugin: SequentialNullStopPlugin | None = None
+
     def __init__(self):
         # region 统计类数据
         self.totoal_count = 0
@@ -148,9 +152,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             round_id=self.now_round_id,
             is_finished=True,
             round_start_ts=self.round_start_ts,
-            round_add_num=self.totoal_count
-            - 1
-            - self.none_num,
+            round_add_num=self.totoal_count - 1 - self.none_num,
             round_lot_num=len(latest_reserve_lots),
         )
         await self.sqlHelper.add_reserve_round_info(new_round_info)
@@ -199,7 +201,6 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
     async def handle_fetch(self, params: ReserveParams) -> WorkerStatus:
         return await self.resolve_reserve(params.reserve_id)
 
-
     async def write_in_file(self):
         async def my_write(path_name, content_list: list, write_mode="a+"):
             async with aiofiles.open(path_name, mode=write_mode, encoding="utf-8") as f:
@@ -218,7 +219,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             self.refresh_progress_counter.succ_count += 1
         return result
 
-    async def _background_save_reserve_info(self, sid, round_id,x:TUpReserveRelationInfo):
+    async def _background_save_reserve_info(
+        self, sid, round_id, x: TUpReserveRelationInfo
+    ):
         if not sid:
             raise ValueError(f"sid不能为空\n{x}")
         resp_dict = await reserve_relation_info(sid)
@@ -232,9 +235,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         background_tasks: BackgroundTasks | None,
     ) -> list[tuple[TUpReserveRelationInfo, dict]]:
         if not is_api_fetch:
-            _: list[TUpReserveRelationInfo] = (
-                await self.sqlHelper.get_reserve_by_ids_bulk(sid_list)
-            )
+            _: list[
+                TUpReserveRelationInfo
+            ] = await self.sqlHelper.get_reserve_by_ids_bulk(sid_list)
             round_id = self.now_round_id
         else:
             _ = []
@@ -244,16 +247,16 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         for x in _:
             resp_dict = x.raw_JSON
             if not x or x.code != 0 or x.sid is None:
-                self.log.info(f'刷新预约信息: {x.sid}')
+                self.log.info(f"刷新预约信息: {x.sid}")
                 if background_tasks:
                     background_tasks.add_task(
-                        self._background_save_reserve_info, x.ids, round_id,x
+                        self._background_save_reserve_info, x.ids, round_id, x
                     )
                 else:
-                    await self._background_save_reserve_info(x.ids, round_id,x)
+                    await self._background_save_reserve_info(x.ids, round_id, x)
             resp.append((x, resp_dict))
         return resp
-    
+
     async def handle_fetch_reserve_info(
         self, sid, is_api_fetch: bool
     ) -> tuple[TUpReserveRelationInfo, dict]:
@@ -274,7 +277,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             _ = await self.sqlHelper.add_reserve_info_by_resp_dict(resp_dict, round_id)
 
         return _, resp_dict
-    
+
     async def resolve_reserve_by_sid(
         self, sid: int, is_refresh: bool = False
     ) -> WorkerStatus:
@@ -358,7 +361,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         except Exception as e:
             reserve_lot_logger.exception(
                 f"{e}\n第{self.stats_plugin.processed_items_count}次获取直播预约\t"
-                f'{time.strftime("%Y-%m-%d %H:%M:%S")}\trid:{sid}\n'
+                f"{time.strftime('%Y-%m-%d %H:%M:%S')}\trid:{sid}\n"
                 f"直播预约失效，被删除:{req1_dict}\n"
                 f"当前已经有{self.null_stop_plugin.sequential_null_count}条data为None的sid"
             )
@@ -495,7 +498,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         running_num = 0
         reserve_lot_logger.debug(f"开始刷新未开奖的预约内容，共计{all_num}条")
         for reserve_lottery in all_not_drawn_reserve_lottery:
-            await self.resolve_reserve(reserve_lottery.sid, is_refresh=True) # 这里改成一个个执行,不然llm会限速
+            await self.resolve_reserve(
+                reserve_lottery.sid, is_refresh=True
+            )  # 这里改成一个个执行,不然llm会限速
             running_num += 1
         self.refresh_progress_counter.is_running = False
 
@@ -516,9 +521,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
                 comm_storage_redis_obj.RedisMap.reserve_scrapy_bot_rid_ls
             ):
                 # 只采用最大的那个 ids
-                rid_list = [
-                    int(x) for x in file_contents.split("\n") if str(x).strip()
-                ]
+                rid_list = [int(x) for x in file_contents.split("\n") if str(x).strip()]
                 max_rid = max(rid_list)
                 self.reserve_ids_worker_model_list = [
                     WorkerModel(params=ReserveParams(reserve_id=max_rid), seqId=0),

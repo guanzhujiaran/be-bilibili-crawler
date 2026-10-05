@@ -6,7 +6,9 @@ from sqlalchemy import create_engine
 
 import CONFIG
 
-SQL_URI = CONFIG.database.MYSQL.bili_reserve_URI.replace('+aiomysql', '+pymysql').replace('&autocommit=true', '')
+SQL_URI = CONFIG.database.MYSQL.bili_reserve_URI.replace(
+    "+aiomysql", "+pymysql"
+).replace("&autocommit=true", "")
 
 engine = create_engine(SQL_URI, echo=True)
 DbSession = sessionmaker(bind=engine)
@@ -16,7 +18,7 @@ Base = declarative_base()
 
 
 class t_up_reserve_relation_info(Base):
-    __tablename__ = 't_up_reserve_relation_info'
+    __tablename__ = "t_up_reserve_relation_info"
 
     code = mapped_column(Integer, nullable=True)
     message = mapped_column(Text, nullable=True)
@@ -41,9 +43,9 @@ class t_up_reserve_relation_info(Base):
     reserveTotalShowLimit = mapped_column(BigInteger, nullable=True)
     desc = mapped_column(Text, nullable=True)
     start_show_time = mapped_column(Integer, nullable=True)
-    BaseJumpUrl= mapped_column(Text, nullable=True)
+    BaseJumpUrl = mapped_column(Text, nullable=True)
     OidView = mapped_column(BigInteger, nullable=True)
-    ids = mapped_column(Integer, nullable=True, primary_key=True,autoincrement=False)
+    ids = mapped_column(Integer, nullable=True, primary_key=True, autoincrement=False)
     hide = mapped_column(Text, nullable=True)
     ext = mapped_column(Text, nullable=True)
     subType = mapped_column(Text, nullable=True)
@@ -51,12 +53,14 @@ class t_up_reserve_relation_info(Base):
     reserve_products = mapped_column(JSON, nullable=True)
     raw_JSON = mapped_column(JSON, nullable=True)
 
-    reserve_round_id = mapped_column(Integer,ForeignKey('t_reserve_round_info.round_id'))
-    new_field = mapped_column(JSON, nullable=True, comment='是否有新的字段')
+    reserve_round_id = mapped_column(
+        Integer, ForeignKey("t_reserve_round_info.round_id")
+    )
+    new_field = mapped_column(JSON, nullable=True, comment="是否有新的字段")
 
 
 class t_reserve_round_info(Base):
-    __tablename__ = 't_reserve_round_info'
+    __tablename__ = "t_reserve_round_info"
 
     id = mapped_column(Integer, primary_key=True, autoincrement=True)
     round_id = mapped_column(Integer, nullable=False, autoincrement=True, unique=True)
@@ -66,7 +70,7 @@ class t_reserve_round_info(Base):
     round_lot_num = mapped_column(Integer, nullable=False)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     # 创建数据库命令
     Base.metadata.create_all(checkfirst=True, bind=engine)
-    os.system(f'sqlacodegen_v2 {SQL_URI} > models.py')
+    os.system(f"sqlacodegen_v2 {SQL_URI} > models.py")

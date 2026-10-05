@@ -563,7 +563,7 @@ async def get_bili_ticket(
     x_fingerprint.build_id = f"{android_build_id_moc} release-keys"  # 67
     x_fingerprint.country_iso = rand_country  # 68
     x_fingerprint.free_memory = random.randint(10**8, 10**10)  # 70
-    x_fingerprint.fstorage = f"{random.randint(10 ** 8, 10 ** 10)}"  # 71
+    x_fingerprint.fstorage = f"{random.randint(10**8, 10**10)}"  # 71
     x_fingerprint.kernel_version = rand_kernel  # 74
     x_fingerprint.languages = rand_persist_sys_language  # 75
     x_fingerprint.systemvolume = random.choice([0, 1, 2, 3, 4, 5, 6, 7])  # 80
@@ -581,7 +581,7 @@ async def get_bili_ticket(
     x_fingerprint.linear_speed_sensor = 1  # 93
     x_fingerprint.gyroscope_sensor = 1  # 94
     x_fingerprint.biometric = 1  # 95
-    x_fingerprint.biometrics.extend(["touchid"]),  # 96
+    (x_fingerprint.biometrics.extend(["touchid"]),)  # 96
     x_fingerprint.last_dump_ts = int(time.time() * 1000) - random.randint(
         3 * 3600 * 1000, 5000000000
     )  #

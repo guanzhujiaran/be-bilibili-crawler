@@ -41,8 +41,7 @@ class LotteryDataStatisticSqlHelper(SqlHelperBase):
         self, bili_atari_info_list: list[BiliAtariInfo], chunk_size=10
     ):
         sorted_data = sorted(
-            bili_atari_info_list,
-            key=lambda x: (x.mid, x.atari_lot_id)
+            bili_atari_info_list, key=lambda x: (x.mid, x.atari_lot_id)
         )
 
         max_retries = 5
@@ -70,13 +69,20 @@ class LotteryDataStatisticSqlHelper(SqlHelperBase):
                 return
             except Exception as e:
                 error_str = str(e)
-                if ("Deadlock" in error_str or "1213" in error_str) and retry < max_retries - 1:
+                if (
+                    "Deadlock" in error_str or "1213" in error_str
+                ) and retry < max_retries - 1:
                     import random
+
                     wait_time = random.uniform(0.5, 2.0) * (retry + 1)
-                    self.log.warning(f"检测到死锁，第{retry+1}/{max_retries}次重试，等待{wait_time:.2f}秒... 错误: {error_str[:100]}")
+                    self.log.warning(
+                        f"检测到死锁，第{retry + 1}/{max_retries}次重试，等待{wait_time:.2f}秒... 错误: {error_str[:100]}"
+                    )
                     await asyncio.sleep(wait_time)
                 else:
-                    self.log.error(f"插入中奖记录失败，已达最大重试次数{max_retries}次或非死锁错误")
+                    self.log.error(
+                        f"插入中奖记录失败，已达最大重试次数{max_retries}次或非死锁错误"
+                    )
                     raise
 
     async def get_lot_prize_count(

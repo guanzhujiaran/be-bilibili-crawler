@@ -4,10 +4,16 @@ import time
 import uuid
 
 from log.base_log import sams_club_logger
-from Models.v1.samsclub.samsclub_model import SamsClubHeadersModel, SamsClubEncryptModel, \
-    SamsClubGetDoEncryptReqModel
-from Service.samsclub.tools.do_samsclub_encryptor import get_st, get_do_encrypt_result_str, \
-    update_do_encrypt_key
+from Models.v1.samsclub.samsclub_model import (
+    SamsClubHeadersModel,
+    SamsClubEncryptModel,
+    SamsClubGetDoEncryptReqModel,
+)
+from Service.samsclub.tools.do_samsclub_encryptor import (
+    get_st,
+    get_do_encrypt_result_str,
+    update_do_encrypt_key,
+)
 from Service.samsclub.tools.java_rand_gen import F65205aRandomIntGenerator
 from Utils.通用.Common import retry_wrapper
 
@@ -15,13 +21,41 @@ from Utils.通用.Common import retry_wrapper
 def sort_headers_with_missing_last(headers, desired_order: list[str] = None):
     if desired_order is None:
         desired_order = [
-            'language', 'system-language', 'device-type', 'tpg', 'app-version',
-            'device-id', 'device-os-version', 'device-name', 'treq-id', 'auth-token',
-            'longitude', 'latitude', 'p', 't', 'n', 'sy', 'st', 'sny', 'rcs', 'spv',
-            'Local-Longitude', 'Local-Latitude', 'zoneType', 'provinceCode', 'cityCode',
-            'districtCode', 'amapProvinceCode', 'amapCityCode', 'amapDistrictCode',
-            'Content-Type', 'Content-Length', 'Host', 'Connection', 'Accept-Encoding',
-            'User-Agent'
+            "language",
+            "system-language",
+            "device-type",
+            "tpg",
+            "app-version",
+            "device-id",
+            "device-os-version",
+            "device-name",
+            "treq-id",
+            "auth-token",
+            "longitude",
+            "latitude",
+            "p",
+            "t",
+            "n",
+            "sy",
+            "st",
+            "sny",
+            "rcs",
+            "spv",
+            "Local-Longitude",
+            "Local-Latitude",
+            "zoneType",
+            "provinceCode",
+            "cityCode",
+            "districtCode",
+            "amapProvinceCode",
+            "amapCityCode",
+            "amapDistrictCode",
+            "Content-Type",
+            "Content-Length",
+            "Host",
+            "Connection",
+            "Accept-Encoding",
+            "User-Agent",
         ]
     # 构造一个列表用于存储最终结果
     result = []
@@ -57,7 +91,7 @@ class SamsClubHeadersGen:
     device_os_version = "11"
     device_name = "OnePlus_ONEPLUS+A6000"
     device_str = "d3e9907ab1881aac891aff90100016e1950c"
-    device_uuid_str = '97d71900e30849de9b29b734997629fc'  # 这个是手机的uuid，不会变的
+    device_uuid_str = "97d71900e30849de9b29b734997629fc"  # 这个是手机的uuid，不会变的
     version_str = "5.0.125"
     longitude = 121.463874
     latitude = 31.258597
@@ -65,15 +99,16 @@ class SamsClubHeadersGen:
     _counter = 100
     _lock = asyncio.Lock()
 
-    def __init__(self,
-                 auth_token,
-                 treq_uuid=treq_uuid,
-                 device_os_version=device_os_version,
-                 device_name=device_name,
-                 device_str=device_str,
-                 version_str=version_str,
-                 device_uuid_str=device_uuid_str
-                 ):
+    def __init__(
+        self,
+        auth_token,
+        treq_uuid=treq_uuid,
+        device_os_version=device_os_version,
+        device_name=device_name,
+        device_str=device_str,
+        version_str=version_str,
+        device_uuid_str=device_uuid_str,
+    ):
         self.treq_uuid = treq_uuid
         self.device_os_version = device_os_version
         self.device_name = device_name
@@ -96,11 +131,13 @@ class SamsClubHeadersGen:
 
     @retry_wrapper
     async def gen_headers(
-            self,
-            body: str,
+        self,
+        body: str,
     ) -> SamsClubHeadersModel:
         cnt = await self.get_fetch_cnt()
-        ts = int(time.time() * 1000)  # 模拟Java的System.currentTimeMillis() 方法，返回当前时间的毫秒数
+        ts = int(
+            time.time() * 1000
+        )  # 模拟Java的System.currentTimeMillis() 方法，返回当前时间的毫秒数
         ts_str = str(int(ts))
         treq_ts_10000 = int(ts * 10000) + self.random_gen.nextInt()
         treq_ts_10000_str = str(treq_ts_10000)
@@ -116,7 +153,7 @@ class SamsClubHeadersGen:
                         timestampStr=ts_str,
                         bodyStr=body,
                         uuidStr=fake_n,
-                        tokenStr=self.auth_token
+                        tokenStr=self.auth_token,
                     )
                 ),
             )
@@ -134,11 +171,9 @@ class SamsClubHeadersGen:
             "n": fake_n,
             "st": st,
             "app-version": self.version_str,
-            'Local-Longitude': str(self.longitude),
-            'Local-Latitude': str(self.latitude),
-            'longitude': str(self.longitude),
-            'latitude': str(self.latitude),
+            "Local-Longitude": str(self.longitude),
+            "Local-Latitude": str(self.latitude),
+            "longitude": str(self.longitude),
+            "latitude": str(self.latitude),
         }
-        return SamsClubHeadersModel(
-            **headers_dict
-        )
+        return SamsClubHeadersModel(**headers_dict)

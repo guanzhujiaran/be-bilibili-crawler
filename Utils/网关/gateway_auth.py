@@ -13,6 +13,7 @@ Puppeteer 网关（ExpressServerEnd/Controller/ProxyEndPort.js）在转发请求
 本模块提供 FastAPI 依赖，用于校验网关注入的用户信息头，确认用户有效登录态。
 未登录或校验失败则拒绝访问（HTTP 401）。
 """
+
 from typing import Dict
 
 from fastapi import HTTPException, Request, status

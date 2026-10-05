@@ -9,5 +9,3 @@ def new_router(dependencies=None):
     if dependencies:
         router.dependencies = dependencies
     return router
-
-

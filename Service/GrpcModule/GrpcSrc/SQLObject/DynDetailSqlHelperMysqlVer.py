@@ -464,7 +464,7 @@ class SQLHelper(SqlHelperBase):
 
             if q.status is BiliLotDataStatusEnum.UNFINISHED:
                 base_conditions.append(Lotdata.lottery_time >= now_ts)
-        
+
         # 时间范围筛选
         if q.start_ts is not None:
             base_conditions.append(Lotdata.lottery_time >= q.start_ts)
@@ -485,20 +485,20 @@ class SQLHelper(SqlHelperBase):
 
         # 关键词筛选（对抽奖结果描述做 LIKE 模糊匹配）
         if q.keyword is not None and q.keyword.strip():
-            base_conditions.append(Lotdata.lottery_result.like(f"%{q.keyword.strip()}%"))
+            base_conditions.append(
+                Lotdata.lottery_result.like(f"%{q.keyword.strip()}%")
+            )
 
         # 大奖筛选：通过子表 t_lot_extra_info 过滤
         if q.is_grand_prize is True:
-            grand_subq = (
-                select(LotExtraInfo.lottery_id)
-                .where(LotExtraInfo.is_grand_prize == 1)
+            grand_subq = select(LotExtraInfo.lottery_id).where(
+                LotExtraInfo.is_grand_prize == 1
             )
             base_conditions.append(Lotdata.lottery_id.in_(grand_subq))
         elif q.is_grand_prize is False:
             # 非大奖 = 子表中没有记录，或子表中 is_grand_prize=0
-            grand_subq = (
-                select(LotExtraInfo.lottery_id)
-                .where(LotExtraInfo.is_grand_prize == 1)
+            grand_subq = select(LotExtraInfo.lottery_id).where(
+                LotExtraInfo.is_grand_prize == 1
             )
             base_conditions.append(Lotdata.lottery_id.not_in(grand_subq))
 
@@ -512,10 +512,7 @@ class SQLHelper(SqlHelperBase):
             base_conditions.append(Lotdata.ts >= (now_ts - days * 86400))
 
         # 构建查询语句（仅查主表 lotdata，extra_info 由调用方通过 get_extra_info_map 独立批量查询）
-        stmt = (
-            select(Lotdata)
-            .where(and_(*base_conditions))
-        )
+        stmt = select(Lotdata).where(and_(*base_conditions))
 
         # 排序：优先使用 q.sort_by，否则按 lottery_time 升序
         if q.sort_by is not None:
@@ -741,29 +738,24 @@ class SQLHelper(SqlHelperBase):
         )
         stmt = stmt.on_duplicate_key_update(
             is_grand_prize=stmt.inserted.is_grand_prize,
-            updated_at=text('CURRENT_TIMESTAMP'),
+            updated_at=text("CURRENT_TIMESTAMP"),
         )
         await session.execute(stmt)
 
     @log_sql_retry_wrapper()
-    async def batch_check_existing_extra_info(
-        self, lottery_ids: list[int]
-    ) -> set[int]:
+    async def batch_check_existing_extra_info(self, lottery_ids: list[int]) -> set[int]:
         """批量查询已存在附加信息的 lottery_id 集合（用于手动回填脚本跳过已判记录）"""
         if not lottery_ids:
             return set()
         async with self.async_session() as session:
-            stmt = (
-                select(LotExtraInfo.lottery_id)
-                .where(LotExtraInfo.lottery_id.in_(lottery_ids))
+            stmt = select(LotExtraInfo.lottery_id).where(
+                LotExtraInfo.lottery_id.in_(lottery_ids)
             )
             res = await session.execute(stmt)
             return {row[0] for row in res.all()}
 
     @log_sql_retry_wrapper()
-    async def batch_save_extra_info(
-        self, flags: dict[int, int]
-    ) -> None:
+    async def batch_save_extra_info(self, flags: dict[int, int]) -> None:
         """批量保存附加信息到 t_lot_extra_info（key=lottery_id, value=is_grand_prize）"""
         if not flags:
             return
@@ -777,9 +769,7 @@ class SQLHelper(SqlHelperBase):
                     )
 
     @log_sql_retry_wrapper()
-    async def save_extra_info(
-        self, lottery_id: int, is_grand_prize: int
-    ) -> None:
+    async def save_extra_info(self, lottery_id: int, is_grand_prize: int) -> None:
         """保存/更新单条附加信息到 t_lot_extra_info（原子 upsert）。
 
         逐条保存，便于手动回填脚本“处理完一个立即保存一个”，
@@ -803,9 +793,7 @@ class SQLHelper(SqlHelperBase):
         if not lottery_ids:
             return {}
         async with self.async_session() as session:
-            stmt = select(LotExtraInfo).filter(
-                LotExtraInfo.lottery_id.in_(lottery_ids)
-            )
+            stmt = select(LotExtraInfo).filter(LotExtraInfo.lottery_id.in_(lottery_ids))
             res = await session.execute(stmt)
             rows = res.scalars().all()
             return {row.lottery_id: row for row in rows}
@@ -873,9 +861,7 @@ class SQLHelper(SqlHelperBase):
         start_ts: int | None = None,
         end_ts: int | None = None,
         business_type: Literal[1, 10, 12, 0] | None = None,
-        rank_type: (
-            BiliLotStatisticRankTypeEnum
-        ) = BiliLotStatisticRankTypeEnum.total,
+        rank_type: (BiliLotStatisticRankTypeEnum) = BiliLotStatisticRankTypeEnum.total,
     ) -> list[tuple[int, int]]:
         async with self.async_session() as session:
             if rank_type == BiliLotStatisticRankTypeEnum.total:
@@ -891,9 +877,9 @@ uid BIGINT PATH '$.uid'
 ) AS jt
 WHERE 
 JSON_VALID(lotData.lottery_result)
-{'AND lotData.business_type = :business_type' if business_type else ''}
-{'AND lotData.lottery_time >= :start_ts' if start_ts else ''}
-{'AND lotData.lottery_time <= :end_ts' if end_ts else ''}
+{"AND lotData.business_type = :business_type" if business_type else ""}
+{"AND lotData.lottery_time >= :start_ts" if start_ts else ""}
+{"AND lotData.lottery_time <= :end_ts" if end_ts else ""}
 UNION ALL
 
 SELECT 
@@ -907,9 +893,9 @@ uid BIGINT PATH '$.uid'
 ) AS jt
 WHERE 
 JSON_VALID(lotData.lottery_result)
-{'AND lotData.business_type = :business_type' if business_type else ''}
-{'AND lotData.lottery_time >= :start_ts' if start_ts else ''}
-{'AND lotData.lottery_time <= :end_ts' if end_ts else ''}
+{"AND lotData.business_type = :business_type" if business_type else ""}
+{"AND lotData.lottery_time >= :start_ts" if start_ts else ""}
+{"AND lotData.lottery_time <= :end_ts" if end_ts else ""}
 UNION ALL
 
 SELECT 
@@ -923,9 +909,9 @@ uid BIGINT PATH '$.uid'
 ) AS jt
 WHERE 
 JSON_VALID(lotData.lottery_result)
-{'AND lotData.business_type = :business_type' if business_type else ''}
-{'AND lotData.lottery_time >= :start_ts' if start_ts else ''}
-{'AND lotData.lottery_time <= :end_ts' if end_ts else ''}
+{"AND lotData.business_type = :business_type" if business_type else ""}
+{"AND lotData.lottery_time >= :start_ts" if start_ts else ""}
+{"AND lotData.lottery_time <= :end_ts" if end_ts else ""}
 ) AS combined_uids
 WHERE uid IS NOT NULL
 GROUP BY uid
@@ -958,9 +944,9 @@ FROM
 	) AS jt
 WHERE
 	JSON_VALID(lottery_result)
-	{'AND business_type = :business_type' if business_type else ''}
-	{'AND lotData.lottery_time >= :start_ts' if start_ts else ''}
-    {'AND lotData.lottery_time <= :end_ts' if end_ts else ''}
+	{"AND business_type = :business_type" if business_type else ""}
+	{"AND lotData.lottery_time >= :start_ts" if start_ts else ""}
+    {"AND lotData.lottery_time <= :end_ts" if end_ts else ""}
 GROUP BY
 	jt.uid
 ORDER BY
@@ -1269,7 +1255,9 @@ ORDER BY
         return bili_atari_info
 
     @log_sql_retry_wrapper()
-    async def sync_all_lottery_result_2_bili_user_info(self, *, lottery_id: int | None = None):
+    async def sync_all_lottery_result_2_bili_user_info(
+        self, *, lottery_id: int | None = None
+    ):
         """
         同步所有抽奖结果到数据库的用户信息表
         :param lottery_id: 抽奖id  如果为None则同步所有抽奖结果

@@ -1,5 +1,8 @@
 from typing import Literal, Any
-from Models.v1.background_service.background_service_model import ProgressStatusResp, TypeScrapyStatus
+from Models.v1.background_service.background_service_model import (
+    ProgressStatusResp,
+    TypeScrapyStatus,
+)
 from Service.opus新版官方抽奖.bili_lottery_api.refresh_bili_lot_database import (
     refresh_bili_lot_database_crawler,
 )
@@ -79,9 +82,7 @@ def get_scrapy_status(
                 refresh_bili_lot_database_crawler.reserve_robot
                 and refresh_bili_lot_database_crawler.reserve_robot.refresh_progress_counter
             ):
-                _progress = (
-                    refresh_bili_lot_database_crawler.reserve_robot.refresh_progress_counter
-                )
+                _progress = refresh_bili_lot_database_crawler.reserve_robot.refresh_progress_counter
                 return ProgressStatusResp(
                     succ_count=_progress.succ_count,
                     start_ts=_progress.start_ts,

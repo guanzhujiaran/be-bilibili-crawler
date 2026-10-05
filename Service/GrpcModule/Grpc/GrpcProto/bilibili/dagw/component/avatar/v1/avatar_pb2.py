@@ -4,55 +4,63 @@
 # source: bilibili/dagw/component/avatar/v1/avatar.proto
 # Protobuf Python Version: 7.35.1
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+
 _runtime_version.ValidateProtobufRuntimeVersion(
     _runtime_version.Domain.PUBLIC,
     7,
     35,
     1,
-    '',
-    'bilibili/dagw/component/avatar/v1/avatar.proto'
+    "",
+    "bilibili/dagw/component/avatar/v1/avatar.proto",
 )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-from bilibili.dagw.component.avatar.common import common_pb2 as bilibili_dot_dagw_dot_component_dot_avatar_dot_common_dot_common__pb2
+from bilibili.dagw.component.avatar.common import (
+    common_pb2 as bilibili_dot_dagw_dot_component_dot_avatar_dot_common_dot_common__pb2,
+)
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n.bilibili/dagw/component/avatar/v1/avatar.proto\x12!bilibili.dagw.component.avatar.v1\x1a\x32\x62ilibili/dagw/component/avatar/common/common.proto\"\xe9\x01\n\nAvatarItem\x12G\n\x0e\x63ontainer_size\x18\x01 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.SizeSpec\x12=\n\x06layers\x18\x02 \x03(\x0b\x32-.bilibili.dagw.component.avatar.v1.LayerGroup\x12\x46\n\x0f\x66\x61llback_layers\x18\x03 \x01(\x0b\x32-.bilibili.dagw.component.avatar.v1.LayerGroup\x12\x0b\n\x03mid\x18\x04 \x01(\x03\"\xbc\x01\n\nLayerGroup\x12\x10\n\x08group_id\x18\x01 \x01(\t\x12\x38\n\x06layers\x18\x02 \x03(\x0b\x32(.bilibili.dagw.component.avatar.v1.Layer\x12G\n\ngroup_mask\x18\x03 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.MaskProperty\x12\x19\n\x11is_critical_group\x18\x04 \x01(\x08\"\x88\x02\n\x05Layer\x12\x10\n\x08layer_id\x18\x01 \x01(\t\x12\x0f\n\x07visible\x18\x02 \x01(\x08\x12M\n\x0cgeneral_spec\x18\x03 \x01(\x0b\x32\x37.bilibili.dagw.component.avatar.common.LayerGeneralSpec\x12\x44\n\x0clayer_config\x18\x04 \x01(\x0b\x32..bilibili.dagw.component.avatar.v1.LayerConfig\x12G\n\x08resource\x18\x05 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.v1.BasicLayerResource\"\x8a\x02\n\x12\x42\x61sicLayerResource\x12\x10\n\x08res_type\x18\x01 \x01(\x05\x12@\n\tres_image\x18\x02 \x01(\x0b\x32+.bilibili.dagw.component.avatar.v1.ResImageH\x00\x12H\n\rres_animation\x18\x03 \x01(\x0b\x32/.bilibili.dagw.component.avatar.v1.ResAnimationH\x00\x12K\n\x0fres_native_draw\x18\x04 \x01(\x0b\x32\x30.bilibili.dagw.component.avatar.v1.ResNativeDrawH\x00\x42\t\n\x07payload\"T\n\x08ResImage\x12H\n\timage_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\"W\n\x0cResAnimation\x12G\n\x08webp_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\"X\n\rResNativeDraw\x12G\n\x08\x64raw_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\"\xad\x02\n\x0bLayerConfig\x12\x46\n\x04tags\x18\x01 \x03(\x0b\x32\x38.bilibili.dagw.component.avatar.v1.LayerConfig.TagsEntry\x12\x13\n\x0bis_critical\x18\x02 \x01(\x08\x12\x18\n\x10\x61llow_over_paint\x18\x03 \x01(\x08\x12G\n\nlayer_mask\x18\x04 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.MaskProperty\x1a^\n\tTagsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12@\n\x05value\x18\x02 \x01(\x0b\x32\x31.bilibili.dagw.component.avatar.v1.LayerTagConfig:\x02\x38\x01\"%\n\x0eLayerTagConfig\x12\x13\n\x0b\x63onfig_type\x18\x01 \x01(\x05\x42\x02P\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n.bilibili/dagw/component/avatar/v1/avatar.proto\x12!bilibili.dagw.component.avatar.v1\x1a\x32\x62ilibili/dagw/component/avatar/common/common.proto"\xe9\x01\n\nAvatarItem\x12G\n\x0e\x63ontainer_size\x18\x01 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.SizeSpec\x12=\n\x06layers\x18\x02 \x03(\x0b\x32-.bilibili.dagw.component.avatar.v1.LayerGroup\x12\x46\n\x0f\x66\x61llback_layers\x18\x03 \x01(\x0b\x32-.bilibili.dagw.component.avatar.v1.LayerGroup\x12\x0b\n\x03mid\x18\x04 \x01(\x03"\xbc\x01\n\nLayerGroup\x12\x10\n\x08group_id\x18\x01 \x01(\t\x12\x38\n\x06layers\x18\x02 \x03(\x0b\x32(.bilibili.dagw.component.avatar.v1.Layer\x12G\n\ngroup_mask\x18\x03 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.MaskProperty\x12\x19\n\x11is_critical_group\x18\x04 \x01(\x08"\x88\x02\n\x05Layer\x12\x10\n\x08layer_id\x18\x01 \x01(\t\x12\x0f\n\x07visible\x18\x02 \x01(\x08\x12M\n\x0cgeneral_spec\x18\x03 \x01(\x0b\x32\x37.bilibili.dagw.component.avatar.common.LayerGeneralSpec\x12\x44\n\x0clayer_config\x18\x04 \x01(\x0b\x32..bilibili.dagw.component.avatar.v1.LayerConfig\x12G\n\x08resource\x18\x05 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.v1.BasicLayerResource"\x8a\x02\n\x12\x42\x61sicLayerResource\x12\x10\n\x08res_type\x18\x01 \x01(\x05\x12@\n\tres_image\x18\x02 \x01(\x0b\x32+.bilibili.dagw.component.avatar.v1.ResImageH\x00\x12H\n\rres_animation\x18\x03 \x01(\x0b\x32/.bilibili.dagw.component.avatar.v1.ResAnimationH\x00\x12K\n\x0fres_native_draw\x18\x04 \x01(\x0b\x32\x30.bilibili.dagw.component.avatar.v1.ResNativeDrawH\x00\x42\t\n\x07payload"T\n\x08ResImage\x12H\n\timage_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource"W\n\x0cResAnimation\x12G\n\x08webp_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource"X\n\rResNativeDraw\x12G\n\x08\x64raw_src\x18\x01 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource"\xad\x02\n\x0bLayerConfig\x12\x46\n\x04tags\x18\x01 \x03(\x0b\x32\x38.bilibili.dagw.component.avatar.v1.LayerConfig.TagsEntry\x12\x13\n\x0bis_critical\x18\x02 \x01(\x08\x12\x18\n\x10\x61llow_over_paint\x18\x03 \x01(\x08\x12G\n\nlayer_mask\x18\x04 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.MaskProperty\x1a^\n\tTagsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12@\n\x05value\x18\x02 \x01(\x0b\x32\x31.bilibili.dagw.component.avatar.v1.LayerTagConfig:\x02\x38\x01"%\n\x0eLayerTagConfig\x12\x13\n\x0b\x63onfig_type\x18\x01 \x01(\x05\x42\x02P\x01\x62\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.dagw.component.avatar.v1.avatar_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "bilibili.dagw.component.avatar.v1.avatar_pb2", _globals
+)
 if not _descriptor._USE_C_DESCRIPTORS:
-  _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'P\001'
-  _globals['_LAYERCONFIG_TAGSENTRY']._loaded_options = None
-  _globals['_LAYERCONFIG_TAGSENTRY']._serialized_options = b'8\001'
-  _globals['_AVATARITEM']._serialized_start=138
-  _globals['_AVATARITEM']._serialized_end=371
-  _globals['_LAYERGROUP']._serialized_start=374
-  _globals['_LAYERGROUP']._serialized_end=562
-  _globals['_LAYER']._serialized_start=565
-  _globals['_LAYER']._serialized_end=829
-  _globals['_BASICLAYERRESOURCE']._serialized_start=832
-  _globals['_BASICLAYERRESOURCE']._serialized_end=1098
-  _globals['_RESIMAGE']._serialized_start=1100
-  _globals['_RESIMAGE']._serialized_end=1184
-  _globals['_RESANIMATION']._serialized_start=1186
-  _globals['_RESANIMATION']._serialized_end=1273
-  _globals['_RESNATIVEDRAW']._serialized_start=1275
-  _globals['_RESNATIVEDRAW']._serialized_end=1363
-  _globals['_LAYERCONFIG']._serialized_start=1366
-  _globals['_LAYERCONFIG']._serialized_end=1667
-  _globals['_LAYERCONFIG_TAGSENTRY']._serialized_start=1573
-  _globals['_LAYERCONFIG_TAGSENTRY']._serialized_end=1667
-  _globals['_LAYERTAGCONFIG']._serialized_start=1669
-  _globals['_LAYERTAGCONFIG']._serialized_end=1706
+    _globals["DESCRIPTOR"]._loaded_options = None
+    _globals["DESCRIPTOR"]._serialized_options = b"P\001"
+    _globals["_LAYERCONFIG_TAGSENTRY"]._loaded_options = None
+    _globals["_LAYERCONFIG_TAGSENTRY"]._serialized_options = b"8\001"
+    _globals["_AVATARITEM"]._serialized_start = 138
+    _globals["_AVATARITEM"]._serialized_end = 371
+    _globals["_LAYERGROUP"]._serialized_start = 374
+    _globals["_LAYERGROUP"]._serialized_end = 562
+    _globals["_LAYER"]._serialized_start = 565
+    _globals["_LAYER"]._serialized_end = 829
+    _globals["_BASICLAYERRESOURCE"]._serialized_start = 832
+    _globals["_BASICLAYERRESOURCE"]._serialized_end = 1098
+    _globals["_RESIMAGE"]._serialized_start = 1100
+    _globals["_RESIMAGE"]._serialized_end = 1184
+    _globals["_RESANIMATION"]._serialized_start = 1186
+    _globals["_RESANIMATION"]._serialized_end = 1273
+    _globals["_RESNATIVEDRAW"]._serialized_start = 1275
+    _globals["_RESNATIVEDRAW"]._serialized_end = 1363
+    _globals["_LAYERCONFIG"]._serialized_start = 1366
+    _globals["_LAYERCONFIG"]._serialized_end = 1667
+    _globals["_LAYERCONFIG_TAGSENTRY"]._serialized_start = 1573
+    _globals["_LAYERCONFIG_TAGSENTRY"]._serialized_end = 1667
+    _globals["_LAYERTAGCONFIG"]._serialized_start = 1669
+    _globals["_LAYERTAGCONFIG"]._serialized_end = 1706
 # @@protoc_insertion_point(module_scope)

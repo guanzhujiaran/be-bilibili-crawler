@@ -37,6 +37,7 @@ class SqlHelper(SqlHelperBase):
     爬虫用话题抽奖数据库操作类
     使用独立的爬虫连接池，限制并发
     """
+
     def __init__(self):
         mysql_db_url = CONFIG.database.MYSQL.bili_db_URI
         super().__init__(mysql_db_url=mysql_db_url, is_crawler=True)
@@ -160,28 +161,30 @@ class SqlHelper(SqlHelperBase):
     # region b查询抽奖信息功能
     @log_sql_retry_wrapper(log=log)
     async def get_all_available_traffic_info_by_page(
-        self, page_num: int = 0, page_size: int = 0, keyword: str | None = None,
+        self,
+        page_num: int = 0,
+        page_size: int = 0,
+        keyword: str | None = None,
     ) -> tuple[Sequence[TTrafficCard], int]:
-        base_where = cast(
-            func.date_format(
-                TTrafficCard.card_desc, text("'%Y-%m-%d %H:%i:00截止'")
-            ),
-            DateTime,
-        ) > func.now()
+        base_where = (
+            cast(
+                func.date_format(
+                    TTrafficCard.card_desc, text("'%Y-%m-%d %H:%i:00截止'")
+                ),
+                DateTime,
+            )
+            > func.now()
+        )
         conditions = [base_where]
 
         # 关键词筛选：对活动名称做 LIKE 模糊匹配
         if keyword and keyword.strip():
             conditions.append(TTrafficCard.name.like(f"%{keyword.strip()}%"))
 
-        base_order = (
-            cast(
-                func.date_format(
-                    TTrafficCard.card_desc, text("'%Y-%m-%d %H:%i:00截止'")
-                ),
-                DateTime,
-            ).asc()
-        )
+        base_order = cast(
+            func.date_format(TTrafficCard.card_desc, text("'%Y-%m-%d %H:%i:00截止'")),
+            DateTime,
+        ).asc()
 
         sql = (
             select(TTrafficCard)

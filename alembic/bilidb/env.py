@@ -2,6 +2,7 @@
 """
 bilidb (话题抽奖库) Alembic 异步环境配置
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -13,9 +14,11 @@ _current_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_current_dir.parent.parent))
 
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.db.models import Base
+
 target_metadata = Base.metadata
 
 from CONFIG import CONFIG
+
 _DB_URL: str = CONFIG.database.MYSQL.bili_db_URI
 # from sqlalchemy import *
 # from sqlalchemy.schema import *

@@ -4,54 +4,58 @@
 # source: bilibili/dagw/component/avatar/common/common.proto
 # Protobuf Python Version: 7.35.1
 """Generated protocol buffer code."""
+
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import runtime_version as _runtime_version
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
+
 _runtime_version.ValidateProtobufRuntimeVersion(
     _runtime_version.Domain.PUBLIC,
     7,
     35,
     1,
-    '',
-    'bilibili/dagw/component/avatar/common/common.proto'
+    "",
+    "bilibili/dagw/component/avatar/common/common.proto",
 )
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-
-
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n2bilibili/dagw/component/avatar/common/common.proto\x12%bilibili.dagw.component.avatar.common\")\n\x08SizeSpec\x12\r\n\x05width\x18\x01 \x01(\x01\x12\x0e\n\x06height\x18\x02 \x01(\x01\"F\n\x0cPositionSpec\x12\x16\n\x0e\x63oordinate_pos\x18\x01 \x01(\x05\x12\x0e\n\x06\x61xis_x\x18\x02 \x01(\x01\x12\x0e\n\x06\x61xis_y\x18\x03 \x01(\x01\"\"\n\x0f\x42\x61sicRenderSpec\x12\x0f\n\x07opacity\x18\x01 \x01(\x01\"\xa6\x01\n\x0cMaskProperty\x12M\n\x0cgeneral_spec\x18\x01 \x01(\x0b\x32\x37.bilibili.dagw.component.avatar.common.LayerGeneralSpec\x12G\n\x08mask_src\x18\x02 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource\"\xea\x01\n\x10LayerGeneralSpec\x12\x45\n\x08pos_spec\x18\x01 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.PositionSpec\x12\x42\n\tsize_spec\x18\x02 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.SizeSpec\x12K\n\x0brender_spec\x18\x03 \x01(\x0b\x32\x36.bilibili.dagw.component.avatar.common.BasicRenderSpec\"+\n\tRemoteRes\x12\x0b\n\x03url\x18\x01 \x01(\t\x12\x11\n\tbfs_style\x18\x02 \x01(\t\"!\n\x08LocalRes\x12\x15\n\rabsolute_path\x18\x01 \x01(\t\"\x94\x01\n\rNativeDrawRes\x12\x11\n\tdraw_type\x18\x01 \x01(\x05\x12\x11\n\tfill_mode\x18\x02 \x01(\x05\x12\x13\n\x0b\x65\x64ge_weight\x18\x03 \x01(\x01\x12H\n\x0c\x63olor_config\x18\x04 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig\"\x91\x02\n\x0eResourceSource\x12\x10\n\x08src_type\x18\x01 \x01(\x05\x12\x13\n\x0bplaceholder\x18\x02 \x01(\x05\x12\x42\n\x06remote\x18\x03 \x01(\x0b\x32\x30.bilibili.dagw.component.avatar.common.RemoteResH\x00\x12@\n\x05local\x18\x04 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.LocalResH\x00\x12K\n\x0bnative_draw\x18\x05 \x01(\x0b\x32\x34.bilibili.dagw.component.avatar.common.NativeDrawResH\x00\x42\x05\n\x03res\"\xad\x01\n\x0b\x43olorConfig\x12M\n\tcolor_day\x18\x01 \x01(\x0b\x32:.bilibili.dagw.component.avatar.common.ColorConfigDayNight\x12O\n\x0b\x63olor_night\x18\x02 \x01(\x0b\x32:.bilibili.dagw.component.avatar.common.ColorConfigDayNight\"$\n\x13\x43olorConfigDayNight\x12\r\n\x05\x63olor\x18\x01 \x01(\tB\x02P\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
+    b'\n2bilibili/dagw/component/avatar/common/common.proto\x12%bilibili.dagw.component.avatar.common")\n\x08SizeSpec\x12\r\n\x05width\x18\x01 \x01(\x01\x12\x0e\n\x06height\x18\x02 \x01(\x01"F\n\x0cPositionSpec\x12\x16\n\x0e\x63oordinate_pos\x18\x01 \x01(\x05\x12\x0e\n\x06\x61xis_x\x18\x02 \x01(\x01\x12\x0e\n\x06\x61xis_y\x18\x03 \x01(\x01""\n\x0f\x42\x61sicRenderSpec\x12\x0f\n\x07opacity\x18\x01 \x01(\x01"\xa6\x01\n\x0cMaskProperty\x12M\n\x0cgeneral_spec\x18\x01 \x01(\x0b\x32\x37.bilibili.dagw.component.avatar.common.LayerGeneralSpec\x12G\n\x08mask_src\x18\x02 \x01(\x0b\x32\x35.bilibili.dagw.component.avatar.common.ResourceSource"\xea\x01\n\x10LayerGeneralSpec\x12\x45\n\x08pos_spec\x18\x01 \x01(\x0b\x32\x33.bilibili.dagw.component.avatar.common.PositionSpec\x12\x42\n\tsize_spec\x18\x02 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.SizeSpec\x12K\n\x0brender_spec\x18\x03 \x01(\x0b\x32\x36.bilibili.dagw.component.avatar.common.BasicRenderSpec"+\n\tRemoteRes\x12\x0b\n\x03url\x18\x01 \x01(\t\x12\x11\n\tbfs_style\x18\x02 \x01(\t"!\n\x08LocalRes\x12\x15\n\rabsolute_path\x18\x01 \x01(\t"\x94\x01\n\rNativeDrawRes\x12\x11\n\tdraw_type\x18\x01 \x01(\x05\x12\x11\n\tfill_mode\x18\x02 \x01(\x05\x12\x13\n\x0b\x65\x64ge_weight\x18\x03 \x01(\x01\x12H\n\x0c\x63olor_config\x18\x04 \x01(\x0b\x32\x32.bilibili.dagw.component.avatar.common.ColorConfig"\x91\x02\n\x0eResourceSource\x12\x10\n\x08src_type\x18\x01 \x01(\x05\x12\x13\n\x0bplaceholder\x18\x02 \x01(\x05\x12\x42\n\x06remote\x18\x03 \x01(\x0b\x32\x30.bilibili.dagw.component.avatar.common.RemoteResH\x00\x12@\n\x05local\x18\x04 \x01(\x0b\x32/.bilibili.dagw.component.avatar.common.LocalResH\x00\x12K\n\x0bnative_draw\x18\x05 \x01(\x0b\x32\x34.bilibili.dagw.component.avatar.common.NativeDrawResH\x00\x42\x05\n\x03res"\xad\x01\n\x0b\x43olorConfig\x12M\n\tcolor_day\x18\x01 \x01(\x0b\x32:.bilibili.dagw.component.avatar.common.ColorConfigDayNight\x12O\n\x0b\x63olor_night\x18\x02 \x01(\x0b\x32:.bilibili.dagw.component.avatar.common.ColorConfigDayNight"$\n\x13\x43olorConfigDayNight\x12\r\n\x05\x63olor\x18\x01 \x01(\tB\x02P\x01\x62\x06proto3'
+)
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'bilibili.dagw.component.avatar.common.common_pb2', _globals)
+_builder.BuildTopDescriptorsAndMessages(
+    DESCRIPTOR, "bilibili.dagw.component.avatar.common.common_pb2", _globals
+)
 if not _descriptor._USE_C_DESCRIPTORS:
-  _globals['DESCRIPTOR']._loaded_options = None
-  _globals['DESCRIPTOR']._serialized_options = b'P\001'
-  _globals['_SIZESPEC']._serialized_start=93
-  _globals['_SIZESPEC']._serialized_end=134
-  _globals['_POSITIONSPEC']._serialized_start=136
-  _globals['_POSITIONSPEC']._serialized_end=206
-  _globals['_BASICRENDERSPEC']._serialized_start=208
-  _globals['_BASICRENDERSPEC']._serialized_end=242
-  _globals['_MASKPROPERTY']._serialized_start=245
-  _globals['_MASKPROPERTY']._serialized_end=411
-  _globals['_LAYERGENERALSPEC']._serialized_start=414
-  _globals['_LAYERGENERALSPEC']._serialized_end=648
-  _globals['_REMOTERES']._serialized_start=650
-  _globals['_REMOTERES']._serialized_end=693
-  _globals['_LOCALRES']._serialized_start=695
-  _globals['_LOCALRES']._serialized_end=728
-  _globals['_NATIVEDRAWRES']._serialized_start=731
-  _globals['_NATIVEDRAWRES']._serialized_end=879
-  _globals['_RESOURCESOURCE']._serialized_start=882
-  _globals['_RESOURCESOURCE']._serialized_end=1155
-  _globals['_COLORCONFIG']._serialized_start=1158
-  _globals['_COLORCONFIG']._serialized_end=1331
-  _globals['_COLORCONFIGDAYNIGHT']._serialized_start=1333
-  _globals['_COLORCONFIGDAYNIGHT']._serialized_end=1369
+    _globals["DESCRIPTOR"]._loaded_options = None
+    _globals["DESCRIPTOR"]._serialized_options = b"P\001"
+    _globals["_SIZESPEC"]._serialized_start = 93
+    _globals["_SIZESPEC"]._serialized_end = 134
+    _globals["_POSITIONSPEC"]._serialized_start = 136
+    _globals["_POSITIONSPEC"]._serialized_end = 206
+    _globals["_BASICRENDERSPEC"]._serialized_start = 208
+    _globals["_BASICRENDERSPEC"]._serialized_end = 242
+    _globals["_MASKPROPERTY"]._serialized_start = 245
+    _globals["_MASKPROPERTY"]._serialized_end = 411
+    _globals["_LAYERGENERALSPEC"]._serialized_start = 414
+    _globals["_LAYERGENERALSPEC"]._serialized_end = 648
+    _globals["_REMOTERES"]._serialized_start = 650
+    _globals["_REMOTERES"]._serialized_end = 693
+    _globals["_LOCALRES"]._serialized_start = 695
+    _globals["_LOCALRES"]._serialized_end = 728
+    _globals["_NATIVEDRAWRES"]._serialized_start = 731
+    _globals["_NATIVEDRAWRES"]._serialized_end = 879
+    _globals["_RESOURCESOURCE"]._serialized_start = 882
+    _globals["_RESOURCESOURCE"]._serialized_end = 1155
+    _globals["_COLORCONFIG"]._serialized_start = 1158
+    _globals["_COLORCONFIG"]._serialized_end = 1331
+    _globals["_COLORCONFIGDAYNIGHT"]._serialized_start = 1333
+    _globals["_COLORCONFIGDAYNIGHT"]._serialized_end = 1369
 # @@protoc_insertion_point(module_scope)

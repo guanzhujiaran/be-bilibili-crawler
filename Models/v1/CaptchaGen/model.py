@@ -52,8 +52,8 @@ class CaptchaVerifyStatus:
         return self.value == "VALID"
 
 
-if __name__ == '__main__':
-    a= CaptchaVerifyStatus(value=CaptchaVerifyStatusEnum.VALID)
+if __name__ == "__main__":
+    a = CaptchaVerifyStatus(value=CaptchaVerifyStatusEnum.VALID)
     print(a.success)
     print(a.code)
     print(a.message)

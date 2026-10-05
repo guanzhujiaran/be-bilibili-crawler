@@ -14,8 +14,13 @@ class RobotScrapyInfo:
     """
     保存机器人爬取的信息
     """
-    all_lot_dyn_info_list: List[TLotdyninfo] = field(default_factory=list)  # 所有的一轮获取到的抽奖动态
-    all_useless_info_list: List[TLotdyninfo] = field(default_factory=list)  # 所有的一轮获取到的非抽奖动态
+
+    all_lot_dyn_info_list: List[TLotdyninfo] = field(
+        default_factory=list
+    )  # 所有的一轮获取到的抽奖动态
+    all_useless_info_list: List[TLotdyninfo] = field(
+        default_factory=list
+    )  # 所有的一轮获取到的非抽奖动态
 
 
 class BiliSpaceUserParamsType(CustomBaseModelHashable):
@@ -42,15 +47,23 @@ class BiliSpaceUserParamsType(CustomBaseModelHashable):
         return hash(self.uid)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     params = BiliSpaceUserParamsType(uid=1)
     params.offset = 1
-    print(params.model_dump_json(exclude_none=True,exclude_defaults=True,exclude_unset=True))
+    print(
+        params.model_dump_json(
+            exclude_none=True, exclude_defaults=True, exclude_unset=True
+        )
+    )
     params.offset = 2
-    print(params.model_dump_json(exclude_none=True,exclude_defaults=True,exclude_unset=True))
+    print(
+        params.model_dump_json(
+            exclude_none=True, exclude_defaults=True, exclude_unset=True
+        )
+    )
     params.offset = 3
-    print(params.model_dump_json(exclude_none=True,exclude_defaults=True))
+    print(params.model_dump_json(exclude_none=True, exclude_defaults=True))
     params.offset = 4
-    print(params.model_dump_json(exclude_none=True,exclude_defaults=True))
+    print(params.model_dump_json(exclude_none=True, exclude_defaults=True))
     params.offset = 5
-    print(params.model_dump_json(exclude_none=True,exclude_defaults=True))
+    print(params.model_dump_json(exclude_none=True, exclude_defaults=True))

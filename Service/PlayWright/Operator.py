@@ -9,9 +9,16 @@ from patchright.async_api._generated import Response, BrowserContext
 
 
 class PlaywrightOperator:
-    def __init__(self, user_data_dir: str, *, headless=False, proxy: ProxySettings | None = None, **kwargs):
+    def __init__(
+        self,
+        user_data_dir: str,
+        *,
+        headless=False,
+        proxy: ProxySettings | None = None,
+        **kwargs,
+    ):
         current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.user_data_dir = os.path.join(current_dir, 'user_data', user_data_dir)
+        self.user_data_dir = os.path.join(current_dir, "user_data", user_data_dir)
         self._headless = headless
         self._proxy = proxy
         self.playwright: Playwright | None = None
@@ -32,16 +39,22 @@ class PlaywrightOperator:
     async def launch(self):
         """启动浏览器"""
         async with self._lock:
-            if self.browser_context and self.browser_context.browser and self.browser_context.browser.is_connected():
+            if (
+                self.browser_context
+                and self.browser_context.browser
+                and self.browser_context.browser.is_connected()
+            ):
                 return
             if self.playwright:
                 await self.playwright.stop()
             self.playwright = await async_playwright().start()
-            self.browser_context = await self.playwright.chromium.launch_persistent_context(
-                user_data_dir=self.user_data_dir,
-                headless=self._headless,
-                proxy=self._proxy,
-                no_viewport=True,
+            self.browser_context = (
+                await self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=self.user_data_dir,
+                    headless=self._headless,
+                    proxy=self._proxy,
+                    no_viewport=True,
+                )
             )
             pages = self.browser_context.pages
             if pages:
@@ -144,10 +157,10 @@ class PlaywrightOperator:
         :param padding: 边距，防止点到边缘
         :return: (x, y) 随机坐标
         """
-        x_min = box['x'] + padding
-        x_max = box['x'] + box['width'] - padding
-        y_min = box['y'] + padding
-        y_max = box['y'] + box['height'] - padding
+        x_min = box["x"] + padding
+        x_max = box["x"] + box["width"] - padding
+        y_min = box["y"] + padding
+        y_max = box["y"] + box["height"] - padding
 
         if x_max <= x_min or y_max <= y_min:
             raise ValueError("元素太小，无法生成有效的点击点")
@@ -156,10 +169,14 @@ class PlaywrightOperator:
         y = random.uniform(y_min, y_max)
         return x, y
 
-    async def __move_mouse_to(self, x: float, y: float,
-                              *,
-                              total_time_ms: float = None,
-                              micro_jitter: bool = True) -> None:
+    async def __move_mouse_to(
+        self,
+        x: float,
+        y: float,
+        *,
+        total_time_ms: float = None,
+        micro_jitter: bool = True,
+    ) -> None:
         """
         真人轨迹模拟（贝塞尔 + 变速 + 微抖动）
         :param x: 目标 x
@@ -183,10 +200,12 @@ class PlaywrightOperator:
         ctrl2 = mid - ctrl_offset
         steps = max(15, int(distance // 2.5))  # 保证 5-10 ms 一步
         t = np.linspace(0, 1, steps)
-        curve = ((1 - t) ** 3)[:, None] * src + 3 * ((1 - t) ** 2 * t)[:, None] * ctrl1 + 3 * ((1 - t) * (t ** 2))[:,
-                                                                                              None] * ctrl2 + (t ** 3)[
-                                                                                                              :,
-                                                                                                              None] * dst
+        curve = (
+            ((1 - t) ** 3)[:, None] * src
+            + 3 * ((1 - t) ** 2 * t)[:, None] * ctrl1
+            + 3 * ((1 - t) * (t**2))[:, None] * ctrl2
+            + (t**3)[:, None] * dst
+        )
         curve += np.random.normal(0, 2, curve.shape)
 
         # 3. 变速：对数正态分布给每段步长
@@ -206,26 +225,36 @@ class PlaywrightOperator:
         """随机延迟"""
         await asyncio.sleep(random.uniform(min_delay, max_delay))
 
-    async def wait_for_url(self, url: typing.Union[str, typing.Pattern[str], typing.Callable[[str], bool]],
-                           timeout: float = 30000):
+    async def wait_for_url(
+        self,
+        url: typing.Union[str, typing.Pattern[str], typing.Callable[[str], bool]],
+        timeout: float = 30000,
+    ):
         """等待页面跳转到指定 URL"""
         async with self._lock:
             await self._ensure_page_ready()
             return await self.page.wait_for_url(url, timeout=timeout)
 
-    async def expect_response(self, url_or_predicate: typing.Union[
-        str, typing.Pattern[str], typing.Callable[["Response"], bool]
-    ],
-                              *,
-                              timeout: typing.Optional[float] = None, ):
+    async def expect_response(
+        self,
+        url_or_predicate: typing.Union[
+            str, typing.Pattern[str], typing.Callable[["Response"], bool]
+        ],
+        *,
+        timeout: typing.Optional[float] = None,
+    ):
         await self._ensure_page_ready()
         return self.page.expect_response(url_or_predicate, timeout=timeout)
 
-    async def wait_for_load_state(self, load_state: str = "load", timeout: float = 30000):
+    async def wait_for_load_state(
+        self, load_state: str = "load", timeout: float = 30000
+    ):
         """等待页面加载状态完成，例如 'load', 'domcontentloaded', 'networkidle'"""
         async with self._lock:
             await self._ensure_page_ready()
-            return await self.page.wait_for_load_state(state=load_state, timeout=timeout)
+            return await self.page.wait_for_load_state(
+                state=load_state, timeout=timeout
+            )
 
     async def reload(self, timeout: float = 30000):
         """重新加载页面"""
@@ -324,5 +353,5 @@ class PlaywrightOperator:
             return await self.page.get_attribute(selector, attribute)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     print(__file__)

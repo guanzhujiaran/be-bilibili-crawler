@@ -15,7 +15,9 @@ import time
 
 from bili_common.models.response import StandardResponse as CommonResponseModel
 from bili_common.models.pagination import ResponsePaginationItems
-from Models.lottery_database.bili.LotteryDataBaseQueryModels import BiliLotDataQueryModel
+from Models.lottery_database.bili.LotteryDataBaseQueryModels import (
+    BiliLotDataQueryModel,
+)
 from Models.lottery_database.bili.LotteryDataModels import (
     AddDynamicLotteryResp,
     OfficialLotteryResp,
@@ -91,7 +93,9 @@ from bili_common.models import (
 from controller.v1.mq.rpc_server import rpc_subscriber
 from loguru import logger
 from sqlalchemy import func, or_, select, text
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 
 
@@ -110,7 +114,9 @@ def _parse_status(status: str | None) -> BiliLotDataStatusEnum | None:
 
 
 @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)
-async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel[ResponsePaginationItems[ReserveInfoResp]]:
+async def handle_get_reserve_lottery(
+    params: GetReserveLotteryRpcParams,
+) -> CommonResponseModel[ResponsePaginationItems[ReserveInfoResp]]:
     """获取必抽的预约抽奖数据"""
     result_items, total = await get_reserve_lottery(
         q=BiliLotDataQueryModel(
@@ -137,7 +143,9 @@ async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> Comm
 
 
 @rpc_subscriber(RpcMethodName.GET_OFFICIAL_LOTTERY, GetOfficialLotteryRpcParams)
-async def handle_get_official_lottery(params: GetOfficialLotteryRpcParams) -> CommonResponseModel:
+async def handle_get_official_lottery(
+    params: GetOfficialLotteryRpcParams,
+) -> CommonResponseModel:
     """获取必抽的官方抽奖数据"""
     result_items, total = await get_official_lottery(
         q=BiliLotDataQueryModel(
@@ -165,7 +173,9 @@ async def handle_get_official_lottery(params: GetOfficialLotteryRpcParams) -> Co
 
 
 @rpc_subscriber(RpcMethodName.GET_CHARGE_LOTTERY, GetChargeLotteryRpcParams)
-async def handle_get_charge_lottery(params: GetChargeLotteryRpcParams) -> CommonResponseModel:
+async def handle_get_charge_lottery(
+    params: GetChargeLotteryRpcParams,
+) -> CommonResponseModel:
     """获取必抽的充电抽奖数据"""
     result_items, total = await get_charge_lottery(
         q=BiliLotDataQueryModel(
@@ -189,11 +199,16 @@ async def handle_get_charge_lottery(params: GetChargeLotteryRpcParams) -> Common
         data=ResponsePaginationItems[ChargeLotteryResp](items=result_items, total=total)
     )
 
+
 @rpc_subscriber(RpcMethodName.GET_TOPIC_LOTTERY, GetTopicLotteryRpcParams)
-async def handle_get_topic_lottery(params: GetTopicLotteryRpcParams) -> CommonResponseModel:
+async def handle_get_topic_lottery(
+    params: GetTopicLotteryRpcParams,
+) -> CommonResponseModel:
     """获取所有话题抽奖数据（分页+筛选）"""
     result_items, total = await get_topic_lottery(
-        params.page_num, params.page_size, keyword=params.keyword,
+        params.page_num,
+        params.page_size,
+        keyword=params.keyword,
     )
     return CommonResponseModel(
         data=ResponsePaginationItems[TopicLotteryResp](items=result_items, total=total)
@@ -201,7 +216,9 @@ async def handle_get_topic_lottery(params: GetTopicLotteryRpcParams) -> CommonRe
 
 
 @rpc_subscriber(RpcMethodName.GET_ALL_LOTTERY, GetAllLotteryRpcParams)
-async def handle_get_all_lottery(params: GetAllLotteryRpcParams) -> CommonResponseModel[AllLotteryResp]:
+async def handle_get_all_lottery(
+    params: GetAllLotteryRpcParams,
+) -> CommonResponseModel[AllLotteryResp]:
     """获取所有抽奖信息（按收录时间和发布时间过滤，支持分页）"""
     result: AllLotteryResp = await get_all_lottery(
         created_at_preset=params.created_at_preset,
@@ -217,7 +234,9 @@ async def handle_get_all_lottery(params: GetAllLotteryRpcParams) -> CommonRespon
 
 
 @rpc_subscriber(RpcMethodName.GET_OTHERS_LOT_DYN_LIST, GetOthersLotDynListRpcParams)
-async def handle_get_others_lot_dyn_list(params: GetOthersLotDynListRpcParams) -> CommonResponseModel:
+async def handle_get_others_lot_dyn_list(
+    params: GetOthersLotDynListRpcParams,
+) -> CommonResponseModel:
     """获取第三方抽奖动态列表（分页+排序+时间筛选）
 
     RPC 模式下：
@@ -280,7 +299,9 @@ async def handle_get_others_lot_dyn_list(params: GetOthersLotDynListRpcParams) -
 
 
 @rpc_subscriber(RpcMethodName.CHECK_LOTTERY_EXIST, CheckLotteryExistRpcParams)
-async def handle_check_lottery_exist(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+async def handle_check_lottery_exist(
+    params: CheckLotteryExistRpcParams,
+) -> CommonResponseModel[CheckLotteryExistRpcResult]:
     """校验 lottery 是否存在并回传基础详情（供 be-message 互动/转发时校验资源存在，2.20.0）。
 
     RPC 模式下不校验登录态；`params.lottery_ids` 非空时批量查询（一次 SQL `IN (...)`），
@@ -293,7 +314,9 @@ async def handle_check_lottery_exist(params: CheckLotteryExistRpcParams) -> Comm
     return await _handle_check_lottery_exist_one(params)
 
 
-async def _handle_check_lottery_exist_one(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+async def _handle_check_lottery_exist_one(
+    params: CheckLotteryExistRpcParams,
+) -> CommonResponseModel[CheckLotteryExistRpcResult]:
     exists = False
     title = cover = jump_url = None
     try:
@@ -329,7 +352,9 @@ async def _handle_check_lottery_exist_one(params: CheckLotteryExistRpcParams) ->
     )
 
 
-async def _handle_check_lottery_exist_batch(params: CheckLotteryExistRpcParams) -> CommonResponseModel[CheckLotteryExistRpcResult]:
+async def _handle_check_lottery_exist_batch(
+    params: CheckLotteryExistRpcParams,
+) -> CommonResponseModel[CheckLotteryExistRpcResult]:
     items: list[LotteryDetailItem] = []
     try:
         ids = list(dict.fromkeys(params.lottery_ids))
@@ -404,7 +429,9 @@ async def _log_others_lot_dyn_miss(dyn_ids: list[int]) -> None:
         logger.warning(f"[check_others_lot_dyn_exist] 未命中诊断查询失败: {e}")
 
 
-@rpc_subscriber(RpcMethodName.CHECK_OTHERS_LOT_DYN_EXIST, CheckOthersLotDynExistRpcParams)
+@rpc_subscriber(
+    RpcMethodName.CHECK_OTHERS_LOT_DYN_EXIST, CheckOthersLotDynExistRpcParams
+)
 async def handle_check_others_lot_dyn_exist(
     params: CheckOthersLotDynExistRpcParams,
 ) -> CommonResponseModel[CheckOthersLotDynExistRpcResult]:
@@ -444,7 +471,9 @@ async def _handle_check_others_lot_dyn_exist_one(
                 title = _others_lot_dyn_title(author_name, int(row.dynId))
                 jump_url = row.dynamicUrl or None
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"[check_others_lot_dyn_exist] 单查失败 dyn_id={params.dyn_id}: {e}")
+        logger.warning(
+            f"[check_others_lot_dyn_exist] 单查失败 dyn_id={params.dyn_id}: {e}"
+        )
         exists = False
     if not exists and params.dyn_id is not None:
         await _log_others_lot_dyn_miss([int(params.dyn_id)])
@@ -475,7 +504,7 @@ async def _handle_check_others_lot_dyn_exist_batch(
                 TLotdyninfo.dynamicUrl,
             ).where(TLotdyninfo.dynId.in_(ids))
             found: dict[int, tuple[str | None, int | None, str | None]] = {}
-            for row in (await session.execute(stmt)):
+            for row in await session.execute(stmt):
                 found[int(row.dynId)] = (
                     row.authorName or None,
                     int(row.up_uid) if row.up_uid else None,
@@ -488,7 +517,9 @@ async def _handle_check_others_lot_dyn_exist_batch(
                     OthersLotDynDetailItem(
                         dyn_id=dyn_id,
                         exists=detail is not None,
-                        title=_others_lot_dyn_title(author_name, dyn_id) if detail else None,
+                        title=_others_lot_dyn_title(author_name, dyn_id)
+                        if detail
+                        else None,
                         cover=None,
                         jumpUrl=(detail[2] if detail else None) or None,
                         authorMid=(detail[1] if detail else None),

@@ -75,15 +75,25 @@ def encode_headers(md) -> dict:
 
 async def main() -> None:
     parser = argparse.ArgumentParser(description="DynDetail 手工调试")
-    parser.add_argument("--host", default=DEFAULT_HOST, help=f"gRPC 网关，默认 {DEFAULT_HOST}")
-    parser.add_argument("--dynamic-id", default=None, help="动态 id（不传则用 --rid 的旧接口写法）")
-    parser.add_argument("--rid", type=int, default=326834723, help="dyn_type + rid 写法用的稿件 id")
-    parser.add_argument("--proxy", action="store_true", help="走 CONFIG 配置的代理（默认直连）")
+    parser.add_argument(
+        "--host", default=DEFAULT_HOST, help=f"gRPC 网关，默认 {DEFAULT_HOST}"
+    )
+    parser.add_argument(
+        "--dynamic-id", default=None, help="动态 id（不传则用 --rid 的旧接口写法）"
+    )
+    parser.add_argument(
+        "--rid", type=int, default=326834723, help="dyn_type + rid 写法用的稿件 id"
+    )
+    parser.add_argument(
+        "--proxy", action="store_true", help="走 CONFIG 配置的代理（默认直连）"
+    )
     args = parser.parse_args()
 
     md, ticket, basic = await make_metadata("", proxy=None if args.proxy else DIRECT)
-    print(f"[设备] buvid={basic.buvid} ticket={'有' if basic.ticket else '无'} "
-          f"出口={'代理' if args.proxy else '直连'}")
+    print(
+        f"[设备] buvid={basic.buvid} ticket={'有' if basic.ticket else '无'} "
+        f"出口={'代理' if args.proxy else '直连'}"
+    )
 
     req = build_request(args.dynamic_id, args.rid)
     # metadata 声明了 grpc-encoding: gzip，body 必须真的 gzip，否则服务端解不开
@@ -92,18 +102,30 @@ async def main() -> None:
     data = flags + len(compressed).to_bytes(4, "big") + compressed
 
     headers = encode_headers(md)
-    print(f"[请求] {args.host}{METHOD}\n[请求头] {json.dumps({k: str(v)[:40] for k, v in headers.items()}, ensure_ascii=False)}")
+    print(
+        f"[请求] {args.host}{METHOD}\n[请求头] {json.dumps({k: str(v)[:40] for k, v in headers.items()}, ensure_ascii=False)}"
+    )
 
     resp = await my_async_httpx.request(
-        method="POST", url=f"{args.host}{METHOD}", data=data, headers=tuple(headers.items()),
-        proxies=resolve_proxies(None if args.proxy else DIRECT), verify=False, timeout=20)
-    print(f"[响应] HTTP {resp.status_code} bili-status-code={resp.headers.get('bili-status-code')} "
-          f"{len(resp.content)} 字节")
+        method="POST",
+        url=f"{args.host}{METHOD}",
+        data=data,
+        headers=tuple(headers.items()),
+        proxies=resolve_proxies(None if args.proxy else DIRECT),
+        verify=False,
+        timeout=20,
+    )
+    print(
+        f"[响应] HTTP {resp.status_code} bili-status-code={resp.headers.get('bili-status-code')} "
+        f"{len(resp.content)} 字节"
+    )
 
     code = str(resp.headers.get("bili-status-code"))
     if code == "-352":
-        print(f"[提示] 风控拦截（vvoucher={resp.headers.get('x-bili-gaia-vvoucher')}），"
-              f"请用 tools/grpc_probe.py 自动换取 x-bili-gaia-vtoken 后重试")
+        print(
+            f"[提示] 风控拦截（vvoucher={resp.headers.get('x-bili-gaia-vvoucher')}），"
+            f"请用 tools/grpc_probe.py 自动换取 x-bili-gaia-vtoken 后重试"
+        )
         return
     if code != "0" or len(resp.content) <= 5:
         print(f"[响应头] {dict(resp.headers)}")
@@ -114,12 +136,18 @@ async def main() -> None:
         payload = gzip.decompress(payload)
     reply = dynamic_pb2.DynDetailReply()
     reply.ParseFromString(payload)
-    print(json.dumps(MessageToDict(reply, preserving_proto_field_name=True),
-                     ensure_ascii=False, indent=2)[:2000])
+    print(
+        json.dumps(
+            MessageToDict(reply, preserving_proto_field_name=True),
+            ensure_ascii=False,
+            indent=2,
+        )[:2000]
+    )
 
 
 def parse_newdict_from_dict(orig_dict: dict) -> dict:
     """小驼峰字典 -> 下划线字典（历史调试辅助函数，保留供手工使用）。"""
+
     def _parse_newlist_form_list(orig_list: list) -> list:
         return [parse_newdict_from_dict(i) for i in orig_list]
 

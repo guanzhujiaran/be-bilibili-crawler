@@ -2,6 +2,7 @@
 """
 dyndetail (动态详情库) Alembic 异步环境配置
 """
+
 import asyncio
 import sys
 from pathlib import Path
@@ -13,9 +14,11 @@ _current_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_current_dir.parent.parent))
 
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Base
+
 target_metadata = Base.metadata
 
 from CONFIG import CONFIG
+
 _DB_URL: str = CONFIG.database.MYSQL.dyn_detail_URI
 # from sqlalchemy import *
 # from sqlalchemy.schema import *
@@ -26,7 +29,6 @@ _DB_URL: str = CONFIG.database.MYSQL.dyn_detail_URI
 
 config = context.config
 config.set_main_option("sqlalchemy.url", _DB_URL)
-
 
 
 def do_run_migrations(connection):

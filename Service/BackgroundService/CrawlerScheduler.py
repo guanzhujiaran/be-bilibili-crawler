@@ -41,7 +41,7 @@ class BackgroundService:
             func=crawler_stuck_checker.check_and_report_stuck,
             cron_expr="*/10 * * * *",  # 每10分钟检查一次爬虫是否卡住
             default_interval_seconds=600,  # 10分钟间隔
-            crawler_name=BackgroundServiceName.STUCK_CHECK_SCHEDULER.value
+            crawler_name=BackgroundServiceName.STUCK_CHECK_SCHEDULER.value,
         )
         self.DYN_DETAIL_DATABASE_CLEANER = BaseScheduler(
             func=cleaner.do_clean,

@@ -20,10 +20,14 @@ def retry(tries=3, interval=5):
                 try:
                     result = await func(*args, **kwargs)
                 except Exception as e:
-                    log.exception(f"API {urlparse(args[1]).path} 调用出现异常: {str(e)}")
+                    log.exception(
+                        f"API {urlparse(args[1]).path} 调用出现异常: {str(e)}"
+                    )
                     count += 1
                     if count > tries:
-                        log.exception(f"API {urlparse(args[1]).path} 调用出现异常: {str(e)}")
+                        log.exception(
+                            f"API {urlparse(args[1]).path} 调用出现异常: {str(e)}"
+                        )
                         raise e
                     else:
                         # log.error(f"API {urlparse(args[1]).path} 调用出现异常: {str(e)}，重试中，第{count}次重试")
@@ -44,8 +48,8 @@ def get_ms_token(randomlength=107):
     """
     根据传入长度产生随机字符串
     """
-    random_str = ''
-    base_str = 'ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789='
+    random_str = ""
+    base_str = "ABCDEFGHIGKLMNOPQRSTUVWXYZabcdefghigklmnopqrstuvwxyz0123456789="
     length = len(base_str) - 1
     for _ in range(randomlength):
         random_str += base_str[random.randint(0, length)]
@@ -53,7 +57,7 @@ def get_ms_token(randomlength=107):
 
 
 class APIEnum(StrEnumAutoDoc):
-    api_pc_list_user_feed = 'https://www.toutiao.com/api/pc/list/user/feed'
+    api_pc_list_user_feed = "https://www.toutiao.com/api/pc/list/user/feed"
 
 
 class ToutiaoAPI:
@@ -69,15 +73,15 @@ class ToutiaoAPI:
     @retry()
     async def __get(self, *args, **kwargs) -> str:
         async with httpx.AsyncClient() as client:
-            params = kwargs.get('params')
+            params = kwargs.get("params")
             if params:
-                if headers := kwargs.get('headers'):
-                    ua = headers.get('user-agent')
+                if headers := kwargs.get("headers"):
+                    ua = headers.get("user-agent")
                 else:
-                    ua = self.headers.get('user-agent')
-                params['msToken'] = get_ms_token()
-                params['a_bogus'] = self.toutiao_decryptor.gen_abogus(params, ua)
-                kwargs['params'] = params
+                    ua = self.headers.get("user-agent")
+                params["msToken"] = get_ms_token()
+                params["a_bogus"] = self.toutiao_decryptor.gen_abogus(params, ua)
+                kwargs["params"] = params
             resp = await client.get(*args, **kwargs)
             return self.__check_response(resp.text)
 
@@ -106,7 +110,9 @@ class ToutiaoAPI:
 
 async def _async_test():
     t = ToutiaoAPI()
-    resp = await t.getUserFeed("MS4wLjABAAAAzPC55Y5v2l2OE-EHAwjyCUyQ_pP_1HFUoWe-28ttrkWJzr_AyONMq8fJs8SGGhYX")
+    resp = await t.getUserFeed(
+        "MS4wLjABAAAAzPC55Y5v2l2OE-EHAwjyCUyQ_pP_1HFUoWe-28ttrkWJzr_AyONMq8fJs8SGGhYX"
+    )
     print(resp.RespDict)
 
 

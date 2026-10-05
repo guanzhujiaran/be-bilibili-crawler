@@ -290,6 +290,7 @@ if __name__ == "__main__":
 
     class MockCrawler(UnlimitedCrawler[MockParams]):
         """模拟的爬虫类，仅用于测试"""
+
         Config = MockCrawlerConfig
 
         async def handle_fetch(self, params: ParamsType) -> WorkerStatus | Any:

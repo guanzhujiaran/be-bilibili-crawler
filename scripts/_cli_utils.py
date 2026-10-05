@@ -4,6 +4,7 @@
 
 backfill_dyninfo_from_rawjson / judge_grand_prize 共用。
 """
+
 import argparse
 
 
@@ -12,13 +13,15 @@ def add_llm_args(parser: argparse.ArgumentParser) -> None:
     g = parser.add_argument_group("大模型配置 (覆盖 .env 默认值)")
     g.add_argument("--llm-base-url", type=str, default=None, help="LLM API base URL")
     g.add_argument("--llm-token", type=str, default=None, help="LLM API token / key")
-    g.add_argument("--llm-model", type=str, default=None, help="模型名称，如 gpt-4o / qwen3.5")
+    g.add_argument(
+        "--llm-model", type=str, default=None, help="模型名称，如 gpt-4o / qwen3.5"
+    )
     g.add_argument(
         "--llm-headers",
         type=str,
         default=None,
         help="注入到 ChatOpenAI 请求的自定义 HTTP 头 (JSON 字符串)，"
-             "用于创建 ChatOpenAI 实例（如鉴权/路由头）",
+        "用于创建 ChatOpenAI 实例（如鉴权/路由头）",
     )
 
 
@@ -38,6 +41,7 @@ def build_mysql_uri(db_name: str, args: argparse.Namespace | None = None) -> str
     （绕过模块级单例在导入时固化的连接池）。
     """
     from CONFIG import settings
+
     host = getattr(args, "db_host", None) if args else None
     port = getattr(args, "db_port", None) if args else None
     user = getattr(args, "db_user", None) if args else None
@@ -70,13 +74,20 @@ def apply_cli_overrides(args: argparse.Namespace) -> None:
     if llm_overrides:
         settings.llm_apis = [LLMApiConfig(**llm_overrides)]
         model_name = llm_overrides.get("model_name", "(未指定)")
-        print(f"[CLI] LLM 覆盖（仅使用命令行指定项）: "
-              f"{llm_overrides['base_url']} / {model_name}")
+        print(
+            f"[CLI] LLM 覆盖（仅使用命令行指定项）: "
+            f"{llm_overrides['base_url']} / {model_name}"
+        )
 
     # ---- 数据库配置 ----
-    need_rebuild = any([
-        args.db_host, args.db_port, args.db_user, args.db_password,
-    ])
+    need_rebuild = any(
+        [
+            args.db_host,
+            args.db_port,
+            args.db_user,
+            args.db_password,
+        ]
+    )
 
     if need_rebuild:
         if args.db_host:

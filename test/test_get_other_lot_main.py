@@ -36,7 +36,7 @@ from Service.GetOthersLotDyn.filter.lottery_filter import is_need_lot
 import json
 import os
 
-_FIXTURES_DIR = os.path.join(os.path.dirname(__file__), 'fixtures')
+_FIXTURES_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
 
 def _load_fixture(filename: str):
@@ -48,7 +48,7 @@ def _load_fixture(filename: str):
     filepath = os.path.join(_FIXTURES_DIR, filename)
     if not os.path.exists(filepath):
         return None
-    with open(filepath, 'r', encoding='utf-8') as f:
+    with open(filepath, "r", encoding="utf-8") as f:
         data = json.load(f)
     # 空模板文件（{}）视为未填入数据
     if data == {} or data == []:
@@ -57,24 +57,30 @@ def _load_fixture(filename: str):
 
 
 # 已填入数据的 fixtures（可直接用于断言）
-MOCK_DYNAMIC_DETAIL_RESP = _load_fixture('dynamic_detail_resp.json')
-MOCK_FORWARDED_DYNAMIC_RESP = _load_fixture('forwarded_dynamic_resp.json')
-MOCK_DYNAMIC_NOT_FOUND_RESP = _load_fixture('dynamic_not_found_resp.json')
-MOCK_DYNAMIC_412_RESP = _load_fixture('dynamic_412_resp.json')
-MOCK_SPACE_DYNAMIC_RESP = _load_fixture('space_dynamic_resp.json')
-MOCK_REPLY_RESP = _load_fixture('reply_resp.json')
+MOCK_DYNAMIC_DETAIL_RESP = _load_fixture("dynamic_detail_resp.json")
+MOCK_FORWARDED_DYNAMIC_RESP = _load_fixture("forwarded_dynamic_resp.json")
+MOCK_DYNAMIC_NOT_FOUND_RESP = _load_fixture("dynamic_not_found_resp.json")
+MOCK_DYNAMIC_412_RESP = _load_fixture("dynamic_412_resp.json")
+MOCK_SPACE_DYNAMIC_RESP = _load_fixture("space_dynamic_resp.json")
+MOCK_REPLY_RESP = _load_fixture("reply_resp.json")
 
 # 待手动填入的 fixtures（未填入时为 None，相关测试会跳过）
-MOCK_DYNAMIC_DETAIL_RESP_VIDEO = _load_fixture('dynamic_detail_resp_video.json')
-MOCK_DYNAMIC_DETAIL_RESP_ARTICLE = _load_fixture('dynamic_detail_resp_article.json')
-MOCK_DYNAMIC_DETAIL_RESP_CHARGE_LOT = _load_fixture('dynamic_detail_resp_charge_lot.json')
-MOCK_DYNAMIC_DETAIL_RESP_RESERVE_LOT = _load_fixture('dynamic_detail_resp_reserve_lot.json')
-MOCK_DYNAMIC_DETAIL_RESP_OFFICIAL_LOT = _load_fixture('dynamic_detail_resp_official_lot.json')
-MOCK_DYNAMIC_DETAIL_RESP_PINNED = _load_fixture('dynamic_detail_resp_pinned.json')
-MOCK_DYNAMIC_DETAIL_RESP_4101128 = _load_fixture('dynamic_detail_resp_4101128.json')
-MOCK_SPACE_DYNAMIC_RESP_EMPTY = _load_fixture('space_dynamic_resp_empty.json')
-MOCK_SPACE_DYNAMIC_RESP_NO_MORE = _load_fixture('space_dynamic_resp_no_more.json')
-MOCK_REPLY_RESP_EMPTY = _load_fixture('reply_resp_empty.json')
+MOCK_DYNAMIC_DETAIL_RESP_VIDEO = _load_fixture("dynamic_detail_resp_video.json")
+MOCK_DYNAMIC_DETAIL_RESP_ARTICLE = _load_fixture("dynamic_detail_resp_article.json")
+MOCK_DYNAMIC_DETAIL_RESP_CHARGE_LOT = _load_fixture(
+    "dynamic_detail_resp_charge_lot.json"
+)
+MOCK_DYNAMIC_DETAIL_RESP_RESERVE_LOT = _load_fixture(
+    "dynamic_detail_resp_reserve_lot.json"
+)
+MOCK_DYNAMIC_DETAIL_RESP_OFFICIAL_LOT = _load_fixture(
+    "dynamic_detail_resp_official_lot.json"
+)
+MOCK_DYNAMIC_DETAIL_RESP_PINNED = _load_fixture("dynamic_detail_resp_pinned.json")
+MOCK_DYNAMIC_DETAIL_RESP_4101128 = _load_fixture("dynamic_detail_resp_4101128.json")
+MOCK_SPACE_DYNAMIC_RESP_EMPTY = _load_fixture("space_dynamic_resp_empty.json")
+MOCK_SPACE_DYNAMIC_RESP_NO_MORE = _load_fixture("space_dynamic_resp_no_more.json")
+MOCK_REPLY_RESP_EMPTY = _load_fixture("reply_resp_empty.json")
 
 
 # ============================================================================
@@ -82,9 +88,11 @@ MOCK_REPLY_RESP_EMPTY = _load_fixture('reply_resp_empty.json')
 # ============================================================================
 
 
-def _make_dynamic_item(dynamic_id: str | int | None = None,
-                       dynamic_rid: int | None = None,
-                       dynamic_type: int = 2) -> BiliDynamicItem:
+def _make_dynamic_item(
+    dynamic_id: str | int | None = None,
+    dynamic_rid: int | None = None,
+    dynamic_type: int = 2,
+) -> BiliDynamicItem:
     """创建 BiliDynamicItem 实例，跳过 __post_init__ 校验"""
     item = BiliDynamicItem.__new__(BiliDynamicItem)
     item.dynamic_id = dynamic_id
@@ -93,7 +101,8 @@ def _make_dynamic_item(dynamic_id: str | int | None = None,
     item.dynamic_raw_resp = {}
     item.dynamic_raw_detail = {}
     item.bili_judge_lottery_result = BiliDynamicItem.__dataclass_fields__[
-        'bili_judge_lottery_result'].default_factory()
+        "bili_judge_lottery_result"
+    ].default_factory()
     item.is_lot_orig = False
     item.is_use_available_proxy = True
     return item
@@ -159,7 +168,9 @@ class TestDynamicItemDetailParsing:
         item = _make_dynamic_item(dynamic_id=dyn_id)
         result = await item._BiliDynamicItem__solve_dynamic_item_detail(resp)
 
-        assert isinstance(result, DynamicDetailParsed), "返回类型应为 DynamicDetailParsed"
+        assert isinstance(result, DynamicDetailParsed), (
+            "返回类型应为 DynamicDetailParsed"
+        )
         assert result.is_valid(), "解析结果应有效（dynamic_id 不为空）"
         assert result.rawJSON is not None, "rawJSON 不应为空"
         assert result.dynamic_id == "1216239392159432721"
@@ -198,13 +209,17 @@ class TestDynamicItemDetailParsing:
             assert result.orig_name is not None, "转发动态应包含 orig_name"
             assert result.orig_mid is not None, "转发动态应包含 orig_mid"
             assert result.orig_pub_ts is not None, "转发动态应包含 orig_pub_ts"
-            assert result.orig_dynamic_content is not None, "转发动态应包含 orig_dynamic_content"
+            assert result.orig_dynamic_content is not None, (
+                "转发动态应包含 orig_dynamic_content"
+            )
 
     @pytest.mark.asyncio
     async def test_parse_dynamic_not_found(self):
         """测试动态不存在（code=4101131）"""
         resp = deepcopy(MOCK_DYNAMIC_NOT_FOUND_RESP)
-        result = await _make_dynamic_item(dynamic_id=9999999999999999999)._BiliDynamicItem__solve_dynamic_item_detail(resp)
+        result = await _make_dynamic_item(
+            dynamic_id=9999999999999999999
+        )._BiliDynamicItem__solve_dynamic_item_detail(resp)
 
         assert isinstance(result, DynamicDetailParsed)
         assert not result.is_valid(), "不存在的动态应返回无效结果"
@@ -214,7 +229,9 @@ class TestDynamicItemDetailParsing:
     async def test_parse_dynamic_with_empty_data(self):
         """测试 data 为 None 的响应"""
         resp = {"code": 0, "data": None}
-        result = await _make_dynamic_item(dynamic_id=1)._BiliDynamicItem__solve_dynamic_item_detail(resp)
+        result = await _make_dynamic_item(
+            dynamic_id=1
+        )._BiliDynamicItem__solve_dynamic_item_detail(resp)
 
         assert isinstance(result, DynamicDetailParsed)
         assert not result.is_valid()
@@ -259,58 +276,58 @@ class TestManualReplyJudge:
 
     # ---- 需要人工回复的动态内容 ----
     NEED_MANUAL_CASES = [
-        "评论告诉我想看什么",          # manual_re1
-        "评论说出你的理由",            # manual_re2
-        "评论对一下",                  # manual_re3
-        "猜对答案的有奖",              # manual_re4
-        "大家来说说自己的想法",        # manual_re5
-        "艾特你的朋友一起来",          # manual_re6
-        "最先猜中的有奖",              # manual_re7
-        "新衣回直播",                  # manual_re8
-        "留言给点建议",                # manual_re9
-        "评论送祝福",                  # manual_re11
-        "评论讨论一下",                # manual_re12
-        "评论说出你的想法",            # manual_re14
-        "评论分享你的经历",            # manual_re15
-        "评论聊一聊",                  # manual_re16
-        "评接力",                      # manual_re17
-        "聊聊这个话题",                # manual_re18
-        "评论扣1",                     # manual_re19
-        "转发分享给朋友",              # manual_re20
-        "评论告诉我",                  # manual_re21
-        "评论唠一唠",                  # manual_re22
-        "今日话题",                    # manual_re23
-        "说答案",                      # manual_re24
-        "说出你的想法",                # manual_re25
-        "为中国队加油",                # manual_re26
-        "评论你最喜欢的话",            # manual_re27
-        "评论最喜欢的事情",            # manual_re28
-        "分享你的经历",                # manual_re29
-        "分享心情",                    # manual_re30
-        "评论一句",                    # manual_re31
-        "评论包含关键词",              # manual_re31 (变体)
-        "转关评下方视频",              # manual_re32
-        "分享美好",                    # manual_re33
-        "视频弹幕抽奖",                # manual_re34
-        "生日快乐",                    # manual_re35
-        "一句话形容",                  # manual_re36
-        "分享喜爱",                    # manual_re38
-        "评论最喜欢",                  # manual_re39
-        "带话题晒",                    # manual_re40
-        "分享有趣的事",                # manual_re41
-        "送出祝福",                    # manual_re42
-        "评论原因",                    # manual_re43
-        "答案参与抽奖",                # manual_re47
-        "唠唠",                        # manual_re48
-        "分享一下",                    # manual_re49
-        "评论你的故事",                # manual_re50
-        "告诉我想什么",                # manual_re51
-        "发布图文动态",                # manual_re53
-        "视频评论",                    # manual_re54
-        "复zhi",                       # manual_re55
-        "多少合适",                    # manual_re56
-        "喜欢哪一款",                  # manual_re57
-        "有没有人？",                  # manual_re58 (需要问号)
+        "评论告诉我想看什么",  # manual_re1
+        "评论说出你的理由",  # manual_re2
+        "评论对一下",  # manual_re3
+        "猜对答案的有奖",  # manual_re4
+        "大家来说说自己的想法",  # manual_re5
+        "艾特你的朋友一起来",  # manual_re6
+        "最先猜中的有奖",  # manual_re7
+        "新衣回直播",  # manual_re8
+        "留言给点建议",  # manual_re9
+        "评论送祝福",  # manual_re11
+        "评论讨论一下",  # manual_re12
+        "评论说出你的想法",  # manual_re14
+        "评论分享你的经历",  # manual_re15
+        "评论聊一聊",  # manual_re16
+        "评接力",  # manual_re17
+        "聊聊这个话题",  # manual_re18
+        "评论扣1",  # manual_re19
+        "转发分享给朋友",  # manual_re20
+        "评论告诉我",  # manual_re21
+        "评论唠一唠",  # manual_re22
+        "今日话题",  # manual_re23
+        "说答案",  # manual_re24
+        "说出你的想法",  # manual_re25
+        "为中国队加油",  # manual_re26
+        "评论你最喜欢的话",  # manual_re27
+        "评论最喜欢的事情",  # manual_re28
+        "分享你的经历",  # manual_re29
+        "分享心情",  # manual_re30
+        "评论一句",  # manual_re31
+        "评论包含关键词",  # manual_re31 (变体)
+        "转关评下方视频",  # manual_re32
+        "分享美好",  # manual_re33
+        "视频弹幕抽奖",  # manual_re34
+        "生日快乐",  # manual_re35
+        "一句话形容",  # manual_re36
+        "分享喜爱",  # manual_re38
+        "评论最喜欢",  # manual_re39
+        "带话题晒",  # manual_re40
+        "分享有趣的事",  # manual_re41
+        "送出祝福",  # manual_re42
+        "评论原因",  # manual_re43
+        "答案参与抽奖",  # manual_re47
+        "唠唠",  # manual_re48
+        "分享一下",  # manual_re49
+        "评论你的故事",  # manual_re50
+        "告诉我想什么",  # manual_re51
+        "发布图文动态",  # manual_re53
+        "视频评论",  # manual_re54
+        "复zhi",  # manual_re55
+        "多少合适",  # manual_re56
+        "喜欢哪一款",  # manual_re57
+        "有没有人？",  # manual_re58 (需要问号)
     ]
 
     # ---- 不需要人工回复的动态内容 ----
@@ -536,7 +553,9 @@ class TestSpaceDynamicParsing:
         assert result is not None
         assert len(result) > 0
         # 发布抽奖用户的空间动态会被加入 dynamic_infos
-        assert len(user_item.dynamic_infos) > 0, "发布抽奖用户的动态应被加入 dynamic_infos"
+        assert len(user_item.dynamic_infos) > 0, (
+            "发布抽奖用户的动态应被加入 dynamic_infos"
+        )
 
     @pytest.mark.asyncio
     async def test_parse_space_empty_items(self):
@@ -647,7 +666,9 @@ class TestAdditionalFixtures:
     async def test_parse_official_lot_dynamic(self):
         """测试解析官方抽奖动态（dynamic_detail_resp_official_lot.json）"""
         if not MOCK_DYNAMIC_DETAIL_RESP_OFFICIAL_LOT:
-            pytest.skip("dynamic_detail_resp_official_lot.json 未填入真实数据，跳过测试")
+            pytest.skip(
+                "dynamic_detail_resp_official_lot.json 未填入真实数据，跳过测试"
+            )
         resp = deepcopy(MOCK_DYNAMIC_DETAIL_RESP_OFFICIAL_LOT)
         dyn_id = _extract_dynamic_id_from_mock(resp)
         if not dyn_id:
@@ -681,7 +702,9 @@ class TestAdditionalFixtures:
         if not MOCK_DYNAMIC_DETAIL_RESP_4101128:
             pytest.skip("dynamic_detail_resp_4101128.json 未填入真实数据，跳过测试")
         resp = deepcopy(MOCK_DYNAMIC_DETAIL_RESP_4101128)
-        result = await _make_dynamic_item(dynamic_id=1)._BiliDynamicItem__solve_dynamic_item_detail(resp)
+        result = await _make_dynamic_item(
+            dynamic_id=1
+        )._BiliDynamicItem__solve_dynamic_item_detail(resp)
 
         assert isinstance(result, DynamicDetailParsed)
         # 4101128 错误应返回无效结果

@@ -7,9 +7,17 @@ from urllib.parse import quote
 from CONFIG import CONFIG
 from log.base_log import bapi_log
 from Models.AntiRisk.Bili.WebCookie import BiliWebCookie, CookieWrapper
-from Service.GrpcModule.Grpc.Bapi.BiliApiBase import get_frontend_finger_spi, gen_web_ticket, \
-    get_bili_main_page_raw_resp, gaia_gateway_ExClimbWuzhi, gaia_gateway_ExClimbCongling
-from Service.GrpcModule.Grpc.Bapi.Constants import BASE_COOKIE_KEYS, EXCLIMB_WUZHI_COOKIE_KEYS
+from Service.GrpcModule.Grpc.Bapi.BiliApiBase import (
+    get_frontend_finger_spi,
+    gen_web_ticket,
+    get_bili_main_page_raw_resp,
+    gaia_gateway_ExClimbWuzhi,
+    gaia_gateway_ExClimbCongling,
+)
+from Service.GrpcModule.Grpc.Bapi.Constants import (
+    BASE_COOKIE_KEYS,
+    EXCLIMB_WUZHI_COOKIE_KEYS,
+)
 from Utils.通用.Common import asyncio_gather
 from Utils.加密.utils import GenWebCookieParams
 from Utils.加密.utils import lsid
@@ -22,25 +30,29 @@ _cookie_queue_num = 0
 
 async def _gen_buvid4(cookie: BiliWebCookie) -> None:
     cookie_str = cookie.to_str(include_keys=BASE_COOKIE_KEYS)
-    spi_resp_dict = await get_frontend_finger_spi(cookie_str=cookie_str, bili_web_cookie=cookie)
-    cookie.buvid4 = quote(spi_resp_dict.data.b_4, safe='')
+    spi_resp_dict = await get_frontend_finger_spi(
+        cookie_str=cookie_str, bili_web_cookie=cookie
+    )
+    cookie.buvid4 = quote(spi_resp_dict.data.b_4, safe="")
 
 
 async def _gen_web_ticket(cookie: BiliWebCookie) -> None:
     cookie_str = cookie.to_str(include_keys=BASE_COOKIE_KEYS)
     spi_resp_dict = await gen_web_ticket(cookie_str=cookie_str, bili_web_cookie=cookie)
-    cookie.bili_ticket = spi_resp_dict['data']['ticket']
-    cookie.bili_ticket_expires = spi_resp_dict['data']['created_at'] + spi_resp_dict['data']['ttl']
+    cookie.bili_ticket = spi_resp_dict["data"]["ticket"]
+    cookie.bili_ticket_expires = (
+        spi_resp_dict["data"]["created_at"] + spi_resp_dict["data"]["ttl"]
+    )
 
 
 def _gen_lsid_hit_dyn_v2(cookie: BiliWebCookie) -> None:
     cookie.b_lsid = lsid()
-    cookie.hit_dyn_v2 = '1'
+    cookie.hit_dyn_v2 = "1"
 
 
 async def _get_buvid3(cookie: BiliWebCookie) -> None:
     result = await get_bili_main_page_raw_resp(bili_web_cookie=cookie)
-    if ua := result.request.headers.get('user-agent'):
+    if ua := result.request.headers.get("user-agent"):
         cookie.gen_web_cookie_params.ua = ua
     for k, v in result.cookies.items():
         setattr(cookie, k, v)
@@ -50,7 +62,7 @@ async def _active_exclimb_wuzhi(cookie: BiliWebCookie):
     await gaia_gateway_ExClimbWuzhi(
         cookie_str=cookie.to_str(include_keys=EXCLIMB_WUZHI_COOKIE_KEYS),
         payload=cookie.gen_web_cookie_params.payload_str,
-        bili_web_cookie=cookie
+        bili_web_cookie=cookie,
     )
 
 
@@ -72,11 +84,7 @@ async def _bili_web_cookie_gen_once() -> BiliWebCookie:
     )
     await _get_buvid3(cookie)
     _gen_lsid_hit_dyn_v2(cookie)
-    await asyncio_gather(
-        _gen_buvid4(cookie),
-        _gen_web_ticket(cookie),
-        log=bapi_log
-    )
+    await asyncio_gather(_gen_buvid4(cookie), _gen_web_ticket(cookie), log=bapi_log)
     await _active_exclimb_wuzhi(cookie)
     return cookie
 
@@ -113,13 +121,13 @@ async def get_bili_cookie() -> CookieWrapper:
         if len(_fake_cookie_list) < 50:  # 假设池最大容量为50
             _cookie_queue_num += 1
             bapi_log.debug(
-                f'当前cookie池数量：{len(_fake_cookie_list)}，总共{_cookie_queue_num}个cookie，前往获取新的cookie'
+                f"当前cookie池数量：{len(_fake_cookie_list)}，总共{_cookie_queue_num}个cookie，前往获取新的cookie"
             )
             new_ck = await anext(async_bili_cookie_iter)
             cookie_data = CookieWrapper(
                 ck=new_ck,
                 ua=new_ck.gen_web_cookie_params.ua,
-                expire_ts=int(time.time() + 8 * 3600)  # 8小时有效期
+                expire_ts=int(time.time() + 8 * 3600),  # 8小时有效期
             )
             _fake_cookie_list.append(cookie_data)
             return cookie_data
@@ -129,5 +137,5 @@ async def get_bili_cookie() -> CookieWrapper:
         return await get_bili_cookie()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(get_bili_cookie())

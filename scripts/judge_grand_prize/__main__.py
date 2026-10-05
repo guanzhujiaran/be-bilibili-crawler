@@ -53,13 +53,11 @@ import time
 from pathlib import Path
 from langchain_openai import ChatOpenAI
 from tqdm.auto import tqdm
+
 # 确保项目根目录在 sys.path 中
 _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
-
-
-
 
 
 def _make_chat_openai_client(headers: dict | None) -> ChatOpenAI | None:
@@ -140,9 +138,7 @@ async def _run_workers_concurrent(
         "not_grand_prize": 0,
         "errors": 0,
     }
-    results = await asyncio.gather(
-        *(_wrap(w) for w in workers), return_exceptions=True
-    )
+    results = await asyncio.gather(*(_wrap(w) for w in workers), return_exceptions=True)
     for r in results:
         if isinstance(r, Exception):
             counts["errors"] += 1
@@ -173,7 +169,9 @@ async def judge_common_lottery(
     返回统计信息。
     """
     from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
+    from Service.GetOthersLotDyn.parser.prize_extractor import (
+        extract_prize_info_for_biliopusdb,
+    )
 
     chat_openai_client = _resolve_chat_openai_client(headers, llm_args)
 
@@ -217,8 +215,8 @@ async def judge_common_lottery(
     async def _judge_one(dyn_id: int, content: str) -> str:
         try:
             result = await extract_prize_info_for_biliopusdb(
-                dyn_content=content,
-                chat_openai_client=chat_openai_client)
+                dyn_content=content, chat_openai_client=chat_openai_client
+            )
             is_grand = int(result.result.is_grand_prize)
             # 处理完一个立即保存一个，防止中途失败丢失结果
             await SqlHelper.save_extra_info(
@@ -246,7 +244,9 @@ async def judge_common_lottery(
             pbar.update(len(batch))
             continue
 
-        batch_items = [(dyn_id, content_map[dyn_id]) for dyn_id in batch if dyn_id in content_map]
+        batch_items = [
+            (dyn_id, content_map[dyn_id]) for dyn_id in batch if dyn_id in content_map
+        ]
         if not batch_items:
             tqdm.write(f"  [批次 {batch_num}/{total_batches}] 内容均为空，跳过")
             pbar.update(len(batch))
@@ -285,7 +285,9 @@ async def judge_reserve_lottery(
     返回统计信息。
     """
     from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_biliopusdb
+    from Service.GetOthersLotDyn.parser.prize_extractor import (
+        extract_prize_info_for_biliopusdb,
+    )
     from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import bili_reserve_sqlhelper
 
     chat_openai_client = _resolve_chat_openai_client(headers, llm_args)
@@ -332,8 +334,10 @@ async def judge_reserve_lottery(
 
     stats["total_records"] = len(target_records)
 
-    print(f"共找到 {len(target_records)} 条需要判断的记录 "
-          f"(总记录数: {len(all_records)}, 已跳过: {stats['skipped']})")
+    print(
+        f"共找到 {len(target_records)} 条需要判断的记录 "
+        f"(总记录数: {len(all_records)}, 已跳过: {stats['skipped']})"
+    )
 
     if not target_records:
         print("没有需要判断的记录。")
@@ -346,8 +350,8 @@ async def judge_reserve_lottery(
     async def _judge_one(record) -> str:
         try:
             result = await extract_prize_info_for_biliopusdb(
-                dyn_content=record.text,
-                chat_openai_client=chat_openai_client)
+                dyn_content=record.text, chat_openai_client=chat_openai_client
+            )
             is_grand = int(result.result.is_grand_prize)
             # 处理完一个立即保存一个，防止中途失败丢失结果
             await SqlHelper.save_extra_info(
@@ -393,7 +397,9 @@ async def judge_official_lottery(
 
     返回统计信息。
     """
-    from Service.GetOthersLotDyn.parser.prize_extractor import extract_prize_info_for_lotdata
+    from Service.GetOthersLotDyn.parser.prize_extractor import (
+        extract_prize_info_for_lotdata,
+    )
     from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
         grpc_sql_helper,
     )
@@ -450,9 +456,7 @@ async def judge_official_lottery(
 
     target_ids = list(record_map.keys())
     if not force_update:
-        existing_ids = await grpc_sql_helper.batch_check_existing_extra_info(
-            target_ids
-        )
+        existing_ids = await grpc_sql_helper.batch_check_existing_extra_info(target_ids)
         target_ids = [bid for bid in target_ids if bid not in existing_ids]
         stats["skipped"] = len(record_map) - len(target_ids)
 
@@ -461,8 +465,10 @@ async def judge_official_lottery(
 
     stats["total_records"] = len(target_ids)
 
-    print(f"共找到 {len(target_ids)} 条需要判断的记录 "
-          f"(有效总数: {len(record_map)}, 已跳过: {stats['skipped']})")
+    print(
+        f"共找到 {len(target_ids)} 条需要判断的记录 "
+        f"(有效总数: {len(record_map)}, 已跳过: {stats['skipped']})"
+    )
 
     if not target_ids:
         print("没有需要判断的记录。")
@@ -476,12 +482,13 @@ async def judge_official_lottery(
         try:
             lottery_text = record_map[bid][0]
             result = await extract_prize_info_for_lotdata(
-                dyn_content=lottery_text,
-                chat_openai_client=chat_openai_client)
+                dyn_content=lottery_text, chat_openai_client=chat_openai_client
+            )
             is_grand = int(result.result.is_grand_prize)
             # 处理完一个立即保存一个，防止批量写入中途失败丢失结果
             await grpc_sql_helper.save_extra_info(
-                lottery_id=bid, is_grand_prize=is_grand)
+                lottery_id=bid, is_grand_prize=is_grand
+            )
             return "grand" if is_grand == 1 else "not_grand"
         except Exception as e:
             tqdm.write(f"  lottery_id={bid} 失败: {e}")
@@ -533,16 +540,13 @@ async def main():
         help="强制重新判断所有记录（即使已有 flag 记录）",
     )
     parser.add_argument(
-        "--limit",
-        type=int,
-        default=0,
-        help="限制最大处理数量，0=不限制 (默认: 0)"
+        "--limit", type=int, default=0, help="限制最大处理数量，0=不限制 (默认: 0)"
     )
     parser.add_argument(
         "--concurrency",
         type=int,
         default=1,
-        help="并发处理数量，0/负数按 1 处理 (默认: 1)"
+        help="并发处理数量，0/负数按 1 处理 (默认: 1)",
     )
 
     from scripts._cli_utils import (
@@ -551,6 +555,7 @@ async def main():
         apply_cli_overrides,
         build_mysql_uri,
     )
+
     add_llm_args(parser)
     add_db_args(parser)
 
@@ -559,15 +564,17 @@ async def main():
 
     # 脚本禁止回退策略，必须确保已配置可用的云端 LLM，否则直接失败退出。
     from CONFIG import settings
-    usable = [
-        c for c in settings.llm_apis
-        if c.base_url and c.model_name
-    ]
+
+    usable = [c for c in settings.llm_apis if c.base_url and c.model_name]
     if not usable:
-        print("[错误] 未配置任何可用的云端 LLM（需要 base_url 与 model_name 均非空），"
-              "脚本禁止回退策略，无法继续。")
-        print("请通过 --llm-base-url/--llm-token/--llm-model 完整指定，"
-              "或在 .env 中配置 llm_apis。")
+        print(
+            "[错误] 未配置任何可用的云端 LLM（需要 base_url 与 model_name 均非空），"
+            "脚本禁止回退策略，无法继续。"
+        )
+        print(
+            "请通过 --llm-base-url/--llm-token/--llm-model 完整指定，"
+            "或在 .env 中配置 llm_apis。"
+        )
         sys.exit(1)
 
     # ---- 根据 CLI 的 --db-* 覆盖，显式构造指向同一 MySQL 实例的 SqlHelper ----
@@ -576,9 +583,13 @@ async def main():
     # 刷新。因此这里按最终连接参数 new 实例，并覆盖各源模块的全局单例
     # （含其它模块内部直接引用处），确保所有调用点都连到正确的 MySQL 实例。
     from Service.GetOthersLotDyn.Sql import sql_helper as _gol_sql_mod
-    from Service.GetOthersLotDyn.Sql.sql_helper import __SqlHelper as _GetOtherLotSqlHelper
+    from Service.GetOthersLotDyn.Sql.sql_helper import (
+        __SqlHelper as _GetOtherLotSqlHelper,
+    )
     from Service.opus新版官方抽奖.预约抽奖.db import sqlHelper as _res_sql_mod
-    from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import _SqlHelper as _ReserveSqlHelper
+    from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import (
+        _SqlHelper as _ReserveSqlHelper,
+    )
     import Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer as _dyn_sql_mod
     from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
         SQLHelper as _DynDetailSqlHelper,
@@ -601,6 +612,7 @@ async def main():
     llm_client: ChatOpenAI | None = None
     if getattr(args, "llm_headers", None):
         import json as _json
+
         try:
             llm_headers = _json.loads(args.llm_headers)
         except Exception as e:

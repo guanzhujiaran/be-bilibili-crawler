@@ -11,7 +11,7 @@ router = new_router()
 @router.post(
     RouterPaths.SET_NEW_AUTH_TOKEN,
     name=RouterNames.SET_NEW_AUTH_TOKEN,
-    description='更新samsclub爬虫的auth_token',
+    description="更新samsclub爬虫的auth_token",
     response_model=CommonResponseModel[str],
 )
 async def set_new_auth_token(auth_token: str):
@@ -19,9 +19,13 @@ async def set_new_auth_token(auth_token: str):
     return CommonResponseModel(data="更新成功！")
 
 
-router.include_router(graphql_app, prefix='/graphql')
+router.include_router(graphql_app, prefix="/graphql")
 
 
-@router.get(RouterPaths.SAMSCLUB_API_STATUS, name=RouterNames.SAMSCLUB_API_STATUS, response_model=CommonResponseModel[SamsClubApiStatus])
+@router.get(
+    RouterPaths.SAMSCLUB_API_STATUS,
+    name=RouterNames.SAMSCLUB_API_STATUS,
+    response_model=CommonResponseModel[SamsClubApiStatus],
+)
 def samsclub_api_status():
     return CommonResponseModel(data=sams_club_crawler.api.status)

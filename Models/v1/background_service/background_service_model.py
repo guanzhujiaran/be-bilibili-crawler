@@ -7,8 +7,10 @@ from pydantic import computed_field, Field
 
 from Models.base.custom_pydantic import CustomBaseModel
 
+
 class BackgroundServiceName(StrEnumAutoDoc):
     """后台服务名称枚举"""
+
     DYN_DETAIL_DATABASE_CLEANER = "DYN_DETAIL_DATABASE_CLEANER"
     GET_PROXY_METHODS_SCHEDULER = "GET_PROXY_METHODS_SCHEDULER"
     SAMSCCLUB_SCHEDULER = "SAMSCCLUB_SCHEDULER"
@@ -26,6 +28,7 @@ class BackgroundServiceName(StrEnumAutoDoc):
 
 class ScrapyTypeEnum(StrEnumAutoDoc):
     """可查询的爬虫类型枚举，对应 get_scrapy_status 的合法入参"""
+
     DYN = "dyn"
     TOPIC = "topic"
     RESERVE = "reserve"
@@ -39,10 +42,10 @@ class ProgressStatusResp(CustomBaseModel):
     succ_count: int = 0
     start_ts: int = 0
     total_num: int = 0
-    progress: float | int = Field(default=0, description='当前进度')
+    progress: float | int = Field(default=0, description="当前进度")
     is_running: bool = False
     update_ts: int = 0  # 最后更新时间
-    running_params: set = Field(default_factory=set, description='运行中的参数')
+    running_params: set = Field(default_factory=set, description="运行中的参数")
 
     @computed_field
     def update_time(self) -> str:
@@ -57,7 +60,7 @@ class BaseScrapyStatusResp(CustomBaseModel):
     succ_count: int = 0
     cur_stop_num: int = 0
     start_ts: int = 0
-    freq: int | float = Field(default=0, description='爬取成功的频率，单位为（条/秒）')
+    freq: int | float = Field(default=0, description="爬取成功的频率，单位为（条/秒）")
     is_running: bool = False
     update_ts: int = 0  # 最后更新时间
 
@@ -73,6 +76,7 @@ class ProxyStatusResp(CustomBaseModel):
 
     def is_need_sync(self) -> bool:
         return not (bool(self.sync_ts) and self.sync_ts > int(time.time()) - 600)
+
 
 TypeScrapyStatus = StatsPlugin | ProgressStatusResp | None
 

@@ -21,7 +21,8 @@ def retry_on_error(delay=10):
                     return await func(*args, **kwargs)
                 except Exception as e:
                     toutiao_api_logger.exception(
-                        f"An error occurred: {e}. Retrying in {delay} seconds.\nNow retry times:{retries}")
+                        f"An error occurred: {e}. Retrying in {delay} seconds.\nNow retry times:{retries}"
+                    )
                     await asyncio.sleep(delay)
                     retries += 1
 
@@ -66,6 +67,7 @@ class SqlHelperSpaceFeedDataDb(SqlHelperBase):
 
 async def __test():
     import json
+
     a = SqlHelperSpaceFeedDataDb()
     b: TFEEDDATA = await a.get_feed_data_by_id(7335747280924132148)
     print(b.zippedData)
@@ -74,5 +76,5 @@ async def __test():
     print(json.loads(c))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(__test())

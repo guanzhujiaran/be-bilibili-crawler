@@ -15,7 +15,9 @@ _engine_cache: Dict[tuple[str, bool], AsyncEngine] = {}
 _session_cache: Dict[tuple[str, bool], async_sessionmaker] = {}
 
 
-def sqlalchemy_session_factory(dburl: str, is_crawler: bool = False) -> tuple[async_sessionmaker, AsyncEngine]:
+def sqlalchemy_session_factory(
+    dburl: str, is_crawler: bool = False
+) -> tuple[async_sessionmaker, AsyncEngine]:
     """
     创建（或复用已缓存的）SQLAlchemy 异步会话工厂
 
@@ -29,7 +31,9 @@ def sqlalchemy_session_factory(dburl: str, is_crawler: bool = False) -> tuple[as
     Returns:
         tuple[async_sessionmaker, AsyncEngine]: 配置好的会话工厂和引擎
     """
-    config = CONFIG.crawler_sql_alchemy_config if is_crawler else CONFIG.sql_alchemy_config
+    config = (
+        CONFIG.crawler_sql_alchemy_config if is_crawler else CONFIG.sql_alchemy_config
+    )
     key = (dburl, is_crawler)
     engine = _engine_cache.get(key)
     if engine is None:

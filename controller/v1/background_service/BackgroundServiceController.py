@@ -89,7 +89,11 @@ def background_service_status():
     return CommonResponseModel(data=ret_list)
 
 
-@router.post(RouterPaths.START_SERVICE, name=RouterNames.START_SERVICE, description="启动特定的后台爬虫服务")
+@router.post(
+    RouterPaths.START_SERVICE,
+    name=RouterNames.START_SERVICE,
+    description="启动特定的后台爬虫服务",
+)
 def start_background_service(background_service_name: BackgroundServiceName):
     """
     启动指定的后台爬虫服务
@@ -131,7 +135,11 @@ def start_background_service(background_service_name: BackgroundServiceName):
         return CommonResponseModel(code=500, msg=f"启动服务失败: {str(e)}")
 
 
-@router.post(RouterPaths.STOP_SERVICE, name=RouterNames.STOP_SERVICE, description="停止特定的后台爬虫服务")
+@router.post(
+    RouterPaths.STOP_SERVICE,
+    name=RouterNames.STOP_SERVICE,
+    description="停止特定的后台爬虫服务",
+)
 def stop_background_service(background_service_name: BackgroundServiceName):
     """
     停止指定的后台爬虫服务
@@ -164,7 +172,11 @@ def stop_background_service(background_service_name: BackgroundServiceName):
         return CommonResponseModel(code=500, msg=f"停止服务失败: {str(e)}")
 
 
-@router.post(RouterPaths.RESTART_SERVICE, name=RouterNames.RESTART_SERVICE, description="重启特定的后台爬虫服务")
+@router.post(
+    RouterPaths.RESTART_SERVICE,
+    name=RouterNames.RESTART_SERVICE,
+    description="重启特定的后台爬虫服务",
+)
 def restart_background_service(background_service_name: BackgroundServiceName):
     """
     重启指定的后台爬虫服务
@@ -261,8 +273,7 @@ def global_scheduler_status():
                 break
 
         jobs_details.append(
-            SchedulerJobDetailModel(
-                job_info=job_info, execution_info=execution_info)
+            SchedulerJobDetailModel(job_info=job_info, execution_info=execution_info)
         )
 
     # 构造完整状态模型

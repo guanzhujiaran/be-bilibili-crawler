@@ -36,9 +36,7 @@ def resolve_method(method_name: str, service: str | None = None) -> ProtoMethod:
     if service:
         matched = tuple(item for item in candidates if item.service == service)
         if not matched:
-            raise UnknownMethodError(
-                f"服务 {service!r} 中没有方法 {method_name!r}"
-            )
+            raise UnknownMethodError(f"服务 {service!r} 中没有方法 {method_name!r}")
         return matched[0]
     if not candidates:
         raise UnknownMethodError(

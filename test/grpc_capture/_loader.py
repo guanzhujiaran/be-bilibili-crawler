@@ -44,12 +44,16 @@ def split_grpc_frames(raw: bytes) -> list[GrpcFrame]:
         flag = raw[offset]
         if flag not in (0, 1):
             break
-        declared_len = int.from_bytes(raw[offset + 1:offset + GRPC_FRAME_PREFIX_LEN], "big")
+        declared_len = int.from_bytes(
+            raw[offset + 1 : offset + GRPC_FRAME_PREFIX_LEN], "big"
+        )
         payload_start = offset + GRPC_FRAME_PREFIX_LEN
         payload_end = payload_start + declared_len
         if payload_end > len(raw):
             break
-        frames.append(GrpcFrame(compressed=bool(flag), payload=raw[payload_start:payload_end]))
+        frames.append(
+            GrpcFrame(compressed=bool(flag), payload=raw[payload_start:payload_end])
+        )
         offset = payload_end
     if not frames:
         frames.append(GrpcFrame(compressed=False, payload=raw))
@@ -165,7 +169,7 @@ def scan_unknown_fields(buf: bytes, descriptor) -> list[str]:
         if wire_type != 2:
             break
         size, offset = _read_varint(buf, offset)
-        chunk = buf[offset:offset + size]
+        chunk = buf[offset : offset + size]
         offset += size
         if field is None:
             unknown.append(str(field_number))
@@ -214,7 +218,7 @@ def scan_field_mismatches(buf: bytes, descriptor) -> list[str]:
             if wire_type != 2:
                 return
             size, offset = _read_varint(chunk, offset)
-            piece = chunk[offset:offset + size]
+            piece = chunk[offset : offset + size]
             offset += size
             if field is None:
                 continue
@@ -226,10 +230,12 @@ def scan_field_mismatches(buf: bytes, descriptor) -> list[str]:
                     piece.decode()
                 except UnicodeDecodeError:
                     mismatches.append(
-                        f"{here}({desc.name}.{field.name}) 本地 string，线上非 UTF-8")
+                        f"{here}({desc.name}.{field.name}) 本地 string，线上非 UTF-8"
+                    )
             elif field.type in (5, 8, 13) and wire_type != 0:  # int32/int64/bool
                 mismatches.append(
-                    f"{here}({desc.name}.{field.name}) 本地 {field.type}，线上 wire={wire_type}")
+                    f"{here}({desc.name}.{field.name}) 本地 {field.type}，线上 wire={wire_type}"
+                )
 
     walk(buf, descriptor, "")
     return mismatches

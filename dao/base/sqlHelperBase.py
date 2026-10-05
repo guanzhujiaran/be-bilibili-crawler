@@ -10,8 +10,11 @@ class SqlHelperBase:
     数据库操作基类
     每次实例化都会创建独立的 Engine 和 Session，实现连接池隔离
     """
+
     def __init__(self, mysql_db_url: str, is_crawler: bool = False):
-        async_session, engin = sqlalchemy_session_factory(mysql_db_url, is_crawler=is_crawler)
+        async_session, engin = sqlalchemy_session_factory(
+            mysql_db_url, is_crawler=is_crawler
+        )
         self.async_session: async_sessionmaker = async_session
         self.engine = engin
         self.log = myfastapi_logger

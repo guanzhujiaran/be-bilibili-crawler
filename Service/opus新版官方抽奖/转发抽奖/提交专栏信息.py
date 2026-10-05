@@ -12,7 +12,9 @@ from log.base_log import official_lot_logger
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_lot_notice
 from Service.GrpcModule.Grpc.grpc_api import bili_grpc
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import grpc_sql_helper
+from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
+    grpc_sql_helper,
+)
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 from Service.opus新版官方抽奖.Model.BaseLotModel import ProgressCounter
@@ -28,14 +30,14 @@ class ExtractOfficialLottery:
     def __init__(self):
         self.BiliGrpc = bili_grpc
         self.__dir = os.path.dirname(os.path.abspath(__file__))
-        self.log_path = os.path.join(self.__dir, 'log')
-        self.result_path = os.path.join(self.__dir, 'result')
+        self.log_path = os.path.join(self.__dir, "log")
+        self.result_path = os.path.join(self.__dir, "result")
         self.oringinal_official_lots: list[dict] = []
 
         self.all_offcial_lots: list[dict] = []  # 所有的抽奖
         self.last_update_offcial_lots: list[dict] = []  # 最后一次更新的抽奖
         self.list_append_lock = threading.Lock()
-        self.csv_sep_letter = '\t\t\t\t\t'
+        self.csv_sep_letter = "\t\t\t\t\t"
 
         self.stop_flag = False
         self.stop_flag_lock = threading.Lock()
@@ -70,10 +72,12 @@ class ExtractOfficialLottery:
 
     def _timeshift(self, timestamp):
         local_time = time.localtime(timestamp)
-        realtime = time.strftime('%Y-%m-%d %H:%M:%S', local_time)
+        realtime = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
         return realtime
 
-    async def update_lot_notice(self, original_lot_notice: List[Lotdata]) -> List[Lotdata]:
+    async def update_lot_notice(
+        self, original_lot_notice: List[Lotdata]
+    ) -> List[Lotdata]:
         """
         更新抽奖
         :param original_lot_notice:
@@ -91,28 +95,36 @@ class ExtractOfficialLottery:
                     business_id=lot_data.business_id,
                     origin_dynamic_id=lot_data.business_id,
                 )
-                new_lot_data_resp = new_lot_resp.get('data', {})
+                new_lot_data_resp = new_lot_resp.get("data", {})
 
                 if new_lot_data_resp:
                     self.log.info(
-                        f'获取到新的抽奖数据，推送到upsert_official_reserve_charge_lot消息队列{new_lot_data_resp}')
+                        f"获取到新的抽奖数据，推送到upsert_official_reserve_charge_lot消息队列{new_lot_data_resp}"
+                    )
                     await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
                         new_lot_data_resp,
-                        extra_routing_key="ExtractOfficialLottery.update_lot_notice.solve_lot_data"
+                        extra_routing_key="ExtractOfficialLottery.update_lot_notice.solve_lot_data",
                     )
-                    new_lot_data: Lotdata = grpc_sql_helper.process_resp_data_dict_2_lotdata(new_lot_data_resp)
+                    new_lot_data: Lotdata = (
+                        grpc_sql_helper.process_resp_data_dict_2_lotdata(
+                            new_lot_data_resp
+                        )
+                    )
                     new_updated_lot_data.append(new_lot_data)
                 else:
-                    self.log.warning(f'获取到空数据，可能是api接口问题，请检查！使用原始抽奖数据！！！{lot_data}')
+                    self.log.warning(
+                        f"获取到空数据，可能是api接口问题，请检查！使用原始抽奖数据！！！{lot_data}"
+                    )
                     new_updated_lot_data.append(lot_data)
-                rs['cur_num'] += 1
-                self.log.info(f'当前更新了【{rs["cur_num"]}/{rs["total_num"]}】条官方抽奖数据')
+                rs["cur_num"] += 1
+                self.log.info(
+                    f"当前更新了【{rs['cur_num']}/{rs['total_num']}】条官方抽奖数据"
+                )
 
-        running_status = {
-            'total_num': len(original_lot_notice),
-            "cur_num": 0
-        }
-        self.log.info(f'开始更新抽奖，共计{running_status["total_num"]}条抽奖需要更新，开始重新通过b站api获取抽奖数据！')
+        running_status = {"total_num": len(original_lot_notice), "cur_num": 0}
+        self.log.info(
+            f"开始更新抽奖，共计{running_status['total_num']}条抽奖需要更新，开始重新通过b站api获取抽奖数据！"
+        )
         new_updated_lot_data = []
         task_list = []
         for da in original_lot_notice:
@@ -127,49 +139,54 @@ class ExtractOfficialLottery:
             return 0
         dyn_data = json.loads(dyn_detail.dynData, strict=False)
         repost_count = 0
-        for module in dyn_data.get('modules'):
-            if module.get('moduleType') == 'module_stat':
-                if module.get('moduleStat').get('repost'):
-                    repost_count = module.get('moduleStat').get('repost')
-            if module.get('moduleButtom'):
-                if module.get('moduleButtom').get('moduleStat'):
-                    if module.get('moduleButtom').get('moduleStat').get('repost'):
-                        repost_count = module.get('moduleButtom').get('moduleStat').get('repost')
+        for module in dyn_data.get("modules"):
+            if module.get("moduleType") == "module_stat":
+                if module.get("moduleStat").get("repost"):
+                    repost_count = module.get("moduleStat").get("repost")
+            if module.get("moduleButtom"):
+                if module.get("moduleButtom").get("moduleStat"):
+                    if module.get("moduleButtom").get("moduleStat").get("repost"):
+                        repost_count = (
+                            module.get("moduleButtom").get("moduleStat").get("repost")
+                        )
         return repost_count
 
-    async def construct_lot_detail(self, lot_data_list: List[dict], get_repost_count_flag: bool) -> list[LotDetail]:
+    async def construct_lot_detail(
+        self, lot_data_list: List[dict], get_repost_count_flag: bool
+    ) -> list[LotDetail]:
         ret_list = []
         need_keys = [
-            'lottery_id',
-            'lottery_time',
-            'first_prize',
-            'second_prize',
-            'third_prize',
-            'first_prize_cmt',
-            'second_prize_cmt',
-            'third_prize_cmt',
-            'article_pub_record'
+            "lottery_id",
+            "lottery_time",
+            "first_prize",
+            "second_prize",
+            "third_prize",
+            "first_prize_cmt",
+            "second_prize_cmt",
+            "third_prize_cmt",
+            "article_pub_record",
         ]
 
         async def _construct_lot_detail_bulk(lot_data: dict):
             if not all(key in lot_data.keys() for key in need_keys):
                 self.log.error(
-                    f'lot_data:{lot_data} is not complete! missing key:{[key for key in need_keys if key not in lot_data.keys()]}')
-            self.log.info(f'Constructing:{lot_data}')
-            lottery_id = lot_data.get('lottery_id', '')
-            dynamic_id = lot_data.get('business_id')
-            lottery_time = lot_data.get('lottery_time', 0)
-            first_prize = lot_data.get('first_prize', 0)
-            second_prize = lot_data.get('second_prize', 0)
-            third_prize = lot_data.get('third_prize', 0)
-            first_prize_cmt = lot_data.get('first_prize_cmt', '')
-            second_prize_cmt = lot_data.get('second_prize_cmt', '')
-            third_prize_cmt = lot_data.get('third_prize_cmt', '')
-            article_pub_record = lot_data.get('article_pub_record')
+                    f"lot_data:{lot_data} is not complete! missing key:{[key for key in need_keys if key not in lot_data.keys()]}"
+                )
+            self.log.info(f"Constructing:{lot_data}")
+            lottery_id = lot_data.get("lottery_id", "")
+            dynamic_id = lot_data.get("business_id")
+            lottery_time = lot_data.get("lottery_time", 0)
+            first_prize = lot_data.get("first_prize", 0)
+            second_prize = lot_data.get("second_prize", 0)
+            third_prize = lot_data.get("third_prize", 0)
+            first_prize_cmt = lot_data.get("first_prize_cmt", "")
+            second_prize_cmt = lot_data.get("second_prize_cmt", "")
+            third_prize_cmt = lot_data.get("third_prize_cmt", "")
+            article_pub_record = lot_data.get("article_pub_record")
             if get_repost_count_flag:
                 participants = await self.get_repost_count(dynamic_id)
             else:
-                participants = lot_data.get('participants', 0)
+                participants = lot_data.get("participants", 0)
             result = LotDetail(
                 lottery_id,
                 dynamic_id,
@@ -181,16 +198,20 @@ class ExtractOfficialLottery:
                 second_prize_cmt,
                 third_prize_cmt,
                 participants,
-                article_pub_record
+                article_pub_record,
             )
             ret_list.append(result)
 
-        await asyncio_gather(*[_construct_lot_detail_bulk(x) for x in lot_data_list], log=official_lot_logger)
+        await asyncio_gather(
+            *[_construct_lot_detail_bulk(x) for x in lot_data_list],
+            log=official_lot_logger,
+        )
 
         return ret_list
 
-    async def get_all_lots(self, is_api_update: bool = True) -> tuple[
-        List[LotDetail], List[LotDetail], List[LotDetail]]:
+    async def get_all_lots(
+        self, is_api_update: bool = True
+    ) -> tuple[List[LotDetail], List[LotDetail], List[LotDetail]]:
         """
         已经排除了开奖了的和失效了的抽奖了
         :return: 所有官方抽奖，最后更新的官方抽奖 , 所有充电抽奖,最后更新的充电抽奖
@@ -199,115 +220,151 @@ class ExtractOfficialLottery:
         all_lots_with_no_business_id = await self.sql.get_all_lot_with_no_business_id()
         await asyncio_gather(
             *[
-                dyn_detail_scrapy.resolve_dynamic_details_card(json.loads(x.bilidyndetail.dynData, strict=False),
-                                                               is_running_scrapy=False) for x in
-                all_lots_with_no_business_id
+                dyn_detail_scrapy.resolve_dynamic_details_card(
+                    json.loads(x.bilidyndetail.dynData, strict=False),
+                    is_running_scrapy=False,
+                )
+                for x in all_lots_with_no_business_id
             ],
-            log=official_lot_logger)
+            log=official_lot_logger,
+        )
         all_official_lots_undrawn = await self.sql.get_all_lot_not_drawn()
         if is_api_update:
+
             async def __(lotdata: Lotdata):
                 lot_data_resp = await get_lot_notice(
-                    business_type=lotdata.business_type,
-                    business_id=lotdata.business_id
+                    business_type=lotdata.business_type, business_id=lotdata.business_id
                 )
-                if da := lot_data_resp.get('data'):
+                if da := lot_data_resp.get("data"):
                     await BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
-                        da,
-                        extra_routing_key="ExtractOfficialLottery.get_all_lots.__"
+                        da, extra_routing_key="ExtractOfficialLottery.get_all_lots.__"
                     )
                 else:
                     # B站返回 9999/-9999 表示动态已删除或无抽奖数据，属预期情况：
                     # 标记该抽奖失效(-1)，不再反复拉取，也不作为错误刷日志
-                    if lot_data_resp.get('code') in (9999, -9999):
+                    if lot_data_resp.get("code") in (9999, -9999):
                         self.log.info(
-                            f'获取抽奖信息失败，动态可能已被删除，标记失效: lottery_id={lotdata.lottery_id}, code={lot_data_resp.get("code")}')
+                            f"获取抽奖信息失败，动态可能已被删除，标记失效: lottery_id={lotdata.lottery_id}, code={lot_data_resp.get('code')}"
+                        )
                         await self.sql.update_lot_detail(
-                            lottery_id=lotdata.lottery_id,
-                            status=-1
+                            lottery_id=lotdata.lottery_id, status=-1
                         )
                     else:
                         self.log.error(
-                            f'{sqlalchemy_model_2_dict(lotdata)}lot_data_resp:{lot_data_resp} is not complete!')
+                            f"{sqlalchemy_model_2_dict(lotdata)}lot_data_resp:{lot_data_resp} is not complete!"
+                        )
                 self.refresh_official_lot_progress.succ_count += 1
 
             self.refresh_official_lot_progress = ProgressCounter()
-            self.refresh_official_lot_progress.total_num = len(all_official_lots_undrawn)
-            self.log.info(f'开始更新抽奖数据，共计{len(all_official_lots_undrawn)}条抽奖需要更新，开始重新通过b站api获取抽奖数据！')
+            self.refresh_official_lot_progress.total_num = len(
+                all_official_lots_undrawn
+            )
+            self.log.info(
+                f"开始更新抽奖数据，共计{len(all_official_lots_undrawn)}条抽奖需要更新，开始重新通过b站api获取抽奖数据！"
+            )
             await asyncio_gather(
-                *[
-                    __(x) for x in all_official_lots_undrawn
-                ],
-                log=official_lot_logger
+                *[__(x) for x in all_official_lots_undrawn], log=official_lot_logger
             )
             self.refresh_official_lot_progress.is_running = False
-        all_lot_official_data: List[Lotdata] = [x for x in all_official_lots_undrawn if
-                                                x.status != 2 and x.status != -1 and x.business_type == BiliBusinessTypeEnum.official]
-        all_lot_charge_data: List[Lotdata] = [x for x in all_official_lots_undrawn if
-                                              x.status != 2 and x.status != -1 and x.business_type == BiliBusinessTypeEnum.charge]
-        all_lot_reserve_data: List[Lotdata] = [x for x in all_official_lots_undrawn if
-                                               x.status != 2 and x.status != -1 and x.business_type == BiliBusinessTypeEnum.reserve]
+        all_lot_official_data: List[Lotdata] = [
+            x
+            for x in all_official_lots_undrawn
+            if x.status != 2
+            and x.status != -1
+            and x.business_type == BiliBusinessTypeEnum.official
+        ]
+        all_lot_charge_data: List[Lotdata] = [
+            x
+            for x in all_official_lots_undrawn
+            if x.status != 2
+            and x.status != -1
+            and x.business_type == BiliBusinessTypeEnum.charge
+        ]
+        all_lot_reserve_data: List[Lotdata] = [
+            x
+            for x in all_official_lots_undrawn
+            if x.status != 2
+            and x.status != -1
+            and x.business_type == BiliBusinessTypeEnum.reserve
+        ]
 
-        all_official_lot_detail_result: list[LotDetail] = await self.construct_lot_detail(
-            [x.__dict__ for x in all_lot_official_data], get_repost_count_flag=is_api_update)
-        all_official_lot_detail: list[LotDetail] = deepcopy(all_official_lot_detail_result)
+        all_official_lot_detail_result: list[
+            LotDetail
+        ] = await self.construct_lot_detail(
+            [x.__dict__ for x in all_lot_official_data],
+            get_repost_count_flag=is_api_update,
+        )
+        all_official_lot_detail: list[LotDetail] = deepcopy(
+            all_official_lot_detail_result
+        )
         all_charge_lot_detail: list[LotDetail] = await self.construct_lot_detail(
-            [x.__dict__ for x in all_lot_charge_data], False)
+            [x.__dict__ for x in all_lot_charge_data], False
+        )
         all_reserve_lot_detail: list[LotDetail] = await self.construct_lot_detail(
             [x.__dict__ for x in all_lot_reserve_data], False
         )
         return all_official_lot_detail, all_charge_lot_detail, all_reserve_lot_detail
 
-    async def save_article(self,
-                           abstract: str = '',
-                           is_api_update: bool = False,
-                           save_dir: str = '',
-                           pub_cv: bool = True,
-                           save_to_local_file: bool = True,
-                           ) -> tuple[CvContent, CvContent]:
+    async def save_article(
+        self,
+        abstract: str = "",
+        is_api_update: bool = False,
+        save_dir: str = "",
+        pub_cv: bool = True,
+        save_to_local_file: bool = True,
+    ) -> tuple[CvContent, CvContent]:
         """
 
         :param latest_lots_judge_ts:
         :param is_api_update:  是否使用b站api更新一下数据库里的未开奖数据
         :return:
         """
-        self.log.debug(f'开始提取官方抽奖和充电抽奖专栏信息！')
+        self.log.debug(f"开始提取官方抽奖和充电抽奖专栏信息！")
         if round_id := await self.sql.get_article_pub_record_round_id():
             round_id = round_id + 1
         else:
             round_id = 1
-        all_official_lot_detail, all_charge_lot_detail, all_reserve_lot_detail = await self.get_all_lots(
-            is_api_update=is_api_update
-        )  # 获取并更新抽奖信息！
-        gc = GenerateOfficialLotCv('', '', '', '', abstract=abstract)
+        (
+            all_official_lot_detail,
+            all_charge_lot_detail,
+            all_reserve_lot_detail,
+        ) = await self.get_all_lots(is_api_update=is_api_update)  # 获取并更新抽奖信息！
+        gc = GenerateOfficialLotCv("", "", "", "", abstract=abstract)
         if save_dir:
             gc.save_dir = save_dir
         official_cv_content = await gc.main(
             all_official_lot_detail,
             lot_type="官方抽奖",
             pub_cv=pub_cv,
-            save_to_local_file=save_to_local_file
+            save_to_local_file=save_to_local_file,
         )  # 官方抽奖
         charge_cv_content = await gc.main(
             all_charge_lot_detail,
             lot_type="充电抽奖",
             pub_cv=pub_cv,
-            save_to_local_file=save_to_local_file
+            save_to_local_file=save_to_local_file,
         )  # 充电抽奖
         await self.sql.upsert_article_pub_record(
             round_id,
-            *[x.dynamic_id for x in all_official_lot_detail if not x.article_pub_record],
-            *[x.dynamic_id for x in all_charge_lot_detail if not x.article_pub_record]
+            *[
+                x.dynamic_id
+                for x in all_official_lot_detail
+                if not x.article_pub_record
+            ],
+            *[x.dynamic_id for x in all_charge_lot_detail if not x.article_pub_record],
         )
-        await a_pushme('官方抽奖和充电抽奖已更新',
-               f'{len(all_official_lot_detail)}个'
-               f'\n充电抽奖：{len(all_charge_lot_detail)}个'
-               f'\n更新内容：\n{[x.__dict__ for x in all_official_lot_detail if not x.article_pub_record]}\n{[x.__dict__ for x in all_charge_lot_detail if not x.article_pub_record]}')
+        await a_pushme(
+            "官方抽奖和充电抽奖已更新",
+            f"{len(all_official_lot_detail)}个"
+            f"\n充电抽奖：{len(all_charge_lot_detail)}个"
+            f"\n更新内容：\n{[x.__dict__ for x in all_official_lot_detail if not x.article_pub_record]}\n{[x.__dict__ for x in all_charge_lot_detail if not x.article_pub_record]}",
+        )
 
         return official_cv_content, charge_cv_content
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
+
     async def _test_get_all_lots():
         __e = ExtractOfficialLottery()  #
         res = await __e.get_all_lots(is_api_update=True)

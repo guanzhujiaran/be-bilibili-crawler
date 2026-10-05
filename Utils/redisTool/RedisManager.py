@@ -181,7 +181,7 @@ class SyncRedisManagerBase:
         self,
         key: Any | List[Any],
         value: Any | List[Any],
-        _time: int| timedelta,
+        _time: int | timedelta,
     ):
         with redis_client_factory(pool=self.pool, sync=True) as r:
             if type(key) is list:

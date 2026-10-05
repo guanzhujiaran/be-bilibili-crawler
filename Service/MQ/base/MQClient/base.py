@@ -96,41 +96,43 @@ def get_broker():
     return router.broker
 
 
-exch = RabbitExchange(ExchangeName.bili_data, auto_delete=False, type=ExchangeType.TOPIC, durable=True)
+exch = RabbitExchange(
+    ExchangeName.bili_data, auto_delete=False, type=ExchangeType.TOPIC, durable=True
+)
 official_reserve_charge_lot_mq_prop = MQPropBase(
     queue_name=QueueName.OfficialReserveChargeLotMQ,
     routing_key_name=RoutingKey.OfficialReserveChargeLotMQ,
-    exchange=exch
+    exchange=exch,
 )
 upsert_official_reserve_charge_lot_mq_prop = MQPropBase(
     queue_name=QueueName.UpsertOfficialReserveChargeLotMQ,
     routing_key_name=RoutingKey.UpsertOfficialReserveChargeLotMQ,
-    exchange=exch
+    exchange=exch,
 )
 upsert_lot_data_by_dynamic_id_prop = MQPropBase(
     queue_name=QueueName.UpsertLotDataByDynamicIdMQ,
     routing_key_name=RoutingKey.UpsertLotDataByDynamicIdMQ,
-    exchange=exch
+    exchange=exch,
 )
 upsert_topic_lot_prop = MQPropBase(
     queue_name=QueueName.UpsertTopicLotMQ,
     routing_key_name=RoutingKey.UpsertTopicLotMQ,
-    exchange=exch
+    exchange=exch,
 )
 upsert_milvus_bili_lot_data_prop = MQPropBase(
     queue_name=QueueName.UpsertMilvusBiliLotDataMQ,
     routing_key_name=RoutingKey.UpsertMilvusBiliLotDataMQ,
-    exchange=exch
+    exchange=exch,
 )
 upsert_bili_atari_prop = MQPropBase(
     queue_name=QueueName.UpsertBiliAtariMQ,
     routing_key_name=RoutingKey.UpsertBiliAtariMQ,
-    exchange=exch
+    exchange=exch,
 )
 bili_voucher_prop = MQPropBase(
     queue_name=QueueName.BiliVoucherMQ,
     routing_key_name=RoutingKey.BiliVoucherMQ,
-    exchange=exch
+    exchange=exch,
 )
 
 # 入库队列的消费者预取上限：这两条队列在「等槽位 / 等配置」期间保持消息未确认，
@@ -153,7 +155,5 @@ prize_extract_dyndetail_mq_prop = MQPropBase(
 )
 
 test_mq_prop = MQPropBase(
-    queue_name=QueueName.TestMQ,
-    routing_key_name=RoutingKey.TestMQ,
-    exchange=exch
+    queue_name=QueueName.TestMQ, routing_key_name=RoutingKey.TestMQ, exchange=exch
 )

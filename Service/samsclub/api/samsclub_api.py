@@ -13,14 +13,20 @@ from httpx import HTTPError
 from Models.base.custom_pydantic import CustomBaseModel
 from log.base_log import sams_club_logger
 from Models.v1.samsclub.api_model import RespUserProfile, ApiResponse, UserProfile
-from Models.v1.samsclub.samsclub_model import SamsClubAppStorage, SamsClubGrayConfigStrategy, \
-    SamsClubGrayConfigStrategyDetails
+from Models.v1.samsclub.samsclub_model import (
+    SamsClubAppStorage,
+    SamsClubGrayConfigStrategy,
+    SamsClubGrayConfigStrategyDetails,
+)
 from Service.samsclub.exceptions.error import UnknownError
-from Service.samsclub.tools.headers_gen import SamsClubHeadersGen, sort_headers_with_missing_last
+from Service.samsclub.tools.headers_gen import (
+    SamsClubHeadersGen,
+    sort_headers_with_missing_last,
+)
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.SealedRequests import my_async_httpx
 
-StringNumber = NewType('StringNumber', str)
+StringNumber = NewType("StringNumber", str)
 
 
 class SamsClubApiTokenStatEnum(StrEnumAutoDoc):
@@ -37,49 +43,56 @@ class SamsClubApiStatus(CustomBaseModel):
 
 class SamsClubApi:
     class FilePath:
-        auth_token = os.path.join(os.path.dirname(__file__), 'auth_token.txt')
-        app_storage = os.path.join(os.path.dirname(__file__), 'app_storage.json')
+        auth_token = os.path.join(os.path.dirname(__file__), "auth_token.txt")
+        app_storage = os.path.join(os.path.dirname(__file__), "app_storage.json")
 
     @property
     def status(self) -> SamsClubApiStatus:
         return SamsClubApiStatus(
             token=self.headers_gen.auth_token,
             token_stat=self.token_stat,
-            latest_request_ts=self.latest_request_ts
+            latest_request_ts=self.latest_request_ts,
         )
 
     async def update_auth_token(self, auth_token):
-        async with aiofiles.open(self.FilePath.auth_token, 'w', encoding='utf-8') as f:
+        async with aiofiles.open(self.FilePath.auth_token, "w", encoding="utf-8") as f:
             await f.write(auth_token)
         self.headers_gen.auth_token = auth_token
 
     async def save_app_storage(self):
-        async with aiofiles.open(self.FilePath.app_storage, 'w', encoding='utf-8') as f:
-            await f.write(self.app_storage.model_dump_json(exclude_none=True, exclude={'extra_fields'}))
+        async with aiofiles.open(self.FilePath.app_storage, "w", encoding="utf-8") as f:
+            await f.write(
+                self.app_storage.model_dump_json(
+                    exclude_none=True, exclude={"extra_fields"}
+                )
+            )
 
     def __init__(self):
         self.req_lock = asyncio.Lock()
         self.latest_request_ts = datetime.datetime.now()
         self.token_stat = SamsClubApiTokenStatEnum.INIT
-        auth_token = ''
+        auth_token = ""
         try:
             if os.path.exists(self.FilePath.auth_token):
-                with open(self.FilePath.auth_token, 'r') as f:
+                with open(self.FilePath.auth_token, "r") as f:
                     if f_content := f.read():
                         auth_token = f_content.strip()
             if os.path.exists(self.FilePath.app_storage):
-                with open(self.FilePath.app_storage, 'r') as f:
+                with open(self.FilePath.app_storage, "r") as f:
                     app_storage = json.load(f)
                     if app_storage:
                         try:
-                            self.app_storage = SamsClubAppStorage.model_validate(app_storage)
+                            self.app_storage = SamsClubAppStorage.model_validate(
+                                app_storage
+                            )
                         except Exception as e:
-                            self.log.error(f'app_storage文件解析失败：{e}\n{app_storage}')
+                            self.log.error(
+                                f"app_storage文件解析失败：{e}\n{app_storage}"
+                            )
         except Exception as e:
-            self.log.error(f'读取auth_token文件失败：{e}')
+            self.log.error(f"读取auth_token文件失败：{e}")
         self.headers_gen = SamsClubHeadersGen(
-            auth_token=auth_token,
-            version_str=self.app_storage.version_str
+            auth_token=auth_token, version_str=self.app_storage.version_str
         )
         self.secret_param_lock = asyncio.Lock()
 
@@ -92,7 +105,7 @@ class SamsClubApi:
         "countryName": "",
         "detailAddress": "",
         "districtName": "宝山区",
-        "provinceName": "上海市"
+        "provinceName": "上海市",
     }
     amapHeaders = {
         "provinceCode": "310000",
@@ -100,7 +113,7 @@ class SamsClubApi:
         "districtCode": "310113",
         "amapProvinceCode": "310000",
         "amapCityCode": "310100",
-        "amapDistrictCode": "310113"
+        "amapDistrictCode": "310113",
     }
     gray_config_strategyDetails: SamsClubGrayConfigStrategy
     cur_siv = ""
@@ -111,9 +124,9 @@ class SamsClubApi:
         True：真更新了
         False：没有更细
         """
-        siv = resp_headers.get('siv')
-        ssk = resp_headers.get('ssk')
-        srd = resp_headers.get('srd')
+        siv = resp_headers.get("siv")
+        ssk = resp_headers.get("ssk")
+        srd = resp_headers.get("srd")
         if siv and ssk:
             if siv != self.cur_siv or ssk != self.cur_ssk:
                 async with self.secret_param_lock:
@@ -138,16 +151,16 @@ class SamsClubApi:
         return self._base_url
 
     def body_to_json(self, body):
-        return json.dumps(body, ensure_ascii=False, separators=(',', ':'))
+        return json.dumps(body, ensure_ascii=False, separators=(",", ":"))
 
     async def send(
-            self,
-            url: str,
-            body: dict | list | None = None,
-            method: Literal["POST", "GET"] | None = "POST",
-            params: dict | None = None,
-            *,
-            is_add_amap_headers: bool = True
+        self,
+        url: str,
+        body: dict | list | None = None,
+        method: Literal["POST", "GET"] | None = "POST",
+        params: dict | None = None,
+        *,
+        is_add_amap_headers: bool = True,
     ):
         while 1:
             async with self.req_lock:
@@ -156,14 +169,14 @@ class SamsClubApi:
                         await self.__empty_request()
                 self.latest_request_ts = datetime.datetime.now()
                 cur_auth_token = self.headers_gen.auth_token
-                body_str = self.body_to_json(body) if body else ''
+                body_str = self.body_to_json(body) if body else ""
                 headers_model = await self.headers_gen.gen_headers(body_str)
                 headers = headers_model.model_dump()
                 if is_add_amap_headers:
                     headers.update(self.amapHeaders)
-                headers.update({'Content-Length': str(len(body_str.encode('utf-8')))})
+                headers.update({"Content-Length": str(len(body_str.encode("utf-8")))})
                 try:
-                    self.log.debug(f'请求：{url} {method} {body_str}')
+                    self.log.debug(f"请求：{url} {method} {body_str}")
                     resp: Response = await my_async_httpx.request(
                         url,
                         method=method,
@@ -173,56 +186,64 @@ class SamsClubApi:
                         # proxies=CONFIG.custom_proxy
                     )
                 except (RequestException, HTTPError) as e:
-                    self.log.exception(f'curl_cffi网络请求异常：{e}')
+                    self.log.exception(f"curl_cffi网络请求异常：{e}")
                     await asyncio.sleep(30)
                     continue
                 except Exception as e:
-                    self.log.exception(f'curl_cffi网络请求未知异常：{e}')
+                    self.log.exception(f"curl_cffi网络请求未知异常：{e}")
                     raise e
                 is_updated = await self.update_encrypt_key(resp.headers)
-                is_succ = await self.handle_resp_code(resp, auth_token=cur_auth_token,
-                                                      is_updated_encrypt_key=is_updated)
+                is_succ = await self.handle_resp_code(
+                    resp, auth_token=cur_auth_token, is_updated_encrypt_key=is_updated
+                )
                 if not is_succ:
                     await asyncio.sleep(10)
                     continue
                 self.token_stat = SamsClubApiTokenStatEnum.VALID
-                self.log.info(f'请求成功：{resp.text}')
+                self.log.info(f"请求成功：{resp.text}")
                 return resp
 
     async def get_recommend_store_list_by_location(self):
 
-        url = self._base_url + '/api/v1/sams/merchant/storeApi/getRecommendStoreListByLocation'
+        url = (
+            self._base_url
+            + "/api/v1/sams/merchant/storeApi/getRecommendStoreListByLocation"
+        )
         body = {
             "latitude": self.headers_gen.latitude,
-            "longitude": self.headers_gen.longitude
+            "longitude": self.headers_gen.longitude,
         }
         return await self.send(url, body=body, is_add_amap_headers=False)
 
-    async def handle_resp_code(self, response: Response, auth_token: str, is_updated_encrypt_key: bool) -> bool:
+    async def handle_resp_code(
+        self, response: Response, auth_token: str, is_updated_encrypt_key: bool
+    ) -> bool:
         try:
             resp_dict = response.json()
         except Exception as e:
-            self.log.exception(f'json序列化失败：{response.request}\n{response.text}')
+            self.log.exception(f"json序列化失败：{response.request}\n{response.text}")
             await a_push_error(
                 subject="运行异常",
-                content=f'samsclub API请求失败！\njson序列化失败，可能被风控！：{response.request}\n{response.text}',
+                content=f"samsclub API请求失败！\njson序列化失败，可能被风控！：{response.request}\n{response.text}",
             )
             await asyncio.sleep(1800)
             await self.init_api_info()
             return False
-        is_succ = resp_dict.get('success')
-        resp_code = resp_dict.get('code')
-        resp_msg = resp_dict.get('msg')
+        is_succ = resp_dict.get("success")
+        resp_code = resp_dict.get("code")
+        resp_msg = resp_dict.get("msg")
         if is_succ is not True:
             self.token_stat = SamsClubApiTokenStatEnum.FAIL
             match resp_code:
                 case "SPU_NOT_EXIST":
-                    self.log.warning(f'商品不存在：{resp_dict}')
+                    self.log.warning(f"商品不存在：{resp_dict}")
                 case "INTERNAL_ERROR":
-                    self.log.error(f'服务器内部错误：{response.request.url}'
-                                      f'\n{response.request.headers}'
-                                      f'\n{response.request}'
-                                      f'\n{resp_dict}')
+                    self.log.error(
+                        f"服务器内部错误：{response.request.url}"
+                        f"\n{response.request.headers}"
+                        f"\n{response.request}"
+                        f"\n{resp_dict}"
+                    )
                     await asyncio.sleep(120)
                 case "AUTH_FAIL":
                     if is_updated_encrypt_key:
@@ -230,15 +251,15 @@ class SamsClubApi:
                     self.log.warning(f"被强制登出，等待token更新：{resp_dict}")
                     await a_push_error(
                         subject="运行异常",
-                        content=f'山姆会员商店token失效\n{resp_dict}',
+                        content=f"山姆会员商店token失效\n{resp_dict}",
                     )
                     while 1:
                         if auth_token != self.headers_gen.auth_token:
                             break
                         await asyncio.sleep(3)
-                    self.log.info(f'token更新成功：{self.headers_gen.auth_token}')
+                    self.log.info(f"token更新成功：{self.headers_gen.auth_token}")
                 case "BUSYNESS":
-                    self.log.warning(f'服务器繁忙：{resp_msg}')
+                    self.log.warning(f"服务器繁忙：{resp_msg}")
                     await asyncio.sleep(60)
                 case _:
                     self.log.error(f"请求未知错误！{resp_dict}")
@@ -247,28 +268,35 @@ class SamsClubApi:
 
     async def __init_address(self):
         self.isInited = False
-        if self.app_storage.storeList and self.app_storage.storeInfoVOList: return
+        if self.app_storage.storeList and self.app_storage.storeInfoVOList:
+            return
         store_info_resp = await self.get_recommend_store_list_by_location()
         store_info_resp_dict = store_info_resp.json()
-        if store_info_resp_data := store_info_resp_dict.get('data', {}).get('storeList'):
+        if store_info_resp_data := store_info_resp_dict.get("data", {}).get(
+            "storeList"
+        ):
             self.app_storage.storeList = []  # 字符串的store_id
             self.app_storage.storeInfoVOList = []  # like
             for x in store_info_resp_data:
-                self.app_storage.storeList.append(x.get('storeId'))
+                self.app_storage.storeList.append(x.get("storeId"))
                 da = {
-                    "storeType": int(x.get('storeType')),
-                    "storeId": int(x.get('storeId')),
-                    "storeDeliveryAttr": x.get('allDeliveryAttrList'),
+                    "storeType": int(x.get("storeType")),
+                    "storeId": int(x.get("storeId")),
+                    "storeDeliveryAttr": x.get("allDeliveryAttrList"),
                     "storeDeliveryTemplateId": int(
-                        x.get('storeRecmdDeliveryTemplateData').get('storeDeliveryTemplateId'))
+                        x.get("storeRecmdDeliveryTemplateData").get(
+                            "storeDeliveryTemplateId"
+                        )
+                    ),
                 }
                 self.app_storage.storeInfoVOList.append(da)
         self.isInited = True
 
     async def __init_user(self):
-        if self.app_storage.uid and self.app_storage.mobile: return
+        if self.app_storage.uid and self.app_storage.mobile:
+            return
         resp: ApiResponse[UserProfile] = await self.user_profile()
-        self.log.debug(f'用户信息：{resp}')
+        self.log.debug(f"用户信息：{resp}")
         self.app_storage.uid = resp.data.uid
         self.app_storage.mobile = resp.data.mobile
 
@@ -279,7 +307,7 @@ class SamsClubApi:
     async def init_api_info(self):
         self.headers_gen = SamsClubHeadersGen(  # 重新实例化一个
             auth_token=self.headers_gen.auth_token,
-            version_str=self.app_storage.version_str
+            version_str=self.app_storage.version_str,
         )
         await self.__init_user()
         await self.__init_address()
@@ -287,7 +315,9 @@ class SamsClubApi:
 
         # region 账号初始化 根据请求的cnt编写
         await self.configuration_portal_get_config()  # 101
-        await self.channel_portal_AdgroupData_queryAdgroup(is_int_store_list=False)  # 102
+        await self.channel_portal_AdgroupData_queryAdgroup(
+            is_int_store_list=False
+        )  # 102
         await self.goods_portal_spu_queryXPlusTagImg()  # 103
         await self.configuration_portal_cnConfig_getTraditionalCnConfig()  # 104
         await self.configuration_portal_cnConfig_getTraditionalCnConfig()  # 105
@@ -303,7 +333,8 @@ class SamsClubApi:
         await self.configuration_portal_resource_query()  # 116
         gray_config_resp_dict = await self.configuration_portal_getGrayConfig()  # 117
         self.gray_config_strategyDetails = SamsClubGrayConfigStrategy.model_validate(
-            gray_config_resp_dict.get('data', {}).get('strategyDetails'))
+            gray_config_resp_dict.get("data", {}).get("strategyDetails")
+        )
         await self.goods_portal_spu_queryNewDetailsGoods()  # 118
         await self.get_gray_config()  # 119
         await self.configuration_abtest_portal_report(
@@ -331,7 +362,9 @@ class SamsClubApi:
         await self.user_tag_user_select()  # 134
         await self.trade_cart_getTotalGoodsNum()  # 135
         await self.merchant_addressApi_getHomeAddress()  # 136
-        await self.channel_portal_AdgroupData_queryAdgroup(is_int_store_list=True)  # 137
+        await self.channel_portal_AdgroupData_queryAdgroup(
+            is_int_store_list=True
+        )  # 137
         await self.merchant_visitStoreApi_getStoreByLocation()  # 138
         await self.activity_taskreport(10)  # 139
         await self.__empty_request()  # 140 实际应该zhls上报
@@ -363,70 +396,73 @@ class SamsClubApi:
         await self.sams_user_reward_receipt_state()
         # endregion
 
-        version_resp = await self.configuration_appVersionUpdate_getAppVersionUpdateInfo()
+        version_resp = (
+            await self.configuration_appVersionUpdate_getAppVersionUpdateInfo()
+        )
         version_json = version_resp.json()
-        if version_str := version_json.get('data', {}).get('oldVersion'):
+        if version_str := version_json.get("data", {}).get("oldVersion"):
             self.headers_gen.version_str = version_str
             self.app_storage.version_str = version_str
         await self.__init_user()
         await self.save_app_storage()
         self.log.debug(
-            f'初始化headers信息成功\n{version_str}\n{self.app_storage.storeList}\n{self.app_storage.storeInfoVOList}')
+            f"初始化headers信息成功\n{version_str}\n{self.app_storage.storeList}\n{self.app_storage.storeInfoVOList}"
+        )
 
     async def configuration_appVersionUpdate_getAppVersionUpdateInfo(self):
-        url = self._base_url + '/api/v1/sams/configuration/appVersionUpdate/getAppVersionUpdateInfo'
+        url = (
+            self._base_url
+            + "/api/v1/sams/configuration/appVersionUpdate/getAppVersionUpdateInfo"
+        )
         body = {
             "nowVersion": self.headers_gen.version_str,
             "androidChannel": "oppo",
-            "requestSource": "2"
+            "requestSource": "2",
         }
         return await self.send(
-            url=url,
-            body=body,
-            method="POST",
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
 
     async def spu_query_detail(self, spuId: int):
         """
-    查询商品详细信息
+        查询商品详细信息
 
-    Args:
-        spuId (int): 商品SPU ID
+        Args:
+            spuId (int): 商品SPU ID
 
-    Returns:
-        dict: 包含商品详细信息的字典，结构如下:
-            - code (str): 请求状态码
-            - data (dict): 商品详情数据，包含以下字段:
-                - arrivalEndTimeDesc (str): 到货时间描述
-                - attrGroupInfo (list): 属性分组信息
-                - attrInfo (list): 商品属性列表
-                - brandId (str): 品牌ID
-                - categoryIdList (list): 分类ID列表
-                - desc (str): 商品描述(HTML格式)
-                - images (list): 商品图片URL列表
-                - intro (str): 商品简介
-                - priceInfo (list): 价格信息
-                - spuId (str): 商品SPU ID
-                - title (str): 商品标题
-                - 其他字段详见返回示例
-                {'code': 'Success', 'data': {'arrivalEndTimeDesc': '有货，可当日或次日发货，依照您在结算页面选择的配送时间窗而定。', 'attrGroupInfo': [], 'attrInfo': [{'attrId': '155408', 'attrValueList': [{}, {'value': '1.5kg'}], 'isImportant': False, 'title': '净含量'}, {'attrId': '155409', 'attrValueList': [{'attrValueId': '1136346', 'value': '国产'}], 'isImportant': False, 'title': '进口/国产'}], 'beltInfo': [], 'brandId': '10196732', 'categoryIdList': ['10003023', '10003239', '10011865', '10011889'], 'complianceInfo': {'id': '261038638727561494', 'value': '山姆品质、馈赠精选，如您有大宗采买需求，我们将为您提供全程专业的采买咨询服务。
-        联系我们：山姆app - 我的 - 我的服务 - 福利采购，在线提交采买需求，资深采买顾问为您提供一对一专属服务，让福利采购更省心。'}, 'couponContentList': [], 'couponList': [], 'customTabList': [], 'deliveryAttr': 3, 'deliveryCapacityCountList': [{'list': [{'closeDate': '2025-09-19', 'closeTime': '20:00', 'disabled': False, 'endTime': '21:00', 'startTime': '09:00', 'timeISFull': False}], 'strDate': '2025/09/20 周六'}], 'desc': '<p><img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567487338160129.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567488055382016.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567487807930369.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567488701321216.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567489682771968.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567490328690688.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567491620544512.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567491972870144.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567492681695233.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567493373759488.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8556881118377107457.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8567017512294510592.png">
-        <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8587247830783827969.jpg?imageMogr2/thumbnail/!80p/ignore-error/1"></p>', 'descVideo': [], 'detailVideos': [], 'extendedWarrantyList': [], 'favorite': False, 'giveaway': False, 'hostItem': '867980', 'imageSizeThreeFour': [], 'images': ['https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274468843521.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567279191625729.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275232206849.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274435301377.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275668418561.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274124906497.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275953618945.jpg?imageMogr2/thumbnail/!80p/ignore-error/1'], 'intro': '脆宝香瓜 1.5kg', 'isAllowDelivery': True, 'isAvailable': False, 'isCollectOrder': 0, 'isCompare': False, 'isCrabCard': False, 'isGlobalDirectPurchase': False, 'isGlobalOwnPickUp': False, 'isGovSpu': False, 'isImport': False, 'isPutOnSale': False, 'isSerial': False, 'isShowXPlusTag': False, 'isStoreAvailable': False, 'isStoreExtent': False, 'isTicket': False, 'limitInfo': [], 'masterBizType': 1, 'netWeight': 1.58, 'newTagInfo': [], 'onlyBarSale': False, 'onlyStoreSale': False, 'preSellList': [], 'priceInfo': [], 'promotionDetailList': [], 'promotionList': [], 'serviceInfo': [], 'sevenDaysReturn': False, 'specInfo': [], 'specList': {}, 'spuExtDTO': {'deliveryAttr': 3, 'departmentId': '56', 'detailVideos': [], 'giveaway': False, 'hostUpc': ['2160844000005', '6925945901028', '2160844000005', '2160844000005'], 'intro': '脆宝香瓜 1.5kg', 'isAccessory': False, 'isImport': False, 'isRoutine': True, 'netWeight': 1.58, 'sevenDaysReturn': False, 'smallPackageNum': 1, 'smallPackageUnit': 'kg', 'status': 5, 'subETitle': 'Fruit; Fresh Melons', 'subTitle': '果肉细腻， 香甜多汁，因为成熟度和光照原因，部分果面会有发黄现象', 'temperature': 1.0, 'thumbnailImage': 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274468843521.jpg', 'valuable': True, 'weight': 1.58}, 'spuId': '1333962', 'spuSpecInfo': [], 'standardForIntactGoodsUrl': 'https://m-sams.walmartmobile.cn/common/help-center/217', 'stockInfo': {'safeStockQuantity': 0, 'soldQuantity': 0, 'stockQuantity': 0}, 'storeId': '6558', 'subTitle': '果肉细腻， 香甜多汁，因为成熟度和光照原因，部分果面会有发黄现象', 'tagInfo': [{'id': '1', 'tagMark': 'aboveTheLimitTag', 'tagPlace': 10, 'title': '6.1万人回购'}], 'temperature': 1.0, 'title': '脆宝香瓜 1.5kg', 'valuable': True, 'viceBizType': 1, 'videos': [], 'weight': 1.58, 'zoneTypeList': []}, 'errorMsg': '', 'msg': '', 'requestId': 'as|c6b03323e7ce44a19d9a5c6b9a10389d.101.17582432110405739', 'rt': 0, 'success': True, 'traceId': '72fa312a68001fb5'}
+        Returns:
+            dict: 包含商品详细信息的字典，结构如下:
+                - code (str): 请求状态码
+                - data (dict): 商品详情数据，包含以下字段:
+                    - arrivalEndTimeDesc (str): 到货时间描述
+                    - attrGroupInfo (list): 属性分组信息
+                    - attrInfo (list): 商品属性列表
+                    - brandId (str): 品牌ID
+                    - categoryIdList (list): 分类ID列表
+                    - desc (str): 商品描述(HTML格式)
+                    - images (list): 商品图片URL列表
+                    - intro (str): 商品简介
+                    - priceInfo (list): 价格信息
+                    - spuId (str): 商品SPU ID
+                    - title (str): 商品标题
+                    - 其他字段详见返回示例
+                    {'code': 'Success', 'data': {'arrivalEndTimeDesc': '有货，可当日或次日发货，依照您在结算页面选择的配送时间窗而定。', 'attrGroupInfo': [], 'attrInfo': [{'attrId': '155408', 'attrValueList': [{}, {'value': '1.5kg'}], 'isImportant': False, 'title': '净含量'}, {'attrId': '155409', 'attrValueList': [{'attrValueId': '1136346', 'value': '国产'}], 'isImportant': False, 'title': '进口/国产'}], 'beltInfo': [], 'brandId': '10196732', 'categoryIdList': ['10003023', '10003239', '10011865', '10011889'], 'complianceInfo': {'id': '261038638727561494', 'value': '山姆品质、馈赠精选，如您有大宗采买需求，我们将为您提供全程专业的采买咨询服务。
+            联系我们：山姆app - 我的 - 我的服务 - 福利采购，在线提交采买需求，资深采买顾问为您提供一对一专属服务，让福利采购更省心。'}, 'couponContentList': [], 'couponList': [], 'customTabList': [], 'deliveryAttr': 3, 'deliveryCapacityCountList': [{'list': [{'closeDate': '2025-09-19', 'closeTime': '20:00', 'disabled': False, 'endTime': '21:00', 'startTime': '09:00', 'timeISFull': False}], 'strDate': '2025/09/20 周六'}], 'desc': '<p><img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567487338160129.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567488055382016.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567487807930369.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567488701321216.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567489682771968.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567490328690688.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567491620544512.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567491972870144.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567492681695233.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567493373759488.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8556881118377107457.jpg?imageMogr2/thumbnail/!80p/ignore-error/1">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8567017512294510592.png">
+            <img src="https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/42/bktsitem-ops-prod-8587247830783827969.jpg?imageMogr2/thumbnail/!80p/ignore-error/1"></p>', 'descVideo': [], 'detailVideos': [], 'extendedWarrantyList': [], 'favorite': False, 'giveaway': False, 'hostItem': '867980', 'imageSizeThreeFour': [], 'images': ['https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274468843521.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567279191625729.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275232206849.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274435301377.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275668418561.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274124906497.jpg?imageMogr2/thumbnail/!80p/ignore-error/1', 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567275953618945.jpg?imageMogr2/thumbnail/!80p/ignore-error/1'], 'intro': '脆宝香瓜 1.5kg', 'isAllowDelivery': True, 'isAvailable': False, 'isCollectOrder': 0, 'isCompare': False, 'isCrabCard': False, 'isGlobalDirectPurchase': False, 'isGlobalOwnPickUp': False, 'isGovSpu': False, 'isImport': False, 'isPutOnSale': False, 'isSerial': False, 'isShowXPlusTag': False, 'isStoreAvailable': False, 'isStoreExtent': False, 'isTicket': False, 'limitInfo': [], 'masterBizType': 1, 'netWeight': 1.58, 'newTagInfo': [], 'onlyBarSale': False, 'onlyStoreSale': False, 'preSellList': [], 'priceInfo': [], 'promotionDetailList': [], 'promotionList': [], 'serviceInfo': [], 'sevenDaysReturn': False, 'specInfo': [], 'specList': {}, 'spuExtDTO': {'deliveryAttr': 3, 'departmentId': '56', 'detailVideos': [], 'giveaway': False, 'hostUpc': ['2160844000005', '6925945901028', '2160844000005', '2160844000005'], 'intro': '脆宝香瓜 1.5kg', 'isAccessory': False, 'isImport': False, 'isRoutine': True, 'netWeight': 1.58, 'sevenDaysReturn': False, 'smallPackageNum': 1, 'smallPackageUnit': 'kg', 'status': 5, 'subETitle': 'Fruit; Fresh Melons', 'subTitle': '果肉细腻， 香甜多汁，因为成熟度和光照原因，部分果面会有发黄现象', 'temperature': 1.0, 'thumbnailImage': 'https://sam-material-online-1302115363.file.myqcloud.com//sams-static/goods/190776/bktpromotion-e2e-prod-8602567274468843521.jpg', 'valuable': True, 'weight': 1.58}, 'spuId': '1333962', 'spuSpecInfo': [], 'standardForIntactGoodsUrl': 'https://m-sams.walmartmobile.cn/common/help-center/217', 'stockInfo': {'safeStockQuantity': 0, 'soldQuantity': 0, 'stockQuantity': 0}, 'storeId': '6558', 'subTitle': '果肉细腻， 香甜多汁，因为成熟度和光照原因，部分果面会有发黄现象', 'tagInfo': [{'id': '1', 'tagMark': 'aboveTheLimitTag', 'tagPlace': 10, 'title': '6.1万人回购'}], 'temperature': 1.0, 'title': '脆宝香瓜 1.5kg', 'valuable': True, 'viceBizType': 1, 'videos': [], 'weight': 1.58, 'zoneTypeList': []}, 'errorMsg': '', 'msg': '', 'requestId': 'as|c6b03323e7ce44a19d9a5c6b9a10389d.101.17582432110405739', 'rt': 0, 'success': True, 'traceId': '72fa312a68001fb5'}
 
-    """
-        url = self._base_url + '/api/v1/sams/goods-portal/spu/queryDetail'
+        """
+        url = self._base_url + "/api/v1/sams/goods-portal/spu/queryDetail"
         body = {
             "source": "ANDROID",
             "channel": 1,
@@ -445,11 +481,8 @@ class SamsClubApi:
         :return:
         """
 
-        url = self._base_url + '/api/v1/sams/goods-portal/grouping/queryNavigation'
-        body = {
-            "storeCategoryList": self.app_storage.storeInfoVOList,
-            "isNew": True
-        }
+        url = self._base_url + "/api/v1/sams/goods-portal/grouping/queryNavigation"
+        body = {"storeCategoryList": self.app_storage.storeInfoVOList, "isNew": True}
         return await self.send(url, body, is_add_amap_headers=True)
 
     async def grouping_query_children(self, groupingId: int, navigationId: int):
@@ -460,17 +493,23 @@ class SamsClubApi:
         :return:
         """
 
-        url = self._base_url + '/api/v1/sams/goods-portal/grouping/queryChildren'
+        url = self._base_url + "/api/v1/sams/goods-portal/grouping/queryChildren"
         body = {
             "storeCategoryList": self.app_storage.storeInfoVOList,
             "groupingId": int(groupingId),
             "navigationId": navigationId,
-            "uid": self.app_storage.uid
+            "uid": self.app_storage.uid,
         }
         return await self.send(url, body, is_add_amap_headers=True)
 
-    async def grouping_list(self, firstCategoryId: int, SecondCategoryId: int, frontCategoryIds: list[int],
-                            pageNum: int, pageSize: int = 20):
+    async def grouping_list(
+        self,
+        firstCategoryId: int,
+        SecondCategoryId: int,
+        frontCategoryIds: list[int],
+        pageNum: int,
+        pageSize: int = 20,
+    ):
         """
 
         :param SecondCategoryId:  二级分类id
@@ -481,7 +520,7 @@ class SamsClubApi:
         :return:
         """
 
-        url = self._base_url + '/api/v1/sams/goods-portal/grouping/list'
+        url = self._base_url + "/api/v1/sams/goods-portal/grouping/list"
         body = {
             "pageSize": pageSize,
             "useNewPage": True,
@@ -498,7 +537,7 @@ class SamsClubApi:
             "showSeriesIcon": False,
             "frontCategoryIds": frontCategoryIds,
             "secondCategoryId": SecondCategoryId,
-            "isShowCustomTag": True
+            "isShowCustomTag": True,
         }
         resp = await self.send(url, body, is_add_amap_headers=True)
         await self.configuration_abtest_portal_report(
@@ -507,109 +546,71 @@ class SamsClubApi:
         return resp
 
     async def user_profile(self) -> ApiResponse[UserProfile]:
-        url = self._base_url + '/api/v1/sams/sams-user/user/profile'
-        params = {
-            'auth-token': self.headers_gen.auth_token
-        }
+        url = self._base_url + "/api/v1/sams/sams-user/user/profile"
+        params = {"auth-token": self.headers_gen.auth_token}
         resp = await self.send(
-            url,
-            params=params,
-            method='GET',
-            is_add_amap_headers=True
+            url, params=params, method="GET", is_add_amap_headers=True
         )
         resp_user_profile = RespUserProfile.validate_json(resp.text)
         return resp_user_profile
 
     # region 日志操作相关api
     async def sams_user_user_member_card_info(self):
-        url = self._base_url + '/api/v1/sams/sams-user/user/member_card_info'
-        resp = await self.send(
-            url,
-            method='GET',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/user/member_card_info"
+        resp = await self.send(url, method="GET", is_add_amap_headers=False)
         return resp.json()
 
     async def sams_user_window_upload_avatar_window(self):
-        url = self._base_url + '/api/v1/sams/sams-user/window/upload_avatar_window'
-        resp = await self.send(
-            url,
-            method='GET',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/window/upload_avatar_window"
+        resp = await self.send(url, method="GET", is_add_amap_headers=False)
         return resp.json()
 
     async def merchant_visitStoreApi_getStoreByLocation(self):
-        url = self._base_url + '/api/v1/sams/merchant/visitStoreApi/getStoreByLocation'
-        body = {"uid": self.app_storage.uid, "longitude": str(self.headers_gen.longitude),
-                "latitude": str(self.headers_gen.latitude),
-                "locationSwitch": True}
+        url = self._base_url + "/api/v1/sams/merchant/visitStoreApi/getStoreByLocation"
+        body = {
+            "uid": self.app_storage.uid,
+            "longitude": str(self.headers_gen.longitude),
+            "latitude": str(self.headers_gen.latitude),
+            "locationSwitch": True,
+        }
 
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
-        )
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=False)
         return resp.json()
 
     async def merchant_addressApi_getAddressCodes(self):
-        url = self._base_url + '/api/v1/sams/merchant/addressApi/getAddressCodes'
-        resp = await self.send(
-            url,
-            body=None,
-            method='POST',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/merchant/addressApi/getAddressCodes"
+        resp = await self.send(url, body=None, method="POST", is_add_amap_headers=False)
         return resp.json()
 
     async def merchant_addressApi_getHomeAddress(self):
-        url = self._base_url + '/api/v1/sams/merchant/addressApi/getHomeAddress'
-        body = {"uid": self.app_storage.uid, "latitude": self.headers_gen.latitude,
-                "longitude": self.headers_gen.longitude,
-                "isOpenPosition": 1}
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/merchant/addressApi/getHomeAddress"
+        body = {
+            "uid": self.app_storage.uid,
+            "latitude": self.headers_gen.latitude,
+            "longitude": self.headers_gen.longitude,
+            "isOpenPosition": 1,
+        }
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=False)
         return resp.json()
 
     async def trade_cart_getTotalGoodsNum(self):
-        url = self._base_url + '/api/v1/sams/trade/cart/getTotalGoodsNum'
-        body = {
-            "uid": self.app_storage.uid
-        }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/trade/cart/getTotalGoodsNum"
+        body = {"uid": self.app_storage.uid}
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=False)
         return resp.json()
 
     async def channel_portal_suspension_getSuspensionImg(self):
-        url = self._base_url + '/api/v1/sams/channel/portal/suspension/getSuspensionImg'
-        resp = await self.send(
-            url,
-            body=None,
-            method='POST',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/channel/portal/suspension/getSuspensionImg"
+        resp = await self.send(url, body=None, method="POST", is_add_amap_headers=False)
         return resp.json()
 
     async def sams_user_reward_receipt_state(self):
-        url = self._base_url + '/api/v1/sams/sams-user/reward/receipt_state'
-        resp = await self.send(
-            url,
-            method='GET',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/reward/receipt_state"
+        resp = await self.send(url, method="GET", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_screen_promotion_get(self):
-        url = self._base_url + '/api/v1/sams/sams-user/screen_promotion/get'
+        url = self._base_url + "/api/v1/sams/sams-user/screen_promotion/get"
         body = {
             "bindedStatus": 0,
             "isOpenPush": 1,
@@ -617,304 +618,227 @@ class SamsClubApi:
             "uid": self.app_storage.uid,
             "userAction": 1,
             "userIdentity": self.headers_gen.device_uuid_str,
-            "storeInfoList": self.app_storage.storeInfoVOList
+            "storeInfoList": self.app_storage.storeInfoVOList,
         }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_experience_card_new_get(self):
-        url = self._base_url + '/api/v1/sams/sams-user/experience-card/new/get'
-        resp = await self.send(
-            url,
-            method='GET',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/experience-card/new/get"
+        resp = await self.send(url, method="GET", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_agreement_check(self):
-        url = self._base_url + '/api/v1/sams/sams-user/agreement/check'
-        body = {
-            "agreementType": 6
-        }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/agreement/check"
+        body = {"agreementType": 6}
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_agreement_user_check_login(self):
-        url = self._base_url + '/api/v1/sams/sams-user/agreement/user/check_login'
-        body = {
-            "channel": "app",
-            "userSign": self.headers_gen.device_str
-        }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/agreement/user/check_login"
+        body = {"channel": "app", "userSign": self.headers_gen.device_str}
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_window_get(self):
-        url = self._base_url + '/api/v1/sams/sams-user/window/get'
-        body = {"uid": self.app_storage.uid, "experienceCardFlag": 1, "activityFlag": 1, "isClosedRiskPop": 0,
-                "isLimitFrequency": True}
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/sams-user/window/get"
+        body = {
+            "uid": self.app_storage.uid,
+            "experienceCardFlag": 1,
+            "activityFlag": 1,
+            "isClosedRiskPop": 0,
+            "isLimitFrequency": True,
+        }
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_membership_query_return_card_floating_window(self):
-        url = self._base_url + '/api/v1/sams/sams-user/membership/query_return_card_floating_window'
-        body = {
-            "scene": 1
-        }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+        url = (
+            self._base_url
+            + "/api/v1/sams/sams-user/membership/query_return_card_floating_window"
         )
+        body = {"scene": 1}
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def message_portal_systemMessage_getTotalUnreadCount(self):
-        url = self._base_url + '/api/v1/sams/message/portal/systemMessage/getTotalUnreadCount'
+        url = (
+            self._base_url
+            + "/api/v1/sams/message/portal/systemMessage/getTotalUnreadCount"
+        )
         body = {
             "channel": 1,
             "uid": self.app_storage.uid,
             "storeIdList": self.storeListInt,
         }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def sams_user_window_getGoUpPlus(self):
-        url = self._base_url + '/api/v1/sams/sams-user/window/getGoUpPlus'
-        body = {
-            "sceneType": 1,
-            "isReward": True,
-            "uid": self.app_storage.uid
-        }
+        url = self._base_url + "/api/v1/sams/sams-user/window/getGoUpPlus"
+        body = {"sceneType": 1, "isReward": True, "uid": self.app_storage.uid}
         resp = await self.send(
             url,
             body=body,
-            method='POST',
+            method="POST",
             is_add_amap_headers=True,
         )
         return resp.json()
 
     async def configuration_getZoneTip(self):
-        url = self._base_url + '/api/v1/sams/configuration/getZoneTip'
+        url = self._base_url + "/api/v1/sams/configuration/getZoneTip"
         body = {
             "sceneType": 1,
             "lastTimeLatitude": self.headers_gen.latitude,
             "lastTimeLongitude": self.headers_gen.longitude,
         }
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
-    async def configuration_abtest_portal_report(self, gray_config_strategy_details: SamsClubGrayConfigStrategyDetails):
+    async def configuration_abtest_portal_report(
+        self, gray_config_strategy_details: SamsClubGrayConfigStrategyDetails
+    ):
         if not gray_config_strategy_details.paramsJson:
-            self.log.warning(f"{gray_config_strategy_details} gray_config_strategy_details.paramsJson is None")
+            self.log.warning(
+                f"{gray_config_strategy_details} gray_config_strategy_details.paramsJson is None"
+            )
             return {}
-        url = self._base_url + '/api/v1/sams/configuration/abtest/portal/report'
-        body = [
-            json.loads(gray_config_strategy_details.paramsJson)
-        ]
-        resp = await self.send(
-            url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
-        )
+        url = self._base_url + "/api/v1/sams/configuration/abtest/portal/report"
+        body = [json.loads(gray_config_strategy_details.paramsJson)]
+        resp = await self.send(url, body=body, method="POST", is_add_amap_headers=True)
         return resp.json()
 
     async def goods_portal_spu_queryNewDetailsGoods(self):
-        url = self._base_url + '/api/v1/sams/goods-portal/spu/queryNewDetailsGoods'
+        url = self._base_url + "/api/v1/sams/goods-portal/spu/queryNewDetailsGoods"
         body = {}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def decoration_portal_show_homePageRecommendByLocation(self):
-        url = self._base_url + '/api/v1/sams/decoration/portal/show/homePageRecommendByLocation'
+        url = (
+            self._base_url
+            + "/api/v1/sams/decoration/portal/show/homePageRecommendByLocation"
+        )
         body = {
-            'apiVersion': 1,
-            'longitude': self.headers_gen.longitude,
-            'latitude': self.headers_gen.latitude,
-            'authorize': True,
-            'uid': self.app_storage.uid,
-            'addressInfo': {
+            "apiVersion": 1,
+            "longitude": self.headers_gen.longitude,
+            "latitude": self.headers_gen.latitude,
+            "authorize": True,
+            "uid": self.app_storage.uid,
+            "addressInfo": {
                 "cityCode": "",
                 "districtCode": "",
                 "provinceCode": "",
-                "receiverAddress": "定位失败，请手动选择地址"
+                "receiverAddress": "定位失败，请手动选择地址",
             },
-            'isOpenRecommend': True,
-            'storeInfoList': self.app_storage.storeInfoVOList
+            "isOpenRecommend": True,
+            "storeInfoList": self.app_storage.storeInfoVOList,
         }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def configuration_searchTextConf_queryList(self):
-        url = self._base_url + '/api/v1/sams/configuration/searchTextConf/queryList'
-        body = {
-            "storeIdList": self.storeListInt
-        }
+        url = self._base_url + "/api/v1/sams/configuration/searchTextConf/queryList"
+        body = {"storeIdList": self.storeListInt}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def configuration_portal_getGrayConfig(self) -> dict:
-        url = self._base_url + '/api/v1/sams/configuration/portal/getGrayConfig'
-        body = {
-            "uid": self.app_storage.uid,
-            "phone": self.app_storage.mobile
-        }
+        url = self._base_url + "/api/v1/sams/configuration/portal/getGrayConfig"
+        body = {"uid": self.app_storage.uid, "phone": self.app_storage.mobile}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def get_gray_config(self):
-        url = self._base_url + '/api/v1/sams/adapter/gray/getGrayConfig'
-        body = {"cardNo": "", "isStoreGray": False, "memberStoreId": "", "phone": self.app_storage.mobile,
-                "uid": self.app_storage.uid}
+        url = self._base_url + "/api/v1/sams/adapter/gray/getGrayConfig"
+        body = {
+            "cardNo": "",
+            "isStoreGray": False,
+            "memberStoreId": "",
+            "phone": self.app_storage.mobile,
+            "uid": self.app_storage.uid,
+        }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def user_label_scheme_get(self):
-        url = self._base_url + '/api/v1/sams/sams-user/user/label_scheme/get'
-        body = {
-            "type": 2
-        }
+        url = self._base_url + "/api/v1/sams/sams-user/user/label_scheme/get"
+        body = {"type": 2}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def configuration_portal_get_config(self):
-        url = self._base_url + '/api/v1/sams/configuration/portal/getConfig'
-        body = {
-            "keyId": "info"
-        }
+        url = self._base_url + "/api/v1/sams/configuration/portal/getConfig"
+        body = {"keyId": "info"}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def configuration_portal_cnConfig_getTraditionalCnConfig(self):
-        url = self._base_url + '/api/v1/sams/configuration/portal/cnConfig/getTraditionalCnConfig'
-        body = {
-            "keyId": "info"
-        }
+        url = (
+            self._base_url
+            + "/api/v1/sams/configuration/portal/cnConfig/getTraditionalCnConfig"
+        )
+        body = {"keyId": "info"}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def goods_portal_spu_queryXPlusTagImg(self):
-        url = self._base_url + '/api/v1/sams/goods-portal/spu/queryXPlusTagImg'
-        resp = await self.send(
-            url=url,
-            method='GET',
-            is_add_amap_headers=False
-        )
+        url = self._base_url + "/api/v1/sams/goods-portal/spu/queryXPlusTagImg"
+        resp = await self.send(url=url, method="GET", is_add_amap_headers=False)
         return resp.json()
 
     async def channel_portal_AdgroupData_queryNonmemberAd(self):
-        url = self._base_url + '/api/v1/sams/channel/portal/AdgroupData/queryNonmemberAd'
-        body = {
-            "adGroupSubType": 1
-        }
+        url = (
+            self._base_url + "/api/v1/sams/channel/portal/AdgroupData/queryNonmemberAd"
+        )
+        body = {"adGroupSubType": 1}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
-    async def channel_portal_AdgroupData_queryAdgroup(self, is_int_store_list: bool = False):
-        url = self._base_url + '/api/v1/sams/channel/portal/AdgroupData/queryAdgroup'
+    async def channel_portal_AdgroupData_queryAdgroup(
+        self, is_int_store_list: bool = False
+    ):
+        url = self._base_url + "/api/v1/sams/channel/portal/AdgroupData/queryAdgroup"
         store_list = self.storeListInt if is_int_store_list else self.storeListStr
         body = {
             "uid": self.app_storage.uid,
             "source": "ANDROID_APP",
             "adgroupSign": "homePageActivity",
-            "storeList": store_list
+            "storeList": store_list,
         }
 
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def configuration_portal_beUpdate(self):
-        url = self._base_url + '/api/v1/sams/configuration/portal/beUpdate'
+        url = self._base_url + "/api/v1/sams/configuration/portal/beUpdate"
         body = {
             "nowVersion": self.headers_gen.version_str,
             "androidChannel": "oppo",
-            "requestSource": "1"
+            "requestSource": "1",
         }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
@@ -923,107 +847,80 @@ class SamsClubApi:
         登陆：99
 
         """
-        url = self._base_url + '/api/v1/sams/activity/taskreport'
+        url = self._base_url + "/api/v1/sams/activity/taskreport"
         body = {
-            "events": [
-                {
-                    "eventData": "",
-                    "eventType": event_type
-                }
-            ],
-            "uid": self.app_storage.uid
+            "events": [{"eventData": "", "eventType": event_type}],
+            "uid": self.app_storage.uid,
         }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def configuration_discoverIcon_getOneIcon(self):
-        url = self._base_url + '/api/v1/sams/configuration/discoverIcon/getOneIcon'
+        url = self._base_url + "/api/v1/sams/configuration/discoverIcon/getOneIcon"
         body = {
             "uid": self.app_storage.uid,
         }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=False
+            url=url, body=body, method="POST", is_add_amap_headers=False
         )
         return resp.json()
 
     async def configuration_portal_getGrayPageConfig(self):
-        url = self._base_url + '/api/v1/sams/configuration/portal/getGrayPageConfig'
+        url = self._base_url + "/api/v1/sams/configuration/portal/getGrayPageConfig"
         body = {}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def configuration_portal_resource_query(self):
-        url = self._base_url + '/api/v1/sams/configuration/portal/resource/query'
-        body = {
-            "name": ""
-        }
+        url = self._base_url + "/api/v1/sams/configuration/portal/resource/query"
+        body = {"name": ""}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def message_portal_uidToken_registerUidToken(self):
-        url = self._base_url + '/api/v1/sams/message/portal/uidToken/registerUidToken'
+        url = self._base_url + "/api/v1/sams/message/portal/uidToken/registerUidToken"
         body = {
             "deviceType": 1,
             "token": "0499024e9d0eb03eb52095ed6b62e0b2d930",
             "pushOpen": "1",
-            "uid": self.app_storage.uid
+            "uid": self.app_storage.uid,
         }
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
 
     async def user_tag_user_select(self):
-        url = self._base_url + '/api/v1/sams/sams-user/user/tag/user_select?userInfoTypeFlag=1'
-        resp = await self.send(
-            url=url,
-            method='GET',
-            is_add_amap_headers=False
+        url = (
+            self._base_url
+            + "/api/v1/sams/sams-user/user/tag/user_select?userInfoTypeFlag=1"
         )
+        resp = await self.send(url=url, method="GET", is_add_amap_headers=False)
         return resp.json()
 
     async def get_hk_mc_buy_card_info(self):
-        url = self._base_url + '/api/v1/sams/sams-user/user/get_hk_mc_buy_card_info'
+        url = self._base_url + "/api/v1/sams/sams-user/user/get_hk_mc_buy_card_info"
         body = {}
         resp = await self.send(
-            url=url,
-            body=body,
-            method='POST',
-            is_add_amap_headers=True
+            url=url, body=body, method="POST", is_add_amap_headers=True
         )
         return resp.json()
+
     # endregion
 
 
 sams_club_api = SamsClubApi()
-if __name__ == '__main__':
+if __name__ == "__main__":
+
     async def _test():
         await sams_club_api.init_api_info()
-        resp = await sams_club_api.spu_query_detail(
-            spuId=1333962
-        )
+        resp = await sams_club_api.spu_query_detail(spuId=1333962)
         print(resp)
-
 
     asyncio.run(_test())

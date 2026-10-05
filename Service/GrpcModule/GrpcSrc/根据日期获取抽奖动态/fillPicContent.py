@@ -1,13 +1,14 @@
 import cv2
 import numpy as np
 from PIL import Image
+
 # 读取图片
-image_path = 'favicon.ico'  # 替换为你的图片路径
+image_path = "favicon.ico"  # 替换为你的图片路径
 ico_image = Image.open(image_path)
 
 # 将图像保存为.png格式
-ico_image.save('temp_icon.png', 'PNG')
-image = cv2.imread('temp_icon.png')
+ico_image.save("temp_icon.png", "PNG")
+image = cv2.imread("temp_icon.png")
 # 将图片转换为灰度图
 gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -30,8 +31,8 @@ gray_image_filled = np.full_like(image, gray_color, dtype=np.uint8)
 gray_image_filled[mask == 0] = image[mask == 0]
 
 # 显示结果
-cv2.imshow('Original Image', image)
-cv2.imshow('Edge Detection', edges)
-cv2.imshow('Filled with C0C0C0', gray_image_filled)
+cv2.imshow("Original Image", image)
+cv2.imshow("Edge Detection", edges)
+cv2.imshow("Filled with C0C0C0", gray_image_filled)
 cv2.waitKey(0)
 cv2.destroyAllWindows()

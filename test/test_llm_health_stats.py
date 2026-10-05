@@ -8,6 +8,7 @@
 运行:
     uv run python -m pytest test/test_llm_health_stats.py -v
 """
+
 import sys
 from pathlib import Path
 
@@ -87,7 +88,7 @@ def test_410_end_of_life_is_permanent():
     error = _FakeError(
         "Error code: 410 - {'title': 'Gone', 'status': 410, 'detail': "
         "\"The model 'deepseek-ai/deepseek-v4-flash-0731' has reached its "
-        "end of life on 2026-09-21T08:00:00Z and is no longer available.\"}",
+        'end of life on 2026-09-21T08:00:00Z and is no longer available."}',
         status_code=410,
     )
     assert classify_llm_failure(error) is LLMFailureKind.PERMANENT

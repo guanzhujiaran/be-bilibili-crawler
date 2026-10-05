@@ -2,7 +2,10 @@ import asyncio
 import os
 import time
 from loguru import logger
-from Service.toutiao.src.spider.SpaceFeed.SpaceFeedScrapy import ToutiaoSpaceFeedSpider, FileMap
+from Service.toutiao.src.spider.SpaceFeed.SpaceFeedScrapy import (
+    ToutiaoSpaceFeedSpider,
+    FileMap,
+)
 
 
 class ToutiaoSpaceFeedLotService:
@@ -14,7 +17,9 @@ class ToutiaoSpaceFeedLotService:
     def read_last_get_lot_timestamp(self):
         try:
             if os.path.exists(FileMap.last_get_lot_id_timestamp):
-                with open(FileMap.last_get_lot_id_timestamp, 'r', encoding='utf-8') as f:
+                with open(
+                    FileMap.last_get_lot_id_timestamp, "r", encoding="utf-8"
+                ) as f:
                     content = f.read().strip()
                     if content:
                         self.last_get_lot_id_timestamp = int(content)
@@ -28,7 +33,7 @@ class ToutiaoSpaceFeedLotService:
 
     def write_last_get_lot_id_timestamp(self):
         try:
-            with open(FileMap.last_get_lot_id_timestamp, 'w', encoding='utf-8') as f:
+            with open(FileMap.last_get_lot_id_timestamp, "w", encoding="utf-8") as f:
                 f.write(str(self.last_get_lot_id_timestamp))
         except Exception as e:
             logger.error(e)
@@ -36,20 +41,23 @@ class ToutiaoSpaceFeedLotService:
 
     def generate_lot_id_list(self):
         lot_id_list = []
-        with open(FileMap.rsult_latest, 'r', encoding='utf-8') as f:
+        with open(FileMap.rsult_latest, "r", encoding="utf-8") as f:
             result = f.readlines()
             for i in result:
-                lot_id_list.append(i.split('\t')[1])
+                lot_id_list.append(i.split("\t")[1])
         lot_id_list.sort(reverse=True)
         return lot_id_list
 
     async def main(self) -> [str]:
         try:
             while self.is_getting_lot_id:
-                logger.info(f'头条抽奖数据获取中...')
+                logger.info(f"头条抽奖数据获取中...")
                 await asyncio.sleep(10)
             self.read_last_get_lot_timestamp()  # 获取最后一次获取头条空间的时间
-            if int(time.time()) - self.last_get_lot_id_timestamp > self.get_lot_sep_time:
+            if (
+                int(time.time()) - self.last_get_lot_id_timestamp
+                > self.get_lot_sep_time
+            ):
                 self.is_getting_lot_id = True
                 spider = ToutiaoSpaceFeedSpider()
                 await spider.main()
@@ -57,7 +65,7 @@ class ToutiaoSpaceFeedLotService:
                 self.write_last_get_lot_id_timestamp()
                 self.is_getting_lot_id = True
             ret_list = self.generate_lot_id_list()
-            logger.info(f'头条抽奖数据获取完成！共计{len(ret_list)}条！')
+            logger.info(f"头条抽奖数据获取完成！共计{len(ret_list)}条！")
             return ret_list
         except Exception as e:
             logger.exception(e)

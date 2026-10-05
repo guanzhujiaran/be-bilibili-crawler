@@ -14,6 +14,7 @@
     python create_database.py --db dyndetail --rebuild  # 只重建 dyndetail 数据库
     python create_database.py --db dyndetail         # 仅对 dyndetail 执行 create_all
 """
+
 import argparse
 import asyncio
 import importlib
@@ -38,6 +39,7 @@ from CONFIG import CONFIG as APP_CONFIG
 # ---------------------------------------------------------------------------
 # 数据库配置：与 alembic/env.py 保持一致（异步 aiomysql）
 # ---------------------------------------------------------------------------
+
 
 def _import_metadata(import_path: str):
     """动态导入指定模块路径中的 Base.metadata 对象。"""
@@ -88,6 +90,7 @@ DATABASE_CONFIGS: dict[str, dict] = {
 # ---------------------------------------------------------------------------
 # 核心逻辑
 # ---------------------------------------------------------------------------
+
 
 def _get_alembic_config(db_name: str, version_dir: str) -> AlembicConfig:
     """获取指定数据库的 Alembic Config，使用 -n <section> 方式指定数据库。"""
@@ -160,8 +163,10 @@ async def _create_or_drop_all(
                     return [c["name"] for c in inspect(sync_conn).get_columns(table)]
 
                 cols = await connection.run_sync(_get_cols)
-                print(f"    - {t} ({len(cols)} 列: {', '.join(cols[:8])}"
-                      f"{'...' if len(cols) > 8 else ''})")
+                print(
+                    f"    - {t} ({len(cols)} 列: {', '.join(cols[:8])}"
+                    f"{'...' if len(cols) > 8 else ''})"
+                )
     finally:
         await engine.dispose()
 
@@ -174,7 +179,7 @@ async def process_database(db_name: str, db_config: dict, rebuild: bool) -> None
 
     url = db_config["url"]
     # 隐藏密码显示
-    display_url = url[:url.find("@")] + "@***" if "@" in url else url
+    display_url = url[: url.find("@")] + "@***" if "@" in url else url
     print(f"  URL: {display_url}")
 
     try:
@@ -213,8 +218,12 @@ async def async_main(args_db: str | None, rebuild: bool):
         print("提示:")
         print("  - 全新数据库已通过 create_all() 创建完毕")
         print("  - alembic_version 表已 stamp head")
-        print("  - 后续修改模型后，使用 make alembic-auto DB=<section> MSG='描述' 生成增量迁移")
-        print("  - 或手动：alembic -c alembic.ini -n <section> revision --autogenerate -m '描述'")
+        print(
+            "  - 后续修改模型后，使用 make alembic-auto DB=<section> MSG='描述' 生成增量迁移"
+        )
+        print(
+            "  - 或手动：alembic -c alembic.ini -n <section> revision --autogenerate -m '描述'"
+        )
         print("  - lifespan 启动时会自动执行 upgrade head 和 schema 一致性校验")
 
 

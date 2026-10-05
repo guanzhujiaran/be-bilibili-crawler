@@ -23,7 +23,9 @@ async def life_span(app: FastAPI):
     try:
         await test_database_connections()
     except OperationalError as e:
-        myfastapi_logger.critical(f"数据库（{CONFIG.database.MYSQL._base_url}）连接测试失败: {e}")
+        myfastapi_logger.critical(
+            f"数据库（{CONFIG.database.MYSQL._base_url}）连接测试失败: {e}"
+        )
         raise e
     # 测试各个服务的端口和 host 连通性（含 message-service 的 /health 探测）
     await test_service_ports_and_hosts()
@@ -34,7 +36,9 @@ async def life_span(app: FastAPI):
 
     # ---- Schema 一致性校验：不一致则拒绝启动 ----
     if not await check_schemas():
-        raise RuntimeError("数据库 Schema 与模型不一致，请先手动执行 alembic upgrade head")
+        raise RuntimeError(
+            "数据库 Schema 与模型不一致，请先手动执行 alembic upgrade head"
+        )
 
     # 检查 milvus 数据库集合
     await asyncio.sleep(3)
@@ -52,7 +56,8 @@ async def life_span(app: FastAPI):
         show_log = False
         GLOBAL_SCHEDULER.start()
         back_ground_tasks = BackgroundServiceController.start_monitor_tasks(
-            show_log=show_log)
+            show_log=show_log
+        )
         myfastapi_logger.info("其他服务已开启！可以开启服务了喵~")
     yield
     myfastapi_logger.info("正在取消其他服务")
@@ -82,15 +87,19 @@ async def test_database_connections():
             myfastapi_logger.info(f"数据库 '{db_name}' 连接成功")
         except OperationalError as e:
             myfastapi_logger.critical(
-                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
+                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}"
+            )
             raise
         except Exception as e:
             myfastapi_logger.critical(
-                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}")
+                f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}"
+            )
             raise SystemExit(f"数据库 '{db_name}' 连接失败") from e
 
 
-async def test_port_connectivity(host: str, port: int, service_name: str, timeout: float = 5.0) -> bool:
+async def test_port_connectivity(
+    host: str, port: int, service_name: str, timeout: float = 5.0
+) -> bool:
     """测试指定 host 和 port 的连通性"""
     try:
         reader, writer = await asyncio.wait_for(
@@ -121,7 +130,8 @@ async def test_http_endpoint(url: str, service_name: str, timeout: float = 5.0) 
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=timeout)
             myfastapi_logger.info(
-                f"HTTP 服务 '{service_name}' ({url}) 连接成功，状态码：{response.status_code}")
+                f"HTTP 服务 '{service_name}' ({url}) 连接成功，状态码：{response.status_code}"
+            )
             return True
     except httpx.TimeoutException:
         myfastapi_logger.error(f"HTTP 服务 '{service_name}' ({url}) 连接超时")
@@ -163,11 +173,13 @@ async def test_proxy_connectivity(
         body = response.text.strip()
         if response.status_code == 200 and _looks_like_ipv6(body):
             myfastapi_logger.info(
-                f"✅ 代理 '{service_name}' ({proxy_url}) 正常，出口 IPv6: {body}")
+                f"✅ 代理 '{service_name}' ({proxy_url}) 正常，出口 IPv6: {body}"
+            )
             return True
         myfastapi_logger.error(
             f"❌ 代理 '{service_name}' ({proxy_url}) 返回异常: "
-            f"status={response.status_code}, body={body[:80]!r}")
+            f"status={response.status_code}, body={body[:80]!r}"
+        )
         return False
     except httpx.ProxyError as e:
         myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 连接失败：{e}")
@@ -198,14 +210,26 @@ async def test_service_ports_and_hosts():
     services_to_test = [
         ("MySQL", settings.MYSQL_HOST, int(settings.MYSQL_PORT), "port", "", True),
         ("Redis", settings.REDIS_HOST, int(settings.REDIS_PORT), "port", "", True),
-        ("RabbitMQ", settings.RABBITMQ_HOST, int(
-            settings.RABBITMQ_PORT), "port", "", True),
+        (
+            "RabbitMQ",
+            settings.RABBITMQ_HOST,
+            int(settings.RABBITMQ_PORT),
+            "port",
+            "",
+            True,
+        ),
         ("Milvus", settings.MILVUS_HOST, int(settings.MILVUS_PORT), "port", "", True),
         ("Unidbg", settings.UNIDBG_HOST, int(settings.UNIDBG_PORT), "http", "", False),
         ("V2Ray", settings.V2RAY_HOST, int(settings.V2RAY_PORT), "http", "", False),
         ("llama.cpp", settings.LLAMA_HOST, int(settings.LLAMA_PORT), "http", "", True),
-        ("message-service", settings.MESSAGE_SERVICE_HOST,
-         int(settings.MESSAGE_SERVICE_PORT), "http", "/health", True),
+        (
+            "message-service",
+            settings.MESSAGE_SERVICE_HOST,
+            int(settings.MESSAGE_SERVICE_PORT),
+            "http",
+            "/health",
+            True,
+        ),
     ]
 
     for name, host, port, kind, path, critical in services_to_test:
@@ -224,7 +248,9 @@ async def test_service_ports_and_hosts():
     # 额外：实际通过 3128 IPv6 代理发起请求，验证代理是否真的可用（非关键，仅展示）
     proxy_url = settings.PROXY_SERVER
     if proxy_url:
-        proxy_ok = await test_proxy_connectivity(proxy_url, service_name="IPv6代理(3128)")
+        proxy_ok = await test_proxy_connectivity(
+            proxy_url, service_name="IPv6代理(3128)"
+        )
         if not proxy_ok:
             failed_services.append(f"IPv6代理(3128) ({proxy_url})")
     else:
@@ -245,15 +271,17 @@ async def test_service_ports_and_hosts():
     if failed_critical_services:
         myfastapi_logger.critical("=" * 60)
         myfastapi_logger.critical(
-            f"以下关键服务未启动，禁止服务启动: {len(failed_critical_services)} 个")
+            f"以下关键服务未启动，禁止服务启动: {len(failed_critical_services)} 个"
+        )
         for failed_service in failed_critical_services:
             myfastapi_logger.critical(f"  🚫 {failed_service}")
         myfastapi_logger.critical("=" * 60)
         raise SystemExit(
-            f"关键依赖服务未启动，拒绝启动: {', '.join(failed_critical_services)}")
+            f"关键依赖服务未启动，拒绝启动: {', '.join(failed_critical_services)}"
+        )
 
 
 __all__ = ["life_span"]
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(test_database_connections())

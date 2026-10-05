@@ -61,7 +61,9 @@ class DevicePool(RedisManagerBase):
         try:
             return DeviceEnv.from_dict(json.loads(raw))
         except (ValueError, TypeError) as e:
-            BiliGrpcApi_logger.error(f"设备池数据损坏，已剔除 {buvid}：{type(e).__name__} {e}")
+            BiliGrpcApi_logger.error(
+                f"设备池数据损坏，已剔除 {buvid}：{type(e).__name__} {e}"
+            )
             await self.drop(buvid)
             return None
 

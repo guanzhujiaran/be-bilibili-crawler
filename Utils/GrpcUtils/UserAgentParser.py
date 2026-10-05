@@ -9,14 +9,16 @@ class UserAgentParser:
         self.user_agent = user_agent
         self.is_mobile = is_mobile
 
-    def get_headers_dict(self, extra_headers_dict: dict | None=None) -> dict:
+    def get_headers_dict(self, extra_headers_dict: dict | None = None) -> dict:
         origin_headers = {
-            'user-agent': self.user_agent,
-            'accept': '*/*',
-            'accept-language': 'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2',
-            'accept-encoding': 'gzip, deflate, br, zstd',
+            "user-agent": self.user_agent,
+            "accept": "*/*",
+            "accept-language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
+            "accept-encoding": "gzip, deflate, br, zstd",
         }
-        filtered_headers_dict = {key: value for key, value in origin_headers.items() if value}
+        filtered_headers_dict = {
+            key: value for key, value in origin_headers.items() if value
+        }
         if extra_headers_dict:
             filtered_headers_dict.update(extra_headers_dict)
         return filtered_headers_dict
@@ -42,34 +44,42 @@ class UserAgentParser:
 
             return webkit_version, chrome_version, safari_version
 
-        if 'Mozilla/5.0' in dalvik_ua:  # 本来就是Mozilla的ua就直接返回
+        if "Mozilla/5.0" in dalvik_ua:  # 本来就是Mozilla的ua就直接返回
             return dalvik_ua
-        device_info_match = re.search(r'\(([^)]+)\)', dalvik_ua)
+        device_info_match = re.search(r"\(([^)]+)\)", dalvik_ua)
         if not device_info_match:
             return dalvik_ua
 
         device_info = device_info_match.group(1)
         # 提取其他参数
-        app_version_match = re.search(r'(?<=\))\s*(\d+\.\d+\.\d+)', dalvik_ua)
+        app_version_match = re.search(r"(?<=\))\s*(\d+\.\d+\.\d+)", dalvik_ua)
         if not app_version_match:
             app_version = "8.13.0"
         else:
             app_version = app_version_match.group(1)
-        build_number = re.search(r'build/(\d+)', dalvik_ua).group(1) if 'build/' in dalvik_ua else '8130300'
-        channel = re.search(r'channel/(\w+)', dalvik_ua).group(1) if 'channel/' in dalvik_ua else 'master'
+        build_number = (
+            re.search(r"build/(\d+)", dalvik_ua).group(1)
+            if "build/" in dalvik_ua
+            else "8130300"
+        )
+        channel = (
+            re.search(r"channel/(\w+)", dalvik_ua).group(1)
+            if "channel/" in dalvik_ua
+            else "master"
+        )
 
         # 提取Android版本
-        android_version_match = re.search(r'Android (\d+(\.\d+)?(\.\d+)?)', dalvik_ua)
+        android_version_match = re.search(r"Android (\d+(\.\d+)?(\.\d+)?)", dalvik_ua)
         if not android_version_match:
-            android_version = '9'
+            android_version = "9"
         else:
             android_version = android_version_match.group(1)
         sdk_int = get_sdk_int(android_version)
 
         # 提取设备型号
-        model_match = re.search(r'Android \d+(\.\d+)?(\.\d+)?; ([^ ;]+)', device_info)
+        model_match = re.search(r"Android \d+(\.\d+)?(\.\d+)?; ([^ ;]+)", device_info)
         if not model_match:
-            model = '23113RKC6C'
+            model = "23113RKC6C"
         else:
             model = model_match.group(3)
 
@@ -90,6 +100,6 @@ class UserAgentParser:
 
 if __name__ == "__main__":
     # 使用示例
-    user_agent = 'Dalvik/2.1.0 (Linux; U; Android 5.1; Impress Style Build/LMY47I) 8.2.0 os/android model/Impress Style mobi_app/android build/8020300 channel/360 innerVer/8020300 osVer/5.1 network/2'
-    ua_parser = UserAgentParser.parse_h5_ua(user_agent, '114514', '1919810')
+    user_agent = "Dalvik/2.1.0 (Linux; U; Android 5.1; Impress Style Build/LMY47I) 8.2.0 os/android model/Impress Style mobi_app/android build/8020300 channel/360 innerVer/8020300 osVer/5.1 network/2"
+    ua_parser = UserAgentParser.parse_h5_ua(user_agent, "114514", "1919810")
     print(ua_parser)

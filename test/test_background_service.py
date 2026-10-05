@@ -31,7 +31,6 @@ async def client(app):
 
 
 class TestScrapyStatus:
-
     @pytest.mark.asyncio
     async def test_single_scrapy_status_valid(self, client):
         """遍历所有合法爬虫类型，确保单爬虫状态接口均可用"""
@@ -91,7 +90,6 @@ class TestScrapyStatus:
 
 
 class TestScheduler:
-
     @pytest.mark.asyncio
     async def test_global_jobs(self, client):
         response = await client.get(f"{PREFIX}/GlobalSchedule/GetJobs")
@@ -116,7 +114,6 @@ class TestScheduler:
 
 
 class TestAllStat:
-
     @pytest.mark.asyncio
     async def test_all_stat(self, client):
         with mock.patch(
@@ -132,30 +129,37 @@ class TestAllStat:
 
 
 class TestServiceControl:
-
     @pytest.mark.asyncio
     async def test_start_invalid_enum(self, client):
-        response = await client.post(f"{PREFIX}/BackgroundService/Start",
-                                     json={"background_service_name": "NONEXISTENT"})
+        response = await client.post(
+            f"{PREFIX}/BackgroundService/Start",
+            json={"background_service_name": "NONEXISTENT"},
+        )
         assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_start_valid_enum(self, client):
         """验证服务控制端点存在（非 404）"""
-        response = await client.post(f"{PREFIX}/BackgroundService/Start",
-                                     json={"background_service_name": "GET_DYN"})
+        response = await client.post(
+            f"{PREFIX}/BackgroundService/Start",
+            json={"background_service_name": "GET_DYN"},
+        )
         assert response.status_code != 404
 
     @pytest.mark.asyncio
     async def test_stop_valid_enum(self, client):
-        response = await client.post(f"{PREFIX}/BackgroundService/Stop",
-                                     json={"background_service_name": "GET_DYN"})
+        response = await client.post(
+            f"{PREFIX}/BackgroundService/Stop",
+            json={"background_service_name": "GET_DYN"},
+        )
         assert response.status_code != 404
 
     @pytest.mark.asyncio
     async def test_restart_valid_enum(self, client):
-        response = await client.post(f"{PREFIX}/BackgroundService/Restart",
-                                     json={"background_service_name": "GET_DYN"})
+        response = await client.post(
+            f"{PREFIX}/BackgroundService/Restart",
+            json={"background_service_name": "GET_DYN"},
+        )
         assert response.status_code != 404
 
     @pytest.mark.asyncio

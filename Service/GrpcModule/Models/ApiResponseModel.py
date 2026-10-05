@@ -2,7 +2,7 @@ from typing import TypeVar, Generic
 
 from Models.base.custom_pydantic import CustomBaseModel
 
-T = TypeVar('T')
+T = TypeVar("T")
 
 
 class BiliBaseResp(CustomBaseModel, Generic[T]):

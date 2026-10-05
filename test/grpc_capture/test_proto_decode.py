@@ -73,7 +73,9 @@ def _iter_method_dirs() -> list[Path]:
     return sorted(
         path
         for path in _CAPTURE_DIR.iterdir()
-        if path.is_dir() and not path.name.startswith("_") and path.name != "__pycache__"
+        if path.is_dir()
+        and not path.name.startswith("_")
+        and path.name != "__pycache__"
     )
 
 
@@ -115,9 +117,15 @@ _RESPONSE_ITEMS = _collect_capture_items(_RESPONSE_DIR_NAME)
 
 # parametrize 参数：列表为空时给一个占位项，避免 "empty parameter set" 噪音
 _REQUEST_PARAMS: list[tuple[str | None, Path | None]] = _REQUEST_ITEMS or [(None, None)]
-_RESPONSE_PARAMS: list[tuple[str | None, Path | None]] = _RESPONSE_ITEMS or [(None, None)]
-_REQUEST_IDS = [f"{name}/{path.name}" for name, path in _REQUEST_ITEMS] or ["no-request-capture"]
-_RESPONSE_IDS = [f"{name}/{path.name}" for name, path in _RESPONSE_ITEMS] or ["no-response-capture"]
+_RESPONSE_PARAMS: list[tuple[str | None, Path | None]] = _RESPONSE_ITEMS or [
+    (None, None)
+]
+_REQUEST_IDS = [f"{name}/{path.name}" for name, path in _REQUEST_ITEMS] or [
+    "no-request-capture"
+]
+_RESPONSE_IDS = [f"{name}/{path.name}" for name, path in _RESPONSE_ITEMS] or [
+    "no-response-capture"
+]
 
 
 def _dump_parsed_json(method: str, kind: str, slug: str, json_text: str) -> None:
@@ -187,9 +195,9 @@ def test_method_folder_layout(method_dir: Path):
             "（应为 request/ 与 response/）"
         )
 
-    if not list_capture_files(method_dir / _REQUEST_DIR_NAME) and not list_capture_files(
-        method_dir / _RESPONSE_DIR_NAME
-    ):
+    if not list_capture_files(
+        method_dir / _REQUEST_DIR_NAME
+    ) and not list_capture_files(method_dir / _RESPONSE_DIR_NAME):
         pytest.skip(f"{method_dir.name} 尚未放入请求/响应报文")
 
 

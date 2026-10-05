@@ -105,7 +105,11 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             if status == WorkerStatus.nullData:
                 self._end_null_params = worker_model
                 self._null_count += 1
-        elif status in (WorkerStatus.fail, WorkerStatus.timeoutError, WorkerStatus.pending):
+        elif status in (
+            WorkerStatus.fail,
+            WorkerStatus.timeoutError,
+            WorkerStatus.pending,
+        ):
             # 走到这里说明本次没有被重排：要么已达最大重试次数，要么配置不重排、
             # 要么 worker 被异常打断（状态仍为 pending）。都算作最终失败。
             self._final_fail_count += 1

@@ -31,9 +31,10 @@ class MetaDataWrapper:
         if num_add:
             self.used_times += 1
             self.lastest_used_ts = int(time.time())
-        if (self.expire_ts >= int(time.time())
-                and not self.is_need_delete
-                and self.used_times < _max_used_times_one_round
+        if (
+            self.expire_ts >= int(time.time())
+            and not self.is_need_delete
+            and self.used_times < _max_used_times_one_round
         ):
             return True
         else:
@@ -45,7 +46,11 @@ class MetaDataWrapper:
         是否需要删除
         :return:
         """
-        if self.expire_ts < int(time.time()) or self.times_352 >= 3 or self.used_times >= _max_used_times_one_round:
+        if (
+            self.expire_ts < int(time.time())
+            or self.times_352 >= 3
+            or self.used_times >= _max_used_times_one_round
+        ):
             return True
         else:
             return False
@@ -64,11 +69,11 @@ class MetaDataBasicInfo:
     osver: str
     ticket: str
     brand: str
-    session_id: str = ''
+    session_id: str = ""
     # 该 metadata 所属的设备环境对象（DeviceEnv），随 metadata 一起传下去
     device: object | None = None
 
 
-if __name__ == '__main__':
-    a = MetaDataWrapper(md=(), expire_ts=0, version_name='1.0.0')
+if __name__ == "__main__":
+    a = MetaDataWrapper(md=(), expire_ts=0, version_name="1.0.0")
     print(asdict(a))

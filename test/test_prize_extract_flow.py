@@ -8,6 +8,7 @@
     uv run python -m pytest test/test_prize_extract_flow.py -v -k "test_do_extract"
     uv run python -m pytest test/test_prize_extract_flow.py -v -k "test_handler_inmemory" -s
 """
+
 import asyncio
 import sys
 import time
@@ -34,21 +35,29 @@ if str(_project_root) not in sys.path:
 
 from Models.MQ.PrizeExtractResult import PrizeExtractResult
 from Models.MQ.PrizeExtractMQModel import (
-    PrizeExtractParams, PrizeExtractTargetEnum,
+    PrizeExtractParams,
+    PrizeExtractTargetEnum,
 )
 from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
 
 # ---- 导入 ORM 模型（用于建表） ----
 from Service.GetOthersLotDyn.Sql.models import (
     Base,
-    TLotmaininfo, TLotuserinfo, TLotdyninfo,
-    TLotuserspaceresp, TRiddynid, TLotExtraInfo,
+    TLotmaininfo,
+    TLotuserinfo,
+    TLotdyninfo,
+    TLotuserspaceresp,
+    TRiddynid,
+    TLotExtraInfo,
 )
 from Service.GetOthersLotDyn.Sql.sql_helper import __SqlHelper
 from Service.MQ.base.MQClient import PrizeExtract as prize_extract_module
 from Service.MQ.base.MQClient.PrizeExtract import (
-    _consume_once, _do_extract_and_store, process_prize_extract,
-    prize_extract_biliopus, prize_extract_dyndetail,
+    _consume_once,
+    _do_extract_and_store,
+    process_prize_extract,
+    prize_extract_biliopus,
+    prize_extract_dyndetail,
 )
 from Service.GetOthersLotDyn.parser.prize_extractor import PrizeExtractResp
 from Service.MQ.base.MQClient.consume_budget import (
@@ -65,28 +74,42 @@ TEST_REF_ID_ASYNC_ERROR = 999991000
 # SQLite 测试用 SqlHelper
 # ========================================================================
 
+
 class TestSqlHelper(__SqlHelper):
     """SQLite 内存数据库版 SqlHelper，覆盖 MySQL 专用 upsert 为 SQLite 语法"""
+
     __test__ = False  # 不让 pytest 误认为这是测试类
 
     async def save_extra_info(
-        self, ref_id: int, lot_type: str, is_grand_prize: int = 0,
-        is_lot: int | None = None, need_comment: int | None = None,
-        need_repost: int | None = None, required_topic_text: str | None = None,
-        prize_names: list[str] | None = None, lottery_time: str | None = None,
+        self,
+        ref_id: int,
+        lot_type: str,
+        is_grand_prize: int = 0,
+        is_lot: int | None = None,
+        need_comment: int | None = None,
+        need_repost: int | None = None,
+        required_topic_text: str | None = None,
+        prize_names: list[str] | None = None,
+        lottery_time: str | None = None,
     ) -> None:
         async with self.async_session() as session:
             insert_values = {
-                "ref_id": ref_id, "lot_type": lot_type,
+                "ref_id": ref_id,
+                "lot_type": lot_type,
                 "is_grand_prize": is_grand_prize,
             }
             update_values = {
                 "is_grand_prize": is_grand_prize,
                 "predicted_at": text("CURRENT_TIMESTAMP"),
             }
-            for key, val in (("is_lot", is_lot), ("need_comment", need_comment),
-                             ("need_repost", need_repost), ("required_topic_text", required_topic_text),
-                             ("prize_names", prize_names), ("lottery_time", lottery_time)):
+            for key, val in (
+                ("is_lot", is_lot),
+                ("need_comment", need_comment),
+                ("need_repost", need_repost),
+                ("required_topic_text", required_topic_text),
+                ("prize_names", prize_names),
+                ("lottery_time", lottery_time),
+            ):
                 if val is not None:
                     insert_values[key] = val
                     update_values[key] = val
@@ -103,6 +126,7 @@ class TestSqlHelper(__SqlHelper):
 # ========================================================================
 # Fixtures
 # ========================================================================
+
 
 @pytest.fixture
 async def test_sqlhelper():
@@ -142,8 +166,11 @@ async def test_sqlhelper():
 
     # 创建索引
     async with engine.begin() as conn:
-        await conn.execute(text(
-            "CREATE INDEX IF NOT EXISTS idx_ref_id_type ON t_lot_extra_info(ref_id, lot_type)"))
+        await conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_ref_id_type ON t_lot_extra_info(ref_id, lot_type)"
+            )
+        )
 
     helper = TestSqlHelper.__new__(TestSqlHelper)
     helper.log = __import__("logging").getLogger("test")
@@ -175,9 +202,17 @@ def _patch_sql_helper(test_sqlhelper):
 # 测试数据
 # ========================================================================
 
+
 class MockCase:
-    def __init__(self, name, target_db, lot_type="common", dyn_content="",
-                 lottery_text="", mock_result=None):
+    def __init__(
+        self,
+        name,
+        target_db,
+        lot_type="common",
+        dyn_content="",
+        lottery_text="",
+        mock_result=None,
+    ):
         self.name = name
         self.target_db = target_db
         self.lot_type = lot_type
@@ -191,33 +226,75 @@ class MockCase:
 
 
 _CASES = [
-    MockCase(name="普通抽奖 - 有奖品名和开奖时间", target_db="普通抽奖动态", lot_type="common",
-             dyn_content="【转发抽奖】关注+转发，抽3位送《原神》648元充值卡！5月1日开奖~ #原神抽奖#",
-             mock_result=PrizeExtractResult(
-                 prize_names=["原神648元充值卡"], lottery_time="2026-05-01",
-                 is_lot=True, need_repost=True, required_topic_text="#原神抽奖#",
-                 is_grand_prize=True)),
-    MockCase(name="普通动态 - 不是抽奖", target_db="普通抽奖动态", lot_type="common",
-             dyn_content="今天天气真好，出去散步了~",
-             mock_result=PrizeExtractResult(prize_names=[], lottery_time=None,
-                                            is_lot=False, need_repost=False,
-                                            required_topic_text="", is_grand_prize=False)),
-    MockCase(name="预约抽奖", target_db="普通抽奖动态", lot_type="reserve",
-             dyn_content="预约《黑神话：悟空》DLC，抽10位送游戏激活码！",
-             mock_result=PrizeExtractResult(prize_names=["游戏激活码"], lottery_time=None,
-                                            is_lot=True, need_repost=False,
-                                            required_topic_text="", is_grand_prize=True)),
-    MockCase(name="官方抽奖 - dyndetail", target_db="官方充电抽奖",
-             lottery_text="一等奖 iPhone 15 Pro Max，二等奖 AirPods Pro，三等奖 大会员月卡",
-             mock_result=PrizeExtractResult(
-                 prize_names=["iPhone 15 Pro Max", "AirPods Pro", "大会员月卡"],
-                 lottery_time=None, is_lot=True, need_repost=False,
-                 required_topic_text="", is_grand_prize=True)),
-    MockCase(name="普通抽奖 - 仅奖品名无开奖时间", target_db="普通抽奖动态", lot_type="common",
-             dyn_content="评论抽一位粉丝送手写祝福卡片~评论即可参与！",
-             mock_result=PrizeExtractResult(prize_names=["手写祝福卡片"], lottery_time=None,
-                                            is_lot=True, need_repost=False,
-                                            required_topic_text="", is_grand_prize=False)),
+    MockCase(
+        name="普通抽奖 - 有奖品名和开奖时间",
+        target_db="普通抽奖动态",
+        lot_type="common",
+        dyn_content="【转发抽奖】关注+转发，抽3位送《原神》648元充值卡！5月1日开奖~ #原神抽奖#",
+        mock_result=PrizeExtractResult(
+            prize_names=["原神648元充值卡"],
+            lottery_time="2026-05-01",
+            is_lot=True,
+            need_repost=True,
+            required_topic_text="#原神抽奖#",
+            is_grand_prize=True,
+        ),
+    ),
+    MockCase(
+        name="普通动态 - 不是抽奖",
+        target_db="普通抽奖动态",
+        lot_type="common",
+        dyn_content="今天天气真好，出去散步了~",
+        mock_result=PrizeExtractResult(
+            prize_names=[],
+            lottery_time=None,
+            is_lot=False,
+            need_repost=False,
+            required_topic_text="",
+            is_grand_prize=False,
+        ),
+    ),
+    MockCase(
+        name="预约抽奖",
+        target_db="普通抽奖动态",
+        lot_type="reserve",
+        dyn_content="预约《黑神话：悟空》DLC，抽10位送游戏激活码！",
+        mock_result=PrizeExtractResult(
+            prize_names=["游戏激活码"],
+            lottery_time=None,
+            is_lot=True,
+            need_repost=False,
+            required_topic_text="",
+            is_grand_prize=True,
+        ),
+    ),
+    MockCase(
+        name="官方抽奖 - dyndetail",
+        target_db="官方充电抽奖",
+        lottery_text="一等奖 iPhone 15 Pro Max，二等奖 AirPods Pro，三等奖 大会员月卡",
+        mock_result=PrizeExtractResult(
+            prize_names=["iPhone 15 Pro Max", "AirPods Pro", "大会员月卡"],
+            lottery_time=None,
+            is_lot=True,
+            need_repost=False,
+            required_topic_text="",
+            is_grand_prize=True,
+        ),
+    ),
+    MockCase(
+        name="普通抽奖 - 仅奖品名无开奖时间",
+        target_db="普通抽奖动态",
+        lot_type="common",
+        dyn_content="评论抽一位粉丝送手写祝福卡片~评论即可参与！",
+        mock_result=PrizeExtractResult(
+            prize_names=["手写祝福卡片"],
+            lottery_time=None,
+            is_lot=True,
+            need_repost=False,
+            required_topic_text="",
+            is_grand_prize=False,
+        ),
+    ),
 ]
 
 BILIOPUS_CASES = [c for c in _CASES if c.target_db == "普通抽奖动态"]
@@ -227,15 +304,20 @@ BILIOPUS_CASES = [c for c in _CASES if c.target_db == "普通抽奖动态"]
 # 辅助
 # ========================================================================
 
+
 def _case_to_req(case: MockCase, ref_id: int) -> PrizeExtractParams:
     target_db = PrizeExtractTargetEnum(case.target_db)
     if target_db == PrizeExtractTargetEnum.DYNDETAIL:
         return PrizeExtractParams(
-            target_db=target_db, lottery_id=ref_id, lottery_text=case.lottery_text)
+            target_db=target_db, lottery_id=ref_id, lottery_text=case.lottery_text
+        )
     return PrizeExtractParams(
-        target_db=target_db, ref_id=ref_id, lot_type=case.lot_type,
-        dyn_content=case.dyn_content, comment_count=case.comment_count if hasattr(case, 'comment_count') else None,
-        forward_count=case.forward_count if hasattr(case, 'forward_count') else None,
+        target_db=target_db,
+        ref_id=ref_id,
+        lot_type=case.lot_type,
+        dyn_content=case.dyn_content,
+        comment_count=case.comment_count if hasattr(case, "comment_count") else None,
+        forward_count=case.forward_count if hasattr(case, "forward_count") else None,
     )
 
 
@@ -253,37 +335,69 @@ async def _verify_db(helper: TestSqlHelper, ref_id: int, case: MockCase) -> list
 
     if extra_info:
         if expected.prize_names and extra_info.prize_names != expected.prize_names:
-            diffs.append(f"prize_names: DB={extra_info.prize_names} 预期={expected.prize_names}")
+            diffs.append(
+                f"prize_names: DB={extra_info.prize_names} 预期={expected.prize_names}"
+            )
         if expected.lottery_time and extra_info.lottery_time != expected.lottery_time:
-            diffs.append(f"lottery_time: DB={extra_info.lottery_time} 预期={expected.lottery_time}")
+            diffs.append(
+                f"lottery_time: DB={extra_info.lottery_time} 预期={expected.lottery_time}"
+            )
         if extra_info.is_lot != int(expected.is_lot):
             diffs.append(f"is_lot: DB={extra_info.is_lot} 预期={int(expected.is_lot)}")
         if extra_info.is_grand_prize != int(expected.is_grand_prize):
-            diffs.append(f"is_grand_prize: DB={extra_info.is_grand_prize} 预期={int(expected.is_grand_prize)}")
+            diffs.append(
+                f"is_grand_prize: DB={extra_info.is_grand_prize} 预期={int(expected.is_grand_prize)}"
+            )
         if extra_info.need_repost != int(expected.need_repost):
-            diffs.append(f"need_repost: DB={extra_info.need_repost} 预期={int(expected.need_repost)}")
-        if (extra_info.required_topic_text or "") != (expected.required_topic_text or ""):
-            diffs.append(f"required_topic_text: DB={extra_info.required_topic_text!r} 预期={expected.required_topic_text!r}")
+            diffs.append(
+                f"need_repost: DB={extra_info.need_repost} 预期={int(expected.need_repost)}"
+            )
+        if (extra_info.required_topic_text or "") != (
+            expected.required_topic_text or ""
+        ):
+            diffs.append(
+                f"required_topic_text: DB={extra_info.required_topic_text!r} 预期={expected.required_topic_text!r}"
+            )
     return diffs
 
 
 async def _enter_patches(stack: AsyncExitStack, case: MockCase, extra: bool = False):
     ctxs = [
-        patch("Service.MQ.base.MQClient.PrizeExtract.extract_prize_info_for_biliopusdb",
-              new=AsyncMock(return_value=PrizeExtractResp(
-                  dyn_content=case.text_content, consume_time=0.0, result=case.mock_result))),
-        patch("Service.MQ.base.MQClient.PrizeExtract.extract_prize_info_for_lotdata",
-              new=AsyncMock(return_value=PrizeExtractResp(
-                  dyn_content=case.text_content, consume_time=0.0, result=case.mock_result))),
+        patch(
+            "Service.MQ.base.MQClient.PrizeExtract.extract_prize_info_for_biliopusdb",
+            new=AsyncMock(
+                return_value=PrizeExtractResp(
+                    dyn_content=case.text_content,
+                    consume_time=0.0,
+                    result=case.mock_result,
+                )
+            ),
+        ),
+        patch(
+            "Service.MQ.base.MQClient.PrizeExtract.extract_prize_info_for_lotdata",
+            new=AsyncMock(
+                return_value=PrizeExtractResp(
+                    dyn_content=case.text_content,
+                    consume_time=0.0,
+                    result=case.mock_result,
+                )
+            ),
+        ),
     ]
     if extra:
         ctxs += [
-            patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
-                  new=AsyncMock(return_value=True)),
-            patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
-                  new=AsyncMock()),
-            patch("Service.MQ.base.MQClient.PrizeExtract._already_stored",
-                  new=AsyncMock(return_value=False)),
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
+                new=AsyncMock(),
+            ),
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract._already_stored",
+                new=AsyncMock(return_value=False),
+            ),
         ]
     for ctx in ctxs:
         stack.enter_context(ctx)
@@ -292,6 +406,7 @@ async def _enter_patches(stack: AsyncExitStack, case: MockCase, extra: bool = Fa
 # ========================================================================
 # 测试 1: _do_extract_and_store
 # ========================================================================
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", BILIOPUS_CASES, ids=lambda c: c.name)
@@ -316,6 +431,7 @@ async def test_do_extract_and_store(case: MockCase, test_sqlhelper: TestSqlHelpe
 # ========================================================================
 # 测试 2: process_prize_extract（完整消费链路）
 # ========================================================================
+
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", BILIOPUS_CASES, ids=lambda c: c.name)
@@ -343,6 +459,7 @@ async def test_process_prize_extract(case: MockCase, test_sqlhelper: TestSqlHelp
 # 测试 3: consumer.consume 入口
 # ========================================================================
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", BILIOPUS_CASES, ids=lambda c: c.name)
 async def test_consumer_consume(case: MockCase, test_sqlhelper: TestSqlHelper):
@@ -368,6 +485,7 @@ async def test_consumer_consume(case: MockCase, test_sqlhelper: TestSqlHelper):
 # 测试 4: FastStream TestRabbitBroker 内存路由
 # ========================================================================
 
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("case", BILIOPUS_CASES, ids=lambda c: c.name)
 async def test_handler_inmemory(case: MockCase, test_sqlhelper: TestSqlHelper):
@@ -392,7 +510,9 @@ async def test_handler_inmemory(case: MockCase, test_sqlhelper: TestSqlHelper):
 
     async with TestRabbitBroker(broker) as br, AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        await br.publish(req.model_dump(mode="json"), queue=QueueName.PrizeExtractBiliOpusMQ)
+        await br.publish(
+            req.model_dump(mode="json"), queue=QueueName.PrizeExtractBiliOpusMQ
+        )
 
     # TestRabbitBroker 内存模式下本地函数无 .mock 属性，改验证数据库
     diffs = await _verify_db(test_sqlhelper, ref_id, case)
@@ -402,6 +522,7 @@ async def test_handler_inmemory(case: MockCase, test_sqlhelper: TestSqlHelper):
 # ========================================================================
 # 测试 5: 已存在记录时跳过
 # ========================================================================
+
 
 @pytest.mark.asyncio
 async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
@@ -414,12 +535,20 @@ async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
     mock_msg.ack = AsyncMock()
     mock_msg.nack = AsyncMock()
 
-    with patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
-               new=AsyncMock(return_value=True)), \
-         patch("Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
-               new=AsyncMock()), \
-         patch("Service.MQ.base.MQClient.PrizeExtract._already_stored",
-               new=AsyncMock(return_value=True)):
+    with (
+        patch(
+            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
+            new=AsyncMock(return_value=True),
+        ),
+        patch(
+            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
+            new=AsyncMock(),
+        ),
+        patch(
+            "Service.MQ.base.MQClient.PrizeExtract._already_stored",
+            new=AsyncMock(return_value=True),
+        ),
+    ):
         result = await process_prize_extract(mq_props, req, mock_msg)
 
     mock_msg.ack.assert_called_once()
@@ -429,6 +558,7 @@ async def test_already_stored_skips(test_sqlhelper: TestSqlHelper):
 # ========================================================================
 # 测试 6: 消费任务被取消时仍释放 redis 去重锁（取消安全）
 # ========================================================================
+
 
 @pytest.mark.asyncio
 async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper):
@@ -455,9 +585,12 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
-            new=release_lock))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.release_lock",
+                new=release_lock,
+            )
+        )
 
         task = asyncio.create_task(process_prize_extract(mq_props, req, mock_msg))
         await asyncio.wait_for(release_started.wait(), timeout=5)
@@ -475,6 +608,7 @@ async def test_cancelled_still_releases_resources(test_sqlhelper: TestSqlHelper)
 # ========================================================================
 # 测试 7: 本轮失败既不能 ack 也不能 nack，由外层继续下一轮
 # ========================================================================
+
 
 @pytest.mark.asyncio
 async def test_extract_failure_never_acks(test_sqlhelper: TestSqlHelper):
@@ -500,14 +634,21 @@ async def test_extract_failure_never_acks(test_sqlhelper: TestSqlHelper):
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract._do_extract_and_store",
-            new=_always_fail))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract._do_extract_and_store",
+                new=_always_fail,
+            )
+        )
         # 让 run_with_backoff 一次即放弃（避免 6s 起的真实退避），并由 mock 承接 on_giveup
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.build_consume_backoff_config",
-            new=lambda **kwargs: BackoffConfig(
-                max_tries=1, on_giveup=giveup, jitter=None)))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract.build_consume_backoff_config",
+                new=lambda **kwargs: BackoffConfig(
+                    max_tries=1, on_giveup=giveup, jitter=None
+                ),
+            )
+        )
 
         # 单轮：失败必须抛出，且不得确认消息；槽位与去重锁仍要归还
         with pytest.raises(RuntimeError):
@@ -555,6 +696,7 @@ async def test_process_prize_extract_retries_next_round(test_sqlhelper: TestSqlH
 # 测试 8: 去重锁被其他副本占用时不得 ack，重试到抢到为止
 # ========================================================================
 
+
 @pytest.mark.asyncio
 async def test_lock_held_by_other_copy_never_acks(
     test_sqlhelper: TestSqlHelper, monkeypatch
@@ -580,13 +722,19 @@ async def test_lock_held_by_other_copy_never_acks(
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
-            new=acquire_lock))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract.prize_extract_redis.acquire_lock",
+                new=acquire_lock,
+            )
+        )
         # 抢到锁后「库里已有提取信息」→ 正常 ack 结束
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract._already_stored",
-            new=AsyncMock(return_value=True)))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract._already_stored",
+                new=AsyncMock(return_value=True),
+            )
+        )
 
         result = await _consume_once(mq_props, params, mock_msg, _fake_budget())
 
@@ -600,11 +748,10 @@ async def test_lock_held_by_other_copy_never_acks(
 # 测试 9: 消息确认超时预算
 # ========================================================================
 
+
 def test_consume_budget_bounds_wait():
     """预算是自起算点算的：bound() 截断等待、remaining() 不为负、expired() 到点即真。"""
-    budget = ConsumeBudget.start(
-        total_seconds=0.2, queue_name="q", label="l"
-    )
+    budget = ConsumeBudget.start(total_seconds=0.2, queue_name="q", label="l")
     assert budget.remaining() > 0
     assert budget.bound(10.0) <= 0.2 + 1e-6, "等待必须被截断到剩余预算内"
     assert not budget.expired()
@@ -639,8 +786,11 @@ async def test_budget_exhausted_requeues_instead_of_broker_nack(
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract._consume_once", new=consume_once))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract._consume_once", new=consume_once
+            )
+        )
         result = await process_prize_extract(mq_props, params, mock_msg)
 
     assert result is None
@@ -667,9 +817,12 @@ async def test_consume_budget_exceeded_requeues_message(
 
     async with AsyncExitStack() as stack:
         await _enter_patches(stack, case, extra=True)
-        stack.enter_context(patch(
-            "Service.MQ.base.MQClient.PrizeExtract._consume_once",
-            new=AsyncMock(side_effect=ConsumeBudgetExceeded("超出预算"))))
+        stack.enter_context(
+            patch(
+                "Service.MQ.base.MQClient.PrizeExtract._consume_once",
+                new=AsyncMock(side_effect=ConsumeBudgetExceeded("超出预算")),
+            )
+        )
         result = await process_prize_extract(mq_props, params, mock_msg)
 
     assert result is None

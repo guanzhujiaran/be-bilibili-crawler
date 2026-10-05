@@ -46,9 +46,12 @@ class TestGetReserveLottery:
         """基本请求"""
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_reserve_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
-            response = await client.post(f"{PREFIX}/GetReserveLottery", json=_base_body())
+            response = await client.post(
+                f"{PREFIX}/GetReserveLottery", json=_base_body()
+            )
         assert response.status_code == 200
         assert response.json()["code"] == 0
 
@@ -57,17 +60,21 @@ class TestGetReserveLottery:
         """按状态筛选"""
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_reserve_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
             response = await client.post(
-                f"{PREFIX}/GetReserveLottery", json=_base_body(status="unfinished"),
+                f"{PREFIX}/GetReserveLottery",
+                json=_base_body(status="unfinished"),
             )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_invalid_page(self, client):
         """页码小于最小值应返回 422"""
-        response = await client.post(f"{PREFIX}/GetReserveLottery", json={"page_num": 0, "page_size": 10})
+        response = await client.post(
+            f"{PREFIX}/GetReserveLottery", json={"page_num": 0, "page_size": 10}
+        )
         assert response.status_code == 422
 
 
@@ -77,14 +84,16 @@ class TestGetReserveLottery:
 
 
 class TestGetOfficialLottery:
-
     @pytest.mark.asyncio
     async def test_basic(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_official_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
-            response = await client.post(f"{PREFIX}/GetOfficialLottery", json=_base_body())
+            response = await client.post(
+                f"{PREFIX}/GetOfficialLottery", json=_base_body()
+            )
         assert response.status_code == 200
 
 
@@ -94,14 +103,16 @@ class TestGetOfficialLottery:
 
 
 class TestGetChargeLottery:
-
     @pytest.mark.asyncio
     async def test_basic(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_charge_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
-            response = await client.post(f"{PREFIX}/GetChargeLottery", json=_base_body())
+            response = await client.post(
+                f"{PREFIX}/GetChargeLottery", json=_base_body()
+            )
         assert response.status_code == 200
 
 
@@ -111,12 +122,12 @@ class TestGetChargeLottery:
 
 
 class TestGetLiveLottery:
-
     @pytest.mark.asyncio
     async def test_basic(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_live_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
             response = await client.post(f"{PREFIX}/GetLiveLottery", json=_base_body())
         assert response.status_code == 200
@@ -128,12 +139,12 @@ class TestGetLiveLottery:
 
 
 class TestGetTopicLottery:
-
     @pytest.mark.asyncio
     async def test_basic(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_topic_lottery",
-            new_callable=mock.AsyncMock, return_value=([], 0),
+            new_callable=mock.AsyncMock,
+            return_value=([], 0),
         ):
             response = await client.post(f"{PREFIX}/GetTopicLottery", json=_base_body())
         assert response.status_code == 200
@@ -145,7 +156,6 @@ class TestGetTopicLottery:
 
 
 class TestGetAllLottery:
-
     @pytest.mark.asyncio
     async def test_default(self, client):
         empty = {
@@ -157,7 +167,8 @@ class TestGetAllLottery:
         }
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.get_all_lottery",
-            new_callable=mock.AsyncMock, return_value=empty,
+            new_callable=mock.AsyncMock,
+            return_value=empty,
         ):
             # GetAllLottery 是 POST 端点
             response = await client.post(f"{PREFIX}/GetAllLottery")
@@ -176,15 +187,21 @@ class TestGetAllLottery:
 
 
 class TestAddDynamicLottery:
-
     @pytest.mark.asyncio
     async def test_by_id(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.add_dynamic_lottery_by_dynamic_id",
             new_callable=mock.AsyncMock,
-            return_value={"msg": "ok", "is_succ": True, "is_new": True, "dynamic_id_or_url": "9876543210"},
+            return_value={
+                "msg": "ok",
+                "is_succ": True,
+                "is_new": True,
+                "dynamic_id_or_url": "9876543210",
+            },
         ):
-            response = await client.post(f"{PREFIX}/AddDynamicLottery", json={"dynamic_id_or_url": "9876543210"})
+            response = await client.post(
+                f"{PREFIX}/AddDynamicLottery", json={"dynamic_id_or_url": "9876543210"}
+            )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
@@ -199,14 +216,24 @@ class TestAddDynamicLottery:
 
 
 class TestBulkAddDynamicLottery:
-
     @pytest.mark.asyncio
     async def test_bulk(self, client):
-        with mock.patch("controller.v1.lotttery_database.bili.LotteryData.asyncio_gather",
-                        new_callable=mock.AsyncMock,
-                        return_value=[{"msg": "ok", "is_succ": True, "is_new": True, "dynamic_id_or_url": "123"}]):
-            response = await client.post(f"{PREFIX}/BulkAddDynamicLottery",
-                                         json={"dynamic_id_or_urls": ["123", "456"]})
+        with mock.patch(
+            "controller.v1.lotttery_database.bili.LotteryData.asyncio_gather",
+            new_callable=mock.AsyncMock,
+            return_value=[
+                {
+                    "msg": "ok",
+                    "is_succ": True,
+                    "is_new": True,
+                    "dynamic_id_or_url": "123",
+                }
+            ],
+        ):
+            response = await client.post(
+                f"{PREFIX}/BulkAddDynamicLottery",
+                json={"dynamic_id_or_urls": ["123", "456"]},
+            )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
@@ -221,15 +248,21 @@ class TestBulkAddDynamicLottery:
 
 
 class TestAddTopicLottery:
-
     @pytest.mark.asyncio
     async def test_add(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.add_topic_lottery",
             new_callable=mock.AsyncMock,
-            return_value={"msg": "ok", "is_succ": True, "is_new": True, "topic_id": "12345"},
+            return_value={
+                "msg": "ok",
+                "is_succ": True,
+                "is_new": True,
+                "topic_id": "12345",
+            },
         ):
-            response = await client.post(f"{PREFIX}/AddTopicLottery", json={"topic_id": 12345})
+            response = await client.post(
+                f"{PREFIX}/AddTopicLottery", json={"topic_id": 12345}
+            )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
@@ -244,15 +277,17 @@ class TestAddTopicLottery:
 
 
 class TestAddOthersLotDyn:
-
     @pytest.mark.asyncio
     async def test_unauthorized(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.require_gateway_login",
         ) as mock_auth:
             from fastapi import HTTPException
+
             mock_auth.side_effect = HTTPException(status_code=401, detail="未登录")
-            response = await client.post(f"{PREFIX}/AddOthersLotDyn", json={"dynamic_id_or_url": "123"})
+            response = await client.post(
+                f"{PREFIX}/AddOthersLotDyn", json={"dynamic_id_or_url": "123"}
+            )
             assert response.status_code == 401
 
 
@@ -262,32 +297,40 @@ class TestAddOthersLotDyn:
 
 
 class TestSearchLotteryByKeyword:
-
     @pytest.mark.asyncio
     async def test_search(self, client):
-        with mock.patch(
-            "controller.v1.lotttery_database.bili.LotteryData.search_lottery_text",
-            new_callable=mock.AsyncMock, return_value=[],
-        ), mock.patch(
-            "controller.v1.lotttery_database.bili.LotteryData.get_lottery_entity_num",
-            new_callable=mock.AsyncMock, return_value=0,
+        with (
+            mock.patch(
+                "controller.v1.lotttery_database.bili.LotteryData.search_lottery_text",
+                new_callable=mock.AsyncMock,
+                return_value=[],
+            ),
+            mock.patch(
+                "controller.v1.lotttery_database.bili.LotteryData.get_lottery_entity_num",
+                new_callable=mock.AsyncMock,
+                return_value=0,
+            ),
         ):
-            response = await client.post(f"{PREFIX}/SearchLotteryByKeyword",
-                                         json={"keyword": "抽奖", "page_num": 1, "page_size": 10})
+            response = await client.post(
+                f"{PREFIX}/SearchLotteryByKeyword",
+                json={"keyword": "抽奖", "page_num": 1, "page_size": 10},
+            )
         assert response.status_code == 200
 
     @pytest.mark.asyncio
     async def test_missing_keyword(self, client):
-        response = await client.post(f"{PREFIX}/SearchLotteryByKeyword",
-                                     json={"page_num": 1, "page_size": 10})
+        response = await client.post(
+            f"{PREFIX}/SearchLotteryByKeyword", json={"page_num": 1, "page_size": 10}
+        )
         assert response.status_code == 422
 
     @pytest.mark.asyncio
     async def test_empty_keyword(self, client):
-        response = await client.post(f"{PREFIX}/SearchLotteryByKeyword",
-                                     json={"keyword": "", "page_num": 1, "page_size": 10})
+        response = await client.post(
+            f"{PREFIX}/SearchLotteryByKeyword",
+            json={"keyword": "", "page_num": 1, "page_size": 10},
+        )
         assert response.status_code == 422
-
 
 
 # ============================================================================
@@ -296,7 +339,6 @@ class TestSearchLotteryByKeyword:
 
 
 class TestGetAllLotScrapyStatus:
-
     @pytest.mark.asyncio
     async def test_get(self, client):
         response = await client.get(f"{PREFIX}/GetAllLotScrapyStatus")
@@ -310,15 +352,17 @@ class TestGetAllLotScrapyStatus:
 
 
 class TestGetOthersLotDynList:
-
     @pytest.mark.asyncio
     async def test_unauthorized(self, client):
         with mock.patch(
             "controller.v1.lotttery_database.bili.LotteryData.require_gateway_login",
         ) as mock_auth:
             from fastapi import HTTPException
+
             mock_auth.side_effect = HTTPException(status_code=401, detail="未登录")
-            response = await client.post(f"{PREFIX}/GetOthersLotDynList", json=_base_body())
+            response = await client.post(
+                f"{PREFIX}/GetOthersLotDynList", json=_base_body()
+            )
             assert response.status_code == 401
 
 
@@ -328,7 +372,6 @@ class TestGetOthersLotDynList:
 
 
 class TestGetLotteryFilterParams:
-
     @pytest.mark.asyncio
     async def test_get(self, client):
         response = await client.get(f"{PREFIX}/GetLotteryFilterParams")

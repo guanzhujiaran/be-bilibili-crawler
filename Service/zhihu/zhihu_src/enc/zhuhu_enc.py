@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: UTF-8 -*-
-'''
+"""
 @Project ：config.yaml
 @File    ：zhihu_encrypt.py.py
 @IDE     ：PyCharm
 @Author  ：Beier
 @Date    ：2023/10/11 14:15
 @github  ：https://github.com/srx-2000
-'''
+"""
+
 import execjs
 import requests
 import CONFIG
@@ -18,29 +19,34 @@ x_zse_93 = "101_3_3.0"
 
 
 class ZhiHuEncrypt:
-    my_ipv6_proxy = {'http': CONFIG.CONFIG.my_ipv6_addr, "https": CONFIG.CONFIG.my_ipv6_addr}
+    my_ipv6_proxy = {
+        "http": CONFIG.CONFIG.my_ipv6_addr,
+        "https": CONFIG.CONFIG.my_ipv6_addr,
+    }
     headers = {}
 
     def __init__(self):
         node = execjs.get()
-        enc_js_path = os.path.join(
-            os.path.dirname(__file__), '../zhihu_encrypt.js'
-        )
-        with open(enc_js_path, 'r', encoding='utf-8') as f:
+        enc_js_path = os.path.join(os.path.dirname(__file__), "../zhihu_encrypt.js")
+        with open(enc_js_path, "r", encoding="utf-8") as f:
             self.ctx = node.compile(f.read())
 
-
     def encode(self, d_c0, apiPath):
-        return self.ctx.call('get_xzse96', d_c0, apiPath)
+        return self.ctx.call("get_xzse96", d_c0, apiPath)
 
     def get_d_c0(self):
         url_param = "/udid"
-        a_v = self.encode('', url_param)
-        self.headers.update({"x-zse-96": '2.0_' + a_v})
-        first_res = requests.post('https://www.zhihu.com/udid', data={}, headers=ZhiHuEncrypt.headers, timeout=10,
-                                  proxies=ZhiHuEncrypt.my_ipv6_proxy)
+        a_v = self.encode("", url_param)
+        self.headers.update({"x-zse-96": "2.0_" + a_v})
+        first_res = requests.post(
+            "https://www.zhihu.com/udid",
+            data={},
+            headers=ZhiHuEncrypt.headers,
+            timeout=10,
+            proxies=ZhiHuEncrypt.my_ipv6_proxy,
+        )
         cookie_t = requests.utils.dict_from_cookiejar(first_res.cookies)
-        d_c0 = cookie_t.get('d_c0')
+        d_c0 = cookie_t.get("d_c0")
         return d_c0
 
     # @staticmethod
