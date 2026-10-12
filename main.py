@@ -112,6 +112,23 @@ async def global_handler(request: Request, call_next):
         return response
 
 
+# 抽奖查询接口已统一由 POST 改为 GET。fastapi-cache 的 @cache 在命中/回源时会给响应回写
+# ``Cache-Control: max-age=<ttl>``，GET 响应可能被浏览器/CDN 据此缓存。这里在出站阶段对
+# 抽奖数据库下所有 GET 查询响应强制覆盖为「完全不缓存（缓存策略=0）」，与前端每次请求
+# 附带的 ``t=当前时间戳`` 双保险，确保前端永远拿到最新数据、不读浏览器旧缓存。
+_LOTTERY_QUERY_PREFIX = "/api/v1/lottery_database/"
+
+
+@app.middleware("http")
+async def no_cache_lottery_queries(request: Request, call_next):
+    response = await call_next(request)
+    if request.method == "GET" and request.url.path.startswith(_LOTTERY_QUERY_PREFIX):
+        response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.exception_handler(exc_class_or_status_code=Exception)
 async def base_error_handler(request: Request, exc: Exception):
     request_ip = request.client.host if request.client else "unknown"

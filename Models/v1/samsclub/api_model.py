@@ -40,4 +40,4 @@ class UserProfile(CustomBaseModel):
 
 RespUserProfile = TypeAdapter(ApiResponse[UserProfile])
 
-__slot__ = ["RespUserProfile", "ApiResponse", "UserProfile"]
+__all__ = ["RespUserProfile", "ApiResponse", "UserProfile"]

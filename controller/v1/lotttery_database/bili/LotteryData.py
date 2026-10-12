@@ -3,9 +3,10 @@
 """
 
 import time
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from Models.lottery_database.bili.LotteryDataModels import EndpointFilterMeta
 from fastapi import Query, Body, Request, Depends
+from pydantic import BaseModel
 from fastapi_cache.decorator import cache
 from bili_common.models.response import StandardResponse as CommonResponseModel
 from bili_common.models.pagination import ResponsePaginationItems
@@ -40,13 +41,14 @@ from bili_common.models import (
     LotterySearchPaginationParams,
     LotteryAdvancedQueryParams,
     OthersLotDynListFilterMetadata,
+    LotteryDataSortEnum,
+    SortOrderEnum,
 )
 from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
     LotteryDetailResp,
-    GetLotteryDetailReq,
-    GetOthersLotDynDetailReq,
 )
+from Models.base.str_int import StrInt
 from Models.v1.background_service.background_service_model import (
     AllLotScrapyStatusResp,
     ScrapyTypeEnum,
@@ -101,19 +103,105 @@ def _parse_status(status: Optional[str]) -> BiliLotDataStatusEnum | None:
     return status_map.get(status.lower())
 
 
+# 防浏览器/CDN 缓存的时间戳查询参数：抽奖查询接口统一改为 GET，前端每次请求附带
+# ``t = Date.now()`` 毫秒时间戳让 URL 每次不同；后端不使用该值（仅靠响应头 no-store
+# 已可禁用缓存），显式声明是为了在 OpenAPI 契约中固定该参数并忽略其取值。
+NoCacheTs = Annotated[
+    Optional[int],
+    Query(
+        description="防缓存时间戳（前端传当前毫秒时间戳 Date.now()）；后端不使用该值，"
+        "仅用于让每次 URL 不同以绕过浏览器/CDN 缓存"
+    ),
+]
+
+
+class _OthersLotDynDetailQuery(BaseModel):
+    """GetOthersLotDynDetail 的 GET 查询参数。
+
+    必须用普通 pydantic 模型 + ``Depends()`` 展开成 query：``dyn_id`` 是 19 位雪花 ID，
+    走 ``StrInt``（anyOf[int,str]，接受字符串避免 JS 精度丢失）；模型字段上的
+    ``BeforeValidator`` 才会把字符串归一为 ``int``（与改造前的 POST body 模型口径一致）。
+    直接在函数签名里写 ``dyn_id: StrInt = Query(...)`` 时，FastAPI 的标量 Union 解析
+    会绕过该 validator 而返回 str，故这里改用模型依赖。
+    """
+
+    dyn_id: StrInt
+    t: Optional[int] = None
+
+
+def _pagination_query(
+    page_num: int = Query(default=1, ge=1, description="页码，从 1 开始，最小值为 1"),
+    page_size: int = Query(default=10, ge=1, description="每页数量，最小值为 1"),
+    t: NoCacheTs = None,
+) -> LotteryPaginationParams:
+    """把 GET 查询参数解析为 ``LotteryPaginationParams``。
+
+    SQLModel 的 ``__init__`` 签名是 ``(self, data)``，FastAPI 无法像普通 Pydantic
+    模型那样在 ``Depends()`` 下自动展开为查询参数，故用显式标量 Query 参数的依赖函数
+    承接，再构造模型返回（同时保留完整的 OpenAPI 查询参数契约）。
+    """
+    return LotteryPaginationParams(page_num=page_num, page_size=page_size)
+
+
+def _advanced_query(
+    page_num: int = Query(default=1, ge=1, description="页码，从 1 开始，最小值为 1"),
+    page_size: int = Query(default=10, ge=1, description="每页数量，最小值为 1"),
+    start_ts: Optional[int] = Query(default=None, ge=0, description="开奖起始时间（Unix 秒）"),
+    end_ts: Optional[int] = Query(default=None, ge=0, description="开奖结束时间（Unix 秒）"),
+    sender_uid: Optional[int] = Query(default=None, ge=0, description="UP主UID"),
+    min_participants: Optional[int] = Query(default=None, ge=0, description="最小参与人数"),
+    max_participants: Optional[int] = Query(default=None, ge=0, description="最大参与人数"),
+    status: Optional[str] = Query(
+        default=None, description="抽奖状态: unfinished/finished/canceled/deleted/unknown"
+    ),
+    is_grand_prize: Optional[bool] = Query(
+        default=None, description="是否大奖: true/false，不传不过滤"
+    ),
+    keyword: Optional[str] = Query(default=None, max_length=100, description="关键词"),
+    sort_by: Optional[LotteryDataSortEnum] = Query(default=None, description="排序字段"),
+    sort_order: Optional[SortOrderEnum] = Query(default=None, description="排序方向"),
+    created_at_preset: Optional[TimePresetEnum] = Query(
+        default=None, description="收录时间快捷筛选: 1d/3d/5d/7d/14d/30d..."
+    ),
+    pub_time_preset: Optional[TimePresetEnum] = Query(
+        default=None, description="发布时间快捷筛选: 1d/3d/5d/7d/14d/30d..."
+    ),
+    t: NoCacheTs = None,
+) -> LotteryAdvancedQueryParams:
+    """把 GET 查询参数解析为 ``LotteryAdvancedQueryParams``（预约/官方/充电/话题抽奖共用）。"""
+    return LotteryAdvancedQueryParams(
+        page_num=page_num,
+        page_size=page_size,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        sender_uid=sender_uid,
+        min_participants=min_participants,
+        max_participants=max_participants,
+        status=status,
+        is_grand_prize=is_grand_prize,
+        keyword=keyword,
+        sort_by=sort_by,
+        sort_order=sort_order,
+        created_at_preset=created_at_preset,
+        pub_time_preset=pub_time_preset,
+    )
+
+
 # region get方法
-@router.post(
+@router.get(
     RouterPaths.GET_RESERVE_LOTTERY,
     name=RouterNames.GET_RESERVE_LOTTERY,
     summary="获取必抽的预约抽奖数据",
     response_model=CommonResponseModel[ResponsePaginationItems[ReserveInfoResp]],
-    description="""获取必抽的预约抽奖数据，支持高级筛选。
+    description="""获取必抽的预约抽奖数据，支持高级筛选（GET 查询，参数走 query string，
+前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
 )
 @cache(expire=180)
 async def api_GetMustReserveLottery(
-    pagination: LotteryAdvancedQueryParams, background_task: BackgroundTasks
+    background_task: BackgroundTasks,
+    pagination: LotteryAdvancedQueryParams = Depends(_advanced_query),
 ):
     result_items, total = await get_reserve_lottery(
         q=BiliLotDataQueryModel(
@@ -140,18 +228,19 @@ async def api_GetMustReserveLottery(
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_OFFICIAL_LOTTERY,
     name=RouterNames.GET_OFFICIAL_LOTTERY,
     summary="获取必抽的官方抽奖数据",
     response_model=CommonResponseModel[ResponsePaginationItems[OfficialLotteryResp]],
-    description="""获取必抽的官方抽奖数据，支持高级筛选。
+    description="""获取必抽的官方抽奖数据，支持高级筛选（GET 查询，参数走 query string，
+前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
 )
 @cache(expire=180)
 async def api_GetMustOfficialLottery(
-    pagination: LotteryAdvancedQueryParams,
+    pagination: LotteryAdvancedQueryParams = Depends(_advanced_query),
 ):
     result_items, total = await get_official_lottery(
         q=BiliLotDataQueryModel(
@@ -179,18 +268,19 @@ async def api_GetMustOfficialLottery(
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_CHARGE_LOTTERY,
     name=RouterNames.GET_CHARGE_LOTTERY,
     summary="获取必抽的充电抽奖数据",
     response_model=CommonResponseModel[ResponsePaginationItems[ChargeLotteryResp]],
-    description="""获取必抽的充电抽奖数据，支持高级筛选。
+    description="""获取必抽的充电抽奖数据，支持高级筛选（GET 查询，参数走 query string，
+前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
 否则返回分页了的全部数据""",
 )
 @cache(expire=180)
 async def api_GetChargeLottery(
-    pagination: LotteryAdvancedQueryParams,
+    pagination: LotteryAdvancedQueryParams = Depends(_advanced_query),
 ):
     result_items, total = await get_charge_lottery(
         q=BiliLotDataQueryModel(
@@ -216,16 +306,17 @@ async def api_GetChargeLottery(
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_LIVE_LOTTERY,
     name=RouterNames.GET_LIVE_LOTTERY,
     summary="获取所有直播抽奖数据（分页）",
     response_model=CommonResponseModel[ResponsePaginationItems[LiveLotteryResp]],
     response_model_exclude_none=True,
+    description="GET 查询，参数走 query string，前端每次请求附带 t 时间戳防浏览器缓存",
 )
 @cache(expire=180)
 async def api_GetLiveLottery(
-    pagination: LotteryPaginationParams,
+    pagination: LotteryPaginationParams = Depends(_pagination_query),
 ):
     result_items, total = await get_live_lottery(
         pagination.page_num, pagination.page_size
@@ -235,16 +326,17 @@ async def api_GetLiveLottery(
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_TOPIC_LOTTERY,
     name=RouterNames.GET_TOPIC_LOTTERY,
     summary="获取所有话题抽奖数据（分页+筛选）",
     response_model=CommonResponseModel[ResponsePaginationItems[TopicLotteryResp]],
     response_model_exclude_none=True,
+    description="GET 查询，参数走 query string，前端每次请求附带 t 时间戳防浏览器缓存",
 )
 @cache(expire=180)
 async def api_GetTopicLottery(
-    pagination: LotteryAdvancedQueryParams,
+    pagination: LotteryAdvancedQueryParams = Depends(_advanced_query),
 ):
     result_items, total = await get_topic_lottery(
         pagination.page_num,
@@ -256,14 +348,15 @@ async def api_GetTopicLottery(
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_ALL_LOTTERY,
     name=RouterNames.GET_ALL_LOTTERY,
     summary="获取所有抽奖信息（按收录时间和发布时间过滤，支持分页）",
     response_model=CommonResponseModel[AllLotteryResp],
     description="""
 获取svm判断过的必抽的预约抽奖数据和官方抽奖数据，按收录时间(created_at)和发布时间(pubTime)过滤普通抽奖
-普通抽奖列表支持分页：page_num 从 0 开始，page_size 默认 1000（最大 1000），page_size=0 时返回全部
+普通抽奖列表支持分页：page_num 从 0 开始，page_size 默认 1000（最大 1000），page_size=0 时返回全部。
+GET 查询，前端每次请求附带 t 时间戳防浏览器缓存。
         """,
 )
 async def api_GetAllLottery(
@@ -298,6 +391,7 @@ async def api_GetAllLottery(
         le=1000,
         description="每页数量，最大 1000，默认 1000，最小值为 1",
     ),
+    t: NoCacheTs = None,
 ):
     result: AllLotteryResp = await get_all_lottery(
         created_at_preset=created_at_preset,
@@ -462,15 +556,16 @@ async def api_Search(
     return CommonResponseModel(data=ResponsePaginationItems(items=result, total=total))
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_SINGLE_SCRAPY_STATUS,
     name=RouterNames.GET_SINGLE_SCRAPY_STATUS,
-    description="根据爬虫类型查询单个爬虫的状态",
+    description="根据爬虫类型查询单个爬虫的状态（GET，前端附带 t 时间戳防浏览器缓存）",
     response_model=CommonResponseModel[TypeScrapyStatus],
     response_model_exclude_none=True,
 )
 def get_single_scrapy_status(
     scrapy_name: ScrapyTypeEnum = Query(..., description="爬虫类型"),
+    t: NoCacheTs = None,
 ):
     """
     根据传入的爬虫类型查询对应的单个爬虫实时状态
@@ -502,15 +597,16 @@ def get_all_scrapy_status():
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_OTHERS_LOT_DYN_LIST,
     name=RouterNames.GET_OTHERS_LOT_DYN_LIST,
     summary="获取第三方抽奖动态列表（分页+排序+时间筛选）",
+    description="GET 查询，所有筛选/分页参数走 query string，前端每次请求附带 t 时间戳防浏览器缓存",
     response_model=CommonResponseModel[ResponsePaginationItems[OthersLotDynItem]],
 )
 @cache(expire=180)
 async def api_GetOthersLotDynList(
-    pagination: LotteryPaginationParams,
+    pagination: LotteryPaginationParams = Depends(_pagination_query),
     sort_by: OthersLotDynSortEnum = OthersLotDynSortEnum.created_at,
     sort_order: OthersLotDynSortOrderEnum = OthersLotDynSortOrderEnum.desc,
     is_lot: bool | None = None,
@@ -634,7 +730,7 @@ async def api_GetLotteryFilterParams():
     return CommonResponseModel(data=LotteryFilterParamsResp(endpoints=endpoints))
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_LOTTERY_DETAIL,
     name=RouterNames.GET_LOTTERY_DETAIL,
     summary="按 lottery_id 获取单个抽奖卡片详情",
@@ -643,21 +739,25 @@ async def api_GetLotteryFilterParams():
     description="""供前端抽奖卡片详情页（/app/lot-data/card-detail?id=）按规范互动资源 ID
 （dyndetail.lotdata.lottery_id）拉取完整卡片数据：lotdata 原始行 + t_lot_extra_info 附加信息，
 形态与 GetOfficialLottery 列表项的 raw + extra_info 对齐，前端可直接 normalizeLotteryData 渲染。
-注意：预约 sid（business_id）/ 天选 lot_id / 第三方 dynId 均不是本接口的合法入参。""",
+注意：预约 sid（business_id）/ 天选 lot_id / 第三方 dynId 均不是本接口的合法入参。
+GET 查询，lottery_id 走 query string，前端每次请求附带 t 时间戳防浏览器缓存。""",
 )
 @cache(expire=60)
-async def api_GetLotteryDetail(params: GetLotteryDetailReq):
+async def api_GetLotteryDetail(
+    lottery_id: int = Query(..., description="lotdata 主键 lottery_id（对外互动资源 ID）"),
+    t: NoCacheTs = None,
+):
     async with grpc_sql_helper.async_session() as session:
         row = (
             await session.execute(
-                select(Lotdata).where(Lotdata.lottery_id == params.lottery_id).limit(1)
+                select(Lotdata).where(Lotdata.lottery_id == lottery_id).limit(1)
             )
         ).scalar_one_or_none()
     if row is None:
         return CommonResponseModel(code=404, msg="抽奖不存在", data=None)
     # extra_info 单独批量查（与主表解耦），仅落库 is_grand_prize，
     # lottery_type 等与 GetOfficialLottery 同口径由 OfficialLotExtraInfoResp 计算
-    _ei = (await bos.get_extra_info_map([params.lottery_id])).get(params.lottery_id)
+    _ei = (await bos.get_extra_info_map([lottery_id])).get(lottery_id)
     return CommonResponseModel(
         data=LotteryDetailResp(
             raw=LotdataResp.model_validate(row),
@@ -673,7 +773,7 @@ async def api_GetLotteryDetail(params: GetLotteryDetailReq):
     )
 
 
-@router.post(
+@router.get(
     RouterPaths.GET_OTHERS_LOT_DYN_DETAIL,
     name=RouterNames.GET_OTHERS_LOT_DYN_DETAIL,
     summary="按 dynId 获取单个第三方抽奖动态详情",
@@ -681,11 +781,16 @@ async def api_GetLotteryDetail(params: GetLotteryDetailReq):
     response_model_exclude_none=True,
     description="""供前端第三方抽奖动态详情页按 dynId 拉取单条数据，形态与 GetOthersLotDynList
 列表项完全一致（含 t_lot_extra_info 附加信息），可直接 normalizeLotteryData 渲染。
-第三方抽奖动态没有 lottery_id，**不能**走 GetLotteryDetail（那按 lotdata 主键查）。""",
+第三方抽奖动态没有 lottery_id，**不能**走 GetLotteryDetail（那按 lotdata 主键查）。
+GET 查询，dyn_id 走 query string（19 位雪花 ID 请以字符串传），前端每次请求附带 t 时间戳防浏览器缓存。""",
 )
 @cache(expire=60)
-async def api_GetOthersLotDynDetail(params: GetOthersLotDynDetailReq):
-    row = await SqlHelper.get_dyn_info_by_dyn_id(params.dyn_id)
+async def api_GetOthersLotDynDetail(
+    params: _OthersLotDynDetailQuery = Depends(),
+):
+    # 普通 pydantic 依赖模型展开为 query；StrInt 已把字符串雪花 ID 归一为 int
+    dyn_id = params.dyn_id
+    row = await SqlHelper.get_dyn_info_by_dyn_id(dyn_id)
     if row is None:
         return CommonResponseModel(code=404, msg="第三方抽奖动态不存在", data=None)
     obj = OthersLotDynItem.model_validate(row)
