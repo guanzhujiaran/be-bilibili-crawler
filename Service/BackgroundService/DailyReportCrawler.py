@@ -75,13 +75,9 @@ class CrawlerStuckChecker:
                     _last_stuck_state[name] = True
                     await self._push_stuck_notification([name])
                 elif not is_stuck and was_stuck:
-                    # 之前卡住现在恢复了
+                    # 之前卡住现在恢复了：恢复正常属于正常状态，不推送通知，
+                    # 仅更新记录，保证下次再卡住时能再次告警
                     _last_stuck_state[name] = False
-                    await a_pushme(
-                        title=f"爬虫恢复通知",
-                        content=f"✅ 爬虫 **{name}** 已恢复正常运行\n\n恢复时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-                        push_type="markdown",
-                    )
 
             pushme_logger.debug(
                 f"爬虫卡住检测完成: 卡住={stuck_list}, 正常={normal_list}"

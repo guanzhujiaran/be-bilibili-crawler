@@ -3,6 +3,9 @@
 """
 
 import time
+import json
+import datetime
+import logging
 from typing import Annotated, List, Optional
 from Models.lottery_database.bili.LotteryDataModels import EndpointFilterMeta
 from fastapi import Query, Body, Request, Depends
@@ -47,6 +50,10 @@ from bili_common.models import (
 from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
     LotteryDetailResp,
+    LotteryDataSummaryResp,
+    LotterySummaryRow,
+    LotteryTrendPoint,
+    UpcomingLotteryItem,
 )
 from Models.base.str_int import StrInt
 from Models.v1.background_service.background_service_model import (
@@ -83,16 +90,58 @@ from ApiRoutes import RouterPaths, RouterNames
 from fastapi import BackgroundTasks
 from sqlalchemy import select
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
+from Models.lottery_database.redisModel.biliRedisModel import (
+    bili_live_lottery_redis,
+    BiliLiveLotteryRedis,
+)
+from Service.opus新版官方抽奖.活动抽奖.话题抽奖.SqlHelper import topic_sqlhelper
 
 from .base import new_router
 
 router = new_router()
 
+logger = logging.getLogger(__name__)
 
-def _parse_status(status: Optional[str]) -> BiliLotDataStatusEnum | None:
-    """将字符串状态转为 BiliLotDataStatusEnum，不传则返回 None（不过滤状态）"""
+# 管理端数据汇总（GetLotteryDataSummary）：趋势天数 / 即将开奖明细条数与时间窗口
+SUMMARY_TREND_DAYS = 14
+SUMMARY_UPCOMING_LIMIT = 20
+SUMMARY_UPCOMING_HOURS = 24
+
+# lotdata 主表按 business_type 分组的展示顺序、行标识与中文名
+_LOTDATA_TYPE_KEYS: List[tuple[int, str, str]] = [
+    (int(LotteryBusinessType.Official), "official", "官方抽奖"),
+    (int(LotteryBusinessType.Reserve), "reserve", "预约抽奖"),
+    (int(LotteryBusinessType.Charge), "charge", "充电抽奖"),
+]
+_BUSINESS_TYPE_NAME = {bt: name for bt, _, name in _LOTDATA_TYPE_KEYS}
+_BUSINESS_TYPE_KEY = {bt: key for bt, key, _ in _LOTDATA_TYPE_KEYS}
+# 趋势图展示的数据源（话题/直播没有收录时间，无法按天统计新增）
+_SUMMARY_TREND_KEYS = ("official", "reserve", "charge", "others_dyn")
+
+
+def _day_keys(range_start: datetime.datetime, days: int) -> list[str]:
+    """生成从 range_start 起连续 days 天的日期字符串（YYYY-MM-DD）。"""
+    return [
+        (range_start + datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+        for i in range(days)
+    ]
+
+
+def _safe_int(value, default: int = 0) -> int:
+    """把聚合结果（可能为 None / Decimal）归一为 int。"""
+    if value is None:
+        return default
+    return int(value)
+
+
+def _parse_status(status: Optional[str]) -> BiliLotDataStatusEnum:
+    """将字符串状态转为 BiliLotDataStatusEnum；不传时默认按「未开奖」过滤
+
+    抽奖查询接口默认只返回仍可参与（未开奖且 lottery_time 未过期）的记录，
+    避免把已开奖/已取消/已删除的数据返回给调用方（前端、RPA 等）。
+    """
     if not status:
-        return None
+        return BiliLotDataStatusEnum.UNFINISHED
     status_map = {
         "unfinished": BiliLotDataStatusEnum.UNFINISHED,
         "finished": BiliLotDataStatusEnum.FINISHED,
@@ -100,7 +149,7 @@ def _parse_status(status: Optional[str]) -> BiliLotDataStatusEnum | None:
         "deleted": BiliLotDataStatusEnum.DELETED,
         "unknown": BiliLotDataStatusEnum.UNKNOWN,
     }
-    return status_map.get(status.lower())
+    return status_map.get(status.lower(), BiliLotDataStatusEnum.UNFINISHED)
 
 
 # 防浏览器/CDN 缓存的时间戳查询参数：抽奖查询接口统一改为 GET，前端每次请求附带
@@ -152,7 +201,8 @@ def _advanced_query(
     min_participants: Optional[int] = Query(default=None, ge=0, description="最小参与人数"),
     max_participants: Optional[int] = Query(default=None, ge=0, description="最大参与人数"),
     status: Optional[str] = Query(
-        default=None, description="抽奖状态: unfinished/finished/canceled/deleted/unknown"
+        default=None,
+        description="抽奖状态: unfinished/finished/canceled/deleted/unknown；不传默认 unfinished（仅返回未开奖且未超时）",
     ),
     is_grand_prize: Optional[bool] = Query(
         default=None, description="是否大奖: true/false，不传不过滤"
@@ -196,7 +246,7 @@ def _advanced_query(
     description="""获取必抽的预约抽奖数据，支持高级筛选（GET 查询，参数走 query string，
 前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
-否则返回分页了的全部数据""",
+否则返回分页数据（未传 status 时默认只返回未开奖且未超时的有效记录）""",
 )
 @cache(expire=180)
 async def api_GetMustReserveLottery(
@@ -236,7 +286,7 @@ async def api_GetMustReserveLottery(
     description="""获取必抽的官方抽奖数据，支持高级筛选（GET 查询，参数走 query string，
 前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
-否则返回分页了的全部数据""",
+否则返回分页数据（未传 status 时默认只返回未开奖且未超时的有效记录）""",
 )
 @cache(expire=180)
 async def api_GetMustOfficialLottery(
@@ -276,7 +326,7 @@ async def api_GetMustOfficialLottery(
     description="""获取必抽的充电抽奖数据，支持高级筛选（GET 查询，参数走 query string，
 前端每次请求附带 t 时间戳防浏览器缓存）。
 当 page_num 和 page_size 任一为 0 时，返回 svm 判断过的必抽的数据
-否则返回分页了的全部数据""",
+否则返回分页数据（未传 status 时默认只返回未开奖且未超时的有效记录）""",
 )
 @cache(expire=180)
 async def api_GetChargeLottery(
@@ -345,6 +395,208 @@ async def api_GetTopicLottery(
     )
     return CommonResponseModel(
         data=ResponsePaginationItems[TopicLotteryResp](items=result_items, total=total)
+    )
+
+
+@router.get(
+    RouterPaths.GET_LOTTERY_DATA_SUMMARY,
+    name=RouterNames.GET_LOTTERY_DATA_SUMMARY,
+    summary="获取管理端抽奖数据汇总",
+    response_model=CommonResponseModel[LotteryDataSummaryResp],
+    description="""按抽奖类型汇总 bili-crawler 的抽奖数据（管理端使用）：
+未开奖数（还没到开奖时间）、昨日/本周/本月新增、累计总量、24 小时内即将开奖、
+待抓开奖结果积压、大奖数量、参与人数分布、近 14 天新增趋势与即将开奖明细，
+并额外汇总话题抽奖 / 直播抽奖 / 第三方动态抽奖等独立数据源。
+GET 查询，前端每次请求附带 t 时间戳防浏览器缓存（后端不使用该值）。""",
+)
+async def api_GetLotteryDataSummary(t: NoCacheTs = None):
+    # 时间边界按服务端本地时区计算，与库内 created_at（TIMESTAMP）直接比较
+    now_dt = datetime.datetime.now()
+    today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0)
+    yesterday_start = today_start - datetime.timedelta(days=1)
+    prev_day_start = today_start - datetime.timedelta(days=2)
+    week_start = today_start - datetime.timedelta(days=today_start.weekday())
+    month_start = today_start.replace(day=1)
+    trend_start = today_start - datetime.timedelta(days=SUMMARY_TREND_DAYS - 1)
+    now_ts = int(time.time())
+
+    rows: List[LotterySummaryRow] = []
+    trend_counts: dict[str, dict[str, int]] = {}
+    upcoming: List[UpcomingLotteryItem] = []
+    latest_created_at: datetime.datetime | None = None
+
+    # ---- 1) lotdata 主表：官方 / 预约 / 充电 ----
+    lot_ok = grand_ok = False
+    stats_by_bt: dict[int, dict] = {}
+    grand_by_bt: dict[int, int] = {}
+    try:
+        stats = await grpc_sql_helper.get_lottery_summary_stats(
+            yesterday_start=yesterday_start,
+            prev_day_start=prev_day_start,
+            today_start=today_start,
+            week_start=week_start,
+            month_start=month_start,
+            now_ts=now_ts,
+        )
+        stats_by_bt = {_safe_int(r.get("business_type"), -1): r for r in stats}
+        lot_ok = True
+    except Exception:
+        logger.warning("获取 lotdata 汇总统计失败", exc_info=True)
+    try:
+        grand_by_bt = await grpc_sql_helper.get_lottery_grand_prize_stats()
+        grand_ok = True
+    except Exception:
+        logger.warning("获取 lotdata 大奖统计失败", exc_info=True)
+
+    for business_type, key, type_name in _LOTDATA_TYPE_KEYS:
+        stat = stats_by_bt.get(business_type) or {}
+        rows.append(
+            LotterySummaryRow(
+                key=key,
+                type_name=type_name,
+                source="lotdata",
+                total=_safe_int(stat.get("total")) if lot_ok else 0,
+                not_drawn=_safe_int(stat.get("not_drawn")) if lot_ok else None,
+                drawing_soon_24h=_safe_int(stat.get("drawing_soon_24h"))
+                if lot_ok
+                else None,
+                pending_result=_safe_int(stat.get("pending_result"))
+                if lot_ok
+                else None,
+                grand_prize=grand_by_bt.get(business_type, 0) if grand_ok else None,
+                new_yesterday=_safe_int(stat.get("new_yesterday")) if lot_ok else None,
+                new_prev_day=_safe_int(stat.get("new_prev_day")) if lot_ok else None,
+                new_this_week=_safe_int(stat.get("new_this_week")) if lot_ok else None,
+                new_this_month=_safe_int(stat.get("new_this_month"))
+                if lot_ok
+                else None,
+                participants_avg=_safe_int(stat.get("participants_avg"))
+                if stat.get("participants_avg") is not None
+                else None,
+                participants_max=_safe_int(stat.get("participants_max"))
+                if stat.get("participants_max") is not None
+                else None,
+                participants_total=_safe_int(stat.get("participants_total"))
+                if lot_ok
+                else None,
+            )
+        )
+
+    # 数据新鲜度、近 N 天新增趋势、即将开奖明细
+    try:
+        latest_created_at = await grpc_sql_helper.get_lottery_latest_created_at()
+    except Exception:
+        logger.warning("获取 lotdata 最新收录时间失败", exc_info=True)
+    try:
+        for day, business_type, cnt in await grpc_sql_helper.get_lottery_daily_new_trend(
+            trend_start
+        ):
+            key = _BUSINESS_TYPE_KEY.get(int(business_type))
+            if key:
+                trend_counts.setdefault(str(day), {})[key] = int(cnt)
+    except Exception:
+        logger.warning("获取 lotdata 新增趋势失败", exc_info=True)
+    try:
+        upcoming = [
+            UpcomingLotteryItem(
+                lottery_id=int(r["lottery_id"]),
+                business_id=int(r["business_id"])
+                if r.get("business_id") is not None
+                else None,
+                business_type=int(r["business_type"]),
+                key=_BUSINESS_TYPE_KEY.get(int(r["business_type"]), ""),
+                type_name=_BUSINESS_TYPE_NAME.get(int(r["business_type"]), "未知类型"),
+                lottery_time=int(r.get("lottery_time") or 0),
+                participants=int(r["participants"])
+                if r.get("participants") is not None
+                else None,
+                sender_uid=int(r["sender_uid"])
+                if r.get("sender_uid") is not None
+                else None,
+            )
+            for r in await grpc_sql_helper.get_upcoming_lottery(
+                now_ts, SUMMARY_UPCOMING_LIMIT, SUMMARY_UPCOMING_HOURS
+            )
+        ]
+    except Exception:
+        logger.warning("获取即将开奖明细失败", exc_info=True)
+
+    # ---- 2) 第三方抽奖动态（t_lotdyninfo）：仅按收录时间统计新增 ----
+    others_row = LotterySummaryRow(
+        key="others_dyn", type_name="第三方动态抽奖", source="t_lotdyninfo"
+    )
+    try:
+        others = await SqlHelper.get_others_lot_summary(
+            yesterday_start=yesterday_start,
+            prev_day_start=prev_day_start,
+            today_start=today_start,
+            week_start=week_start,
+            month_start=month_start,
+        )
+        others_row.total = _safe_int(others.get("total"))
+        others_row.new_yesterday = _safe_int(others.get("new_yesterday"))
+        others_row.new_prev_day = _safe_int(others.get("new_prev_day"))
+        others_row.new_this_week = _safe_int(others.get("new_this_week"))
+        others_row.new_this_month = _safe_int(others.get("new_this_month"))
+        for day, cnt in await SqlHelper.get_others_lot_daily_new_trend(trend_start):
+            trend_counts.setdefault(str(day), {})["others_dyn"] = int(cnt)
+    except Exception:
+        logger.warning("获取第三方抽奖动态汇总失败", exc_info=True)
+    rows.append(others_row)
+
+    # ---- 3) 话题抽奖（t_traffic_card）：无收录时间，仅统计总量与未截止数 ----
+    topic_row = LotterySummaryRow(
+        key="topic", type_name="话题抽奖", source="t_traffic_card"
+    )
+    try:
+        topic_stats = await topic_sqlhelper.get_traffic_card_summary()
+        topic_row.total = _safe_int(topic_stats.get("total"))
+        topic_row.not_drawn = _safe_int(topic_stats.get("not_drawn"))
+    except Exception:
+        logger.warning("获取话题抽奖汇总失败", exc_info=True)
+    rows.append(topic_row)
+
+    # ---- 4) 直播抽奖（Redis all_live_lot）：仅统计总量与未结束数 ----
+    live_row = LotterySummaryRow(
+        key="live", type_name="直播抽奖", source="Redis all_live_lot"
+    )
+    try:
+        raw = await bili_live_lottery_redis._get(
+            BiliLiveLotteryRedis.RedisMap.all_live_lot.value
+        )
+        live_items = json.loads(raw) if raw else []
+        live_row.total = len(live_items)
+        end_times = [int(x.get("end_time") or 0) for x in live_items]
+        live_row.not_drawn = sum(1 for ts in end_times if ts > now_ts)
+        live_row.drawing_soon_24h = sum(
+            1 for ts in end_times if now_ts < ts <= now_ts + 86400
+        )
+    except Exception:
+        logger.warning("获取直播抽奖汇总失败", exc_info=True)
+    rows.append(live_row)
+
+    # ---- 5) 近 N 天新增趋势（缺失的天/数据源补 0，保证折线连续） ----
+    trend = [
+        LotteryTrendPoint(
+            date=day,
+            counts={
+                key: trend_counts.get(day, {}).get(key, 0)
+                for key in _SUMMARY_TREND_KEYS
+            },
+        )
+        for day in _day_keys(trend_start, SUMMARY_TREND_DAYS)
+    ]
+
+    return CommonResponseModel(
+        data=LotteryDataSummaryResp(
+            generated_at=now_ts,
+            latest_created_at=int(latest_created_at.timestamp())
+            if latest_created_at
+            else None,
+            rows=rows,
+            trend=trend,
+            upcoming=upcoming,
+        )
     )
 
 

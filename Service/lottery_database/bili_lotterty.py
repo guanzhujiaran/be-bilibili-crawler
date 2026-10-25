@@ -109,6 +109,32 @@ async def update_lot_data(business_id: int, business_type: LotteryBusinessType):
     bos.log.info(f"update lot_data:{lot_notice}")
 
 
+# 预约「不可参与」的状态值：state 命中这些值表示已取消/已失效/已开奖等
+# 与 sequel 侧 get_all_available_reserve_lotterys 的判定保持一致
+_RESERVE_INVALID_STATES = frozenset({-100, -300, -110, 150})
+
+
+def _reserve_available(
+    reserve_info: TUpReserveRelationInfo | None, now_ts: int
+) -> bool:
+    """按 t_up_reserve_relation_info 的 state/etime/code 计算预约是否仍可参与
+
+    之前该字段恒为 True，会把已开奖/已取消/已删除的预约也当成有效返回。
+    只有本地预约关系记录存在、B 站返回 code=0、etime 未过期且 state 未命中失效状态，
+    才算真实有效；缺少记录时按不可用处理，避免返回假数据。
+    """
+    if reserve_info is None:
+        return False
+    if reserve_info.code != 0 or reserve_info.sid is None:
+        return False
+    if reserve_info.etime is None or reserve_info.etime < now_ts:
+        return False
+    return (
+        reserve_info.state is not None
+        and reserve_info.state not in _RESERVE_INVALID_STATES
+    )
+
+
 async def get_reserve_lottery(
     q: BiliLotDataQueryModel, background_task: BackgroundTasks | None = None
 ) -> tuple[list[ReserveInfoResp], int]:
@@ -138,13 +164,15 @@ async def get_reserve_lottery(
                     business_id=x.ids,
                     business_type=q.business_type,
                 )
+    now_ts = int(time.time())
     for i, t in zip(all_lots, reserve_info_text_list):
-        dynamic_id = None
-        total = None
+        matched: TUpReserveRelationInfo | None = None
         for x, _ in reserve_info_list:
             if x.ids == i.business_id:
-                dynamic_id = int(x.dynamicId) if x.dynamicId else None
-                total = x.total or None
+                matched = x
+                break
+        dynamic_id = int(matched.dynamicId) if matched and matched.dynamicId else None
+        total = (matched.total or None) if matched else None
         reserve_info = ReserveInfoResp(
             app_sche=f"bilibili://space/{str(i.sender_uid)}",
             reserve_url=f"https://space.bilibili.com/{str(i.sender_uid)}/dynamic",
@@ -155,7 +183,7 @@ async def get_reserve_lottery(
             jump_url=i.lottery_detail_url,
             reserve_sid=i.business_id,
             lottery_id=i.lottery_id,
-            available=True,
+            available=_reserve_available(matched, now_ts),
             raw=None,
             extra_info=(
                 OfficialLotExtraInfoResp(

@@ -12,6 +12,7 @@ from sqlalchemy import (
     and_,
     exists,
     func,
+    case,
     String,
     text,
     or_,
@@ -458,12 +459,16 @@ class SQLHelper(SqlHelperBase):
         base_conditions = [
             Lotdata.business_type == q.business_type.value,
         ]
-        # 状态筛选
-        if q.status is not None:
-            base_conditions.append(Lotdata.status == q.status.value)
+        # 状态筛选：未显式指定时默认按「未开奖」过滤，只返回仍可参与
+        # （status=未开奖 且 lottery_time 未过期）的记录，避免把已开奖/已取消/已删除的
+        # 数据返回给 RPA、前端等调用方
+        effective_status = (
+            q.status if q.status is not None else BiliLotDataStatusEnum.UNFINISHED
+        )
+        base_conditions.append(Lotdata.status == effective_status.value)
 
-            if q.status is BiliLotDataStatusEnum.UNFINISHED:
-                base_conditions.append(Lotdata.lottery_time >= now_ts)
+        if effective_status is BiliLotDataStatusEnum.UNFINISHED:
+            base_conditions.append(Lotdata.lottery_time >= now_ts)
 
         # 时间范围筛选
         if q.start_ts is not None:
@@ -567,6 +572,9 @@ class SQLHelper(SqlHelperBase):
                 sort_by=q.sort_by,
                 sort_order=q.sort_order,
                 is_grand_prize=q.is_grand_prize,
+                keyword=q.keyword,
+                created_at_preset=q.created_at_preset,
+                pub_time_preset=q.pub_time_preset,
             )
         )
 
@@ -593,6 +601,9 @@ class SQLHelper(SqlHelperBase):
                 sort_by=q.sort_by,
                 sort_order=q.sort_order,
                 is_grand_prize=q.is_grand_prize,
+                keyword=q.keyword,
+                created_at_preset=q.created_at_preset,
+                pub_time_preset=q.pub_time_preset,
             )
         )
 
@@ -797,6 +808,168 @@ class SQLHelper(SqlHelperBase):
             res = await session.execute(stmt)
             rows = res.scalars().all()
             return {row.lottery_id: row for row in rows}
+
+    # region 管理端抽奖数据汇总（GetLotteryDataSummary）
+    @log_sql_retry_wrapper()
+    async def get_lottery_summary_stats(
+        self,
+        *,
+        yesterday_start: datetime.datetime,
+        prev_day_start: datetime.datetime,
+        today_start: datetime.datetime,
+        week_start: datetime.datetime,
+        month_start: datetime.datetime,
+        now_ts: int,
+    ) -> list[dict]:
+        """按 business_type 汇总 lotdata 的核心统计（单次 GROUP BY，走 idx_bt_created_at 复合索引）。
+
+        - ``status == 0`` 即 BiliLotDataStatusEnum.UNFINISHED（未开奖）。
+        - 昨日 / 本周 / 本月边界按服务端本地时区计算，直接与库内 created_at（TIMESTAMP）比较。
+        """
+        unfinished = Lotdata.status == 0
+        stmt = (
+            select(
+                Lotdata.business_type.label("business_type"),
+                func.count().label("total"),
+                func.sum(
+                    case(
+                        (and_(unfinished, Lotdata.lottery_time > now_ts), 1),
+                        else_=0,
+                    )
+                ).label("not_drawn"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                unfinished,
+                                Lotdata.lottery_time > now_ts,
+                                Lotdata.lottery_time <= now_ts + 86400,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("drawing_soon_24h"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                unfinished,
+                                Lotdata.lottery_time <= now_ts,
+                                Lotdata.lottery_result.is_(None),
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("pending_result"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Lotdata.created_at >= prev_day_start,
+                                Lotdata.created_at < yesterday_start,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("new_prev_day"),
+                func.sum(
+                    case(
+                        (
+                            and_(
+                                Lotdata.created_at >= yesterday_start,
+                                Lotdata.created_at < today_start,
+                            ),
+                            1,
+                        ),
+                        else_=0,
+                    )
+                ).label("new_yesterday"),
+                func.sum(
+                    case((Lotdata.created_at >= week_start, 1), else_=0)
+                ).label("new_this_week"),
+                func.sum(
+                    case((Lotdata.created_at >= month_start, 1), else_=0)
+                ).label("new_this_month"),
+                func.sum(func.coalesce(Lotdata.participants, 0)).label(
+                    "participants_total"
+                ),
+                func.max(Lotdata.participants).label("participants_max"),
+                func.avg(Lotdata.participants).label("participants_avg"),
+            )
+            .group_by(Lotdata.business_type)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [dict(row) for row in res.mappings().all()]
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_grand_prize_stats(self) -> dict[int, int]:
+        """按 business_type 统计大奖数量（JOIN t_lot_extra_info 且 is_grand_prize=1）。"""
+        stmt = (
+            select(Lotdata.business_type, func.count())
+            .join(LotExtraInfo, LotExtraInfo.lottery_id == Lotdata.lottery_id)
+            .where(LotExtraInfo.is_grand_prize == 1)
+            .group_by(Lotdata.business_type)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return {int(row[0]): int(row[1]) for row in res.all()}
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_latest_created_at(self) -> datetime.datetime | None:
+        """全表最新的收录时间，用于判断爬虫是否还在写入数据。"""
+        async with self.async_session() as session:
+            res = await session.execute(select(func.max(Lotdata.created_at)))
+            return res.scalar()
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_daily_new_trend(
+        self, start_dt: datetime.datetime
+    ) -> list[tuple[str, int, int]]:
+        """近 N 天每日新增趋势：返回 (日期字符串 YYYY-MM-DD, business_type, 数量)。"""
+        day_expr = func.date_format(Lotdata.created_at, "%Y-%m-%d")
+        stmt = (
+            select(day_expr.label("d"), Lotdata.business_type, func.count())
+            .where(Lotdata.created_at >= start_dt)
+            .group_by(day_expr, Lotdata.business_type)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [(str(row[0]), int(row[1]), int(row[2])) for row in res.all()]
+
+    @log_sql_retry_wrapper()
+    async def get_upcoming_lottery(
+        self, now_ts: int, limit: int = 20, within_hours: int = 24
+    ) -> list[dict]:
+        """按开奖时间升序取「还没到开奖时间且 within_hours 小时内即将开奖」的抽奖明细。"""
+        deadline_ts = now_ts + within_hours * 3600
+        stmt = (
+            select(
+                Lotdata.lottery_id,
+                Lotdata.business_id,
+                Lotdata.business_type,
+                Lotdata.lottery_time,
+                Lotdata.participants,
+                Lotdata.sender_uid,
+            )
+            .where(
+                and_(
+                    Lotdata.status == 0,
+                    Lotdata.lottery_time > now_ts,
+                    Lotdata.lottery_time <= deadline_ts,
+                )
+            )
+            .order_by(Lotdata.lottery_time.asc())
+            .limit(limit)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [dict(row) for row in res.mappings().all()]
+
+    # endregion
 
     # endregion
     @log_sql_retry_wrapper()

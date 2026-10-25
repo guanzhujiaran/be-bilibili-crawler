@@ -99,10 +99,14 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 
 
-def _parse_status(status: str | None) -> BiliLotDataStatusEnum | None:
-    """将字符串状态转为 BiliLotDataStatusEnum，不传则返回 None（不过滤状态）"""
+def _parse_status(status: str | None) -> BiliLotDataStatusEnum:
+    """将字符串状态转为 BiliLotDataStatusEnum；不传时默认按「未开奖」过滤
+
+    抽奖查询接口默认只返回仍可参与（未开奖且 lottery_time 未过期）的记录，
+    避免把已开奖/已取消/已删除的数据返回给调用方（RPA、前端等）。
+    """
     if not status:
-        return None
+        return BiliLotDataStatusEnum.UNFINISHED
     status_map = {
         "unfinished": BiliLotDataStatusEnum.UNFINISHED,
         "finished": BiliLotDataStatusEnum.FINISHED,
@@ -110,7 +114,7 @@ def _parse_status(status: str | None) -> BiliLotDataStatusEnum | None:
         "deleted": BiliLotDataStatusEnum.DELETED,
         "unknown": BiliLotDataStatusEnum.UNKNOWN,
     }
-    return status_map.get(status.lower())
+    return status_map.get(status.lower(), BiliLotDataStatusEnum.UNFINISHED)
 
 
 @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)

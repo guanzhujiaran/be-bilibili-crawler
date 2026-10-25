@@ -16,7 +16,13 @@ class PrizeExtractResult(BaseModel):
     lottery_time: str | None = Field(
         default=None, description="开奖时间，格式YYYY-MM-DD，没有则为None"
     )
-    is_lot: bool = Field(default=False, description="是否是抽奖动态")
+    is_lot: bool = Field(
+        default=False,
+        description=(
+            "是否是「正在征集参与、尚未开奖」的抽奖活动动态。"
+            "开奖公示/中奖通知/中奖名单/活动已结束/晒奖品等开奖类动态一律为 false"
+        ),
+    )
     need_repost: bool = Field(default=False, description="是否需要转发")
     required_topic_text: str = Field(
         default="",

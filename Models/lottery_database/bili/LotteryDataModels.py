@@ -856,5 +856,63 @@ def pydantic_model_to_filter_params(
 # endregion
 
 
+# region 管理端抽奖数据汇总（GetLotteryDataSummary）
+class LotterySummaryRow(BaseModel):
+    """管理端数据汇总的单个统计行（一个数据源 / 一种抽奖类型）。
+
+    字段为 ``None`` 表示该数据源不具备该统计所需的字段（例如话题抽奖活动表没有收录时间，
+    无法计算「昨日/本周/本月新增」），前端以「—」展示。
+    """
+
+    key: str  # 行标识：official/reserve/charge/topic/live/others_dyn
+    type_name: str  # 中文名（官方抽奖/预约抽奖/充电抽奖/话题抽奖/直播抽奖/第三方动态抽奖）
+    source: str  # 数据源说明，便于管理端识别口径
+    total: int = 0  # 累计总量
+    not_drawn: int | None = None  # 还没到开奖时间的数量（lottery_time > now 且未开奖）
+    drawing_soon_24h: int | None = None  # 24 小时内即将开奖的数量
+    pending_result: int | None = None  # 已过开奖时间但仍未抓到开奖结果的积压数
+    grand_prize: int | None = None  # 大奖数量
+    new_yesterday: int | None = None  # 昨日新增（按收录时间 created_at）
+    new_prev_day: int | None = None  # 前日新增（用于环比对比）
+    new_this_week: int | None = None  # 本周新增
+    new_this_month: int | None = None  # 本月新增
+    participants_avg: int | None = None  # 平均参与人数
+    participants_max: int | None = None  # 单场最大参与人数
+    participants_total: int | None = None  # 参与人数合计
+
+
+class LotteryTrendPoint(BaseModel):
+    """近 N 天每日新增趋势点；counts 的 key 与 LotterySummaryRow.key 对应。"""
+
+    date: str  # YYYY-MM-DD
+    counts: dict[str, int] = Field(default_factory=dict)
+
+
+class UpcomingLotteryItem(BaseModel):
+    """即将开奖的明细（按 lottery_time 升序取最近若干条，仅限 24 小时内）。"""
+
+    lottery_id: int
+    business_id: int | None = None
+    business_type: int
+    key: str = ""  # 抽奖类型标识：official/reserve/charge，便于前端按类型筛选
+    type_name: str
+    lottery_time: int
+    participants: int | None = None
+    sender_uid: int | None = None
+
+
+class LotteryDataSummaryResp(BaseModel):
+    """管理端 bili-crawler 数据汇总响应。"""
+
+    generated_at: int  # 生成时间（Unix 秒）
+    latest_created_at: int | None = None  # 全表最新收录时间（判断爬虫是否在跑）
+    rows: list[LotterySummaryRow] = Field(default_factory=list)
+    trend: list[LotteryTrendPoint] = Field(default_factory=list)
+    upcoming: list[UpcomingLotteryItem] = Field(default_factory=list)
+
+
+# endregion
+
+
 if __name__ == "__main__":
     print(BiliLotStatisticLotTypeEnum.charge.business_type)

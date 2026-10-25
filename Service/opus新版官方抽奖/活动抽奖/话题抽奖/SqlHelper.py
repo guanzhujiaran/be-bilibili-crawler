@@ -3,7 +3,7 @@ import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from CONFIG import CONFIG
 from sqlalchemy.sql.expression import text
-from sqlalchemy import select, update, func, and_, cast, DateTime
+from sqlalchemy import select, update, func, and_, cast, DateTime, case
 from sqlalchemy.orm import joinedload
 
 from Utils.通用.Common import log_sql_retry_wrapper
@@ -256,6 +256,29 @@ class SqlHelper(SqlHelperBase):
             result = await session.execute(sql)
             data = result.scalars().all()
         return data
+
+    @log_sql_retry_wrapper(log=log)
+    async def get_traffic_card_summary(self) -> dict:
+        """话题抽奖活动（t_traffic_card）整体统计。
+
+        该表没有收录时间列（只有卡片描述里的截止时间），无法统计昨日/本周/本月新增，
+        因此仅统计总量与「未截止（仍在进行、尚未开奖）」的数量。
+        """
+        deadline_expr = cast(
+            func.date_format(
+                TTrafficCard.card_desc, text("'%Y-%m-%d %H:%i:00截止'")
+            ),
+            DateTime,
+        )
+        stmt = select(
+            func.count().label("total"),
+            func.sum(case((deadline_expr > func.now(), 1), else_=0)).label(
+                "not_drawn"
+            ),
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return dict(res.mappings().first() or {})
 
     @log_sql_retry_wrapper(log=log)
     async def update_traffic_card_status(self, stat: int, traffic_card_id: int):

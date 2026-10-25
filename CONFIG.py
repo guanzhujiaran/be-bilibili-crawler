@@ -156,6 +156,11 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     llm_apis: list[LLMApiConfig] = []
 
     sqlalchemy_logging: bool = False
+    # 动态数据归档（每日清理过期动态时导出的 csv.gz）落盘目录。
+    # 空值表示用代码根目录下的 scripts/database/dyn_backup（本地直跑时的默认）。
+    # 容器部署时由 docker-compose.yml 指向挂载出来的宿主机目录，
+    # 避免备份产物写进 bind mount 的源码树。
+    DYN_BACKUP_DIR: str = ""
     # FastStream（RabbitMQ 消费者 / 发布者）内部日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL，
     # 通过环境变量 FASTSTREAM_LOG_LEVEL 覆盖。仅影响 FastStream 框架自身的标准库日志，
     # 不影响本项目 loguru 业务日志（MQ_logger 等）。

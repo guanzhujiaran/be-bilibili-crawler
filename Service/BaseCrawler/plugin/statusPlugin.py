@@ -25,10 +25,15 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
 
     设置项（pydantic 字段，通过 PluginConfig.plugin_kwargs 传入）：
         push_result: 爬虫运行结束时是否推送统计结果摘要。
+            仅在本次运行存在最终失败任务（爬虫出问题）时才推送，正常运行不推送。
     """
 
     push_result: bool = Field(
-        default=False, description="爬虫运行结束(on_run_end)时是否推送统计结果摘要"
+        default=False,
+        description=(
+            "爬虫运行结束(on_run_end)时是否推送统计结果摘要；"
+            "仅在本次运行存在最终失败任务（爬虫出问题）时才推送，正常运行不推送"
+        ),
     )
 
     # 运行时统计状态必须声明为 PrivateAttr：
@@ -166,14 +171,15 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             f"  健康状态: {self.health_status}"
         )
         self.log.info(self.crawler.format_log(summary))
-        if self.push_result:
+        # 仅在爬虫出问题（本次运行存在最终失败任务）时才推送通知，正常运行不推送
+        if self.push_result and self._final_fail_count > 0:
             try:
                 # 延迟导入：PushMe -> CONFIG -> BaseCrawler.config 会反向依赖本模块，
                 # 顶层导入会造成循环导入，故在使用时再导入。
                 from Utils.推送.PushMe import a_pushme, server_label
 
                 await a_pushme(
-                    f"{server_label()} {self.crawler.crawler_name} 爬虫运行结束",
+                    f"{server_label()} {self.crawler.crawler_name} 爬虫运行结束(存在最终失败任务)",
                     summary,
                 )
             except Exception as e:

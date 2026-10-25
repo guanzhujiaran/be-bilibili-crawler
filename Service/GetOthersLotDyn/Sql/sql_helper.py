@@ -1204,6 +1204,73 @@ class __SqlHelper(SqlHelperBase):
             rows = res.all()
             return {row[0]: row[1] for row in rows if row[1]}
 
+    @log_sql_retry_wrapper()
+    async def get_others_lot_summary(
+        self,
+        *,
+        yesterday_start: datetime,
+        prev_day_start: datetime,
+        today_start: datetime,
+        week_start: datetime,
+        month_start: datetime,
+    ) -> dict:
+        """第三方抽奖动态（t_lotdyninfo）整体统计：总量 + 昨日/前日/本周/本月新增。
+
+        该表无「开奖时间」数值列（开奖时间只在 t_lot_extra_info 里以文本存放），
+        故不统计未开奖数，仅按 created_at 统计新增。
+        """
+        stmt = select(
+            func.count().label("total"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            TLotdyninfo.created_at >= prev_day_start,
+                            TLotdyninfo.created_at < yesterday_start,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("new_prev_day"),
+            func.sum(
+                case(
+                    (
+                        and_(
+                            TLotdyninfo.created_at >= yesterday_start,
+                            TLotdyninfo.created_at < today_start,
+                        ),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("new_yesterday"),
+            func.sum(
+                case((TLotdyninfo.created_at >= week_start, 1), else_=0)
+            ).label("new_this_week"),
+            func.sum(
+                case((TLotdyninfo.created_at >= month_start, 1), else_=0)
+            ).label("new_this_month"),
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return dict(res.mappings().first() or {})
+
+    @log_sql_retry_wrapper()
+    async def get_others_lot_daily_new_trend(
+        self, start_dt: datetime
+    ) -> list[tuple[str, int]]:
+        """第三方抽奖动态近 N 天每日新增：返回 (日期字符串 YYYY-MM-DD, 数量)。"""
+        day_expr = func.date_format(TLotdyninfo.created_at, "%Y-%m-%d")
+        stmt = (
+            select(day_expr.label("d"), func.count())
+            .where(TLotdyninfo.created_at >= start_dt)
+            .group_by(day_expr)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [(str(row[0]), int(row[1])) for row in res.all()]
+
     # endregion
 
 
