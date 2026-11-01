@@ -21,6 +21,11 @@ from Utils.推送.PushMe import a_push_error
 
 lock = asyncio.Lock()
 
+# 预约「不可参与」的状态值：state 命中这些值表示已取消 / 已失效 / 已开奖。
+# 必须与 Service/lottery_database/bili_lotterty.py 的 _RESERVE_INVALID_STATES 保持一致，
+# 两处分别决定「返回给前端的 available 字段」与「查询时的过滤口径」。
+_RESERVE_INVALID_STATES: tuple[int, ...] = (-100, -300, -110, 150)
+
 
 def lock_wrapper(func: Callable) -> Callable:
     async def wrapper(*args, **kwargs):
@@ -345,6 +350,30 @@ class _SqlHelper(SqlHelperBase):
             )
             result = await session.execute(sql)
             return result.scalars().all()
+
+    @lock_wrapper
+    async def get_available_reserve_ids(self) -> list[int]:
+        """获取仍可参与的预约 id 集合（id 即 lotdata 的 business_id）。
+
+        判定口径与 ``_reserve_available`` 一致：lotteryType=1 的预约、code=0、
+        sid 非空、state 非空且未命中失效/已开奖状态、etime 未过期。
+        预约关系表与 lotdata 不在同一个库，无法 join，因此只返回 id 供业务层
+        以 ``business_id IN (...)`` 下推到 lotdata 查询。
+        """
+        now_ts = int(time.time())
+        async with self.async_session() as session:
+            sql = select(TUpReserveRelationInfo.ids).filter(
+                and_(
+                    TUpReserveRelationInfo.lotteryType == 1,
+                    TUpReserveRelationInfo.code == 0,
+                    TUpReserveRelationInfo.sid.is_not(None),
+                    TUpReserveRelationInfo.state.is_not(None),
+                    TUpReserveRelationInfo.state.notin_(_RESERVE_INVALID_STATES),
+                    TUpReserveRelationInfo.etime >= now_ts,
+                )
+            )
+            result = await session.execute(sql)
+            return [int(x) for x in result.scalars().all()]
 
     @lock_wrapper
     async def get_all_available_reserve_lotterys_by_time(

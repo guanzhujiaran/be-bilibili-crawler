@@ -112,7 +112,33 @@ class LLMApiConfigPatch(BaseModel):
     requests_per_second: float | None = None
 
 
+class ServiceRole(StrEnumAutoDoc):
+    """同一份代码承担的服务角色（由环境变量 SERVICE_ROLE 指定）。
+
+    - ``crawler``：爬虫 + 查询 + 控制面 + MQ 消费 + RPC 服务端，默认值（不设变量时
+      完全等同改造前）。开发环境想「不自动爬」用 ``IS_DEV=1`` 关掉定时任务，**不要**换这个角色：
+      生产也是它，MQ 消费者与 ``FastapiApp.rpc.*`` 服务端只在这个角色里存在；
+    - ``query``：纯查询，只挂只读路由，且**不做** alembic 迁移 / 不启动调度器 /
+      不做 MQ 投递重试 / 不执行任何写库动作，可安全指向只读账号或生产只读副本；
+    - ``api``：历史遗留的「只提供接口、不爬取」角色。对外路由与 ``crawler`` 基本一致
+      （含 ``*ScrapyStatus`` 等控制面），但**不做** alembic 迁移 / 不启动调度器 /
+      **不消费 MQ（因此没有 RPC 服务端）** / 不初始化 Milvus。已不再被任何 compose 使用
+      （曾有 dev 容器 ``be-bilibili-crawler-api``，会让 ``FastapiApp.rpc.*`` 一直超时，已废弃），
+      保留仅为兼容旧启动方式。
+
+    三个角色共用同一份源码与镜像层：``crawler`` / ``api`` 走同一个入口 ``main.py``
+    （api 由环境变量在启动期分支），只有 ``query`` 用独立入口 ``query_main.py``；
+    镜像 target 见 Dockerfile.mono 的 ``crawler`` / ``crawler-query``。
+    """
+
+    CRAWLER = "crawler"
+    QUERY = "query"
+    API = "api"
+
+
 class Settings(PushNotifySettingsMixin, BaseSettings):
+    # 服务角色，见 ServiceRole。查询容器在 compose 里设 SERVICE_ROLE=query
+    SERVICE_ROLE: ServiceRole = ServiceRole.CRAWLER
     MYSQL_HOST: str
     MYSQL_PORT: str
     MYSQL_USER: str
@@ -137,7 +163,10 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     PROXY_SERVER: str
     MILVUS_HOST: str
     MILVUS_PORT: str
-    # message-service 健康检查地址
+    # be-message-service 地址：**已不再用于启动探活 / 运行时调用**（2.70.1）。
+    # crawler 与它只通过 RabbitMQ 弱耦合（推送走 message_exchange / message.push，
+    # message-service 不在线时消息留在队列里等它消费），所以这两个键保留仅为兼容
+    # 现有 .env / compose（删除会导致带这些键的环境变量校验失败），代码里请勿再使用。
     MESSAGE_SERVICE_HOST: str = "be-message-service"
     MESSAGE_SERVICE_PORT: str = "18739"
     SHOW_LOG: int = 0
@@ -190,6 +219,39 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     mq_consume_ack_timeout: float = 1800.0
     # 留给「释放锁 + nack + 日志」的收尾余量（秒），实际预算 = ack_timeout - ack_reserve
     mq_consume_ack_reserve: float = 60.0
+
+    @property
+    def is_query_only(self) -> bool:
+        """当前进程是否为「纯查询」角色（不做 DDL / 调度 / 写库）。
+
+        读写分离下它也决定 RPC 服务端的归属：query 角色只提供 READ 类 RPC
+        （`FastapiApp.rpc.*` 的只读取数），见 controller/v1/mq/rpc_server.py。
+        """
+        return self.SERVICE_ROLE is ServiceRole.QUERY
+
+    @property
+    def is_crawler(self) -> bool:
+        """当前进程是否为完整爬虫角色（可写库 / 消费 MQ / 提供 WRITE 类 RPC）。"""
+        return self.SERVICE_ROLE is ServiceRole.CRAWLER
+
+    @property
+    def allow_active_fetch(self) -> bool:
+        """读路径上是否允许「主动刷新 / 回写」（会真的访问 B 站等外部站点并写库）。
+
+        只有 ``crawler`` 角色为 True；``query`` 与 ``api`` 都是 False ——
+        api 角色虽然可以写库（``Add*`` 是显式写入），但**读接口不该顺带发起网络抓取**，
+        否则本地只想要一个「有接口」的爬虫，却会因为翻列表而对外发请求。
+        """
+        return self.is_crawler
+
+    @property
+    def is_api_only(self) -> bool:
+        """当前进程是否为「只提供接口、不爬取」角色（不做 DDL / 调度 / MQ / Milvus）。
+
+        注意：本角色**允许写库**（与 ``query`` 不同），否则 Add* 系列接口在本地开发时没有意义；
+        「不爬取」靠的是不启动调度器 / 不消费 MQ，而不是把写能力关掉。
+        """
+        return self.SERVICE_ROLE is ServiceRole.API
 
     model_config = SettingsConfigDict(
         env_file=(

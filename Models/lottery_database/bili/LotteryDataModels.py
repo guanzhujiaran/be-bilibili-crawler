@@ -245,6 +245,24 @@ class GetLotteryDetailReq(BaseModel):
     lottery_id: int = Field(description="lotdata 主键 lottery_id（对外互动资源 ID）")
 
 
+class LotteryDetailListResp(BaseModel):
+    """批量抽奖卡片详情响应（前端列表页一次拉多张卡片，替代逐张 GetLotteryDetail）。
+
+    items 与请求的 lottery_ids 顺序一致（重复 id 只返回一次），形态与 GetLotteryDetail
+    的 data 完全一致（raw + extra_info），前端可复用同一套 normalizeLotteryData 渲染。
+
+    missing_ids 为请求里未在 lotdata 命中的 id（已删除 / 不存在），便于前端区分
+    「未请求」与「不存在」，无需再对缺失项单独补查。
+    """
+
+    items: list[LotteryDetailResp] = Field(
+        default_factory=list, description="命中抽奖的卡片详情列表（与请求顺序一致）"
+    )
+    missing_ids: list[int] = Field(
+        default_factory=list, description="未命中的 lottery_id 列表（lotdata 中不存在）"
+    )
+
+
 class GetOthersLotDynDetailReq(BaseModel):
     """按 dynId 获取单个第三方抽奖动态详情的请求体（2.61.0）。
 
@@ -889,7 +907,11 @@ class LotteryTrendPoint(BaseModel):
 
 
 class UpcomingLotteryItem(BaseModel):
-    """即将开奖的明细（按 lottery_time 升序取最近若干条，仅限 24 小时内）。"""
+    """即将开奖的明细（按 lottery_time 升序取最近若干条，仅限 24 小时内）。
+
+    2.67.0：随明细一次下发卡片内容（``raw`` + ``extra_info``，与 GetLotteryDetail
+    的 data 同形态），首页 / 轮播直接渲染，不再二次调用 GetLotteryDetailList 回捞。
+    """
 
     lottery_id: int
     business_id: int | None = None
@@ -899,16 +921,21 @@ class UpcomingLotteryItem(BaseModel):
     lottery_time: int
     participants: int | None = None
     sender_uid: int | None = None
+    raw: LotdataResp | None = None  # 卡片原始字段（lotdata 行）
+    extra_info: OfficialLotExtraInfoResp | None = None  # 附加信息（t_lot_extra_info）
 
 
 class LotteryDataSummaryResp(BaseModel):
-    """管理端 bili-crawler 数据汇总响应。"""
+    """管理端 bili-crawler 数据汇总响应。
+
+    2.67.0：**不再下发即将开奖明细**（原 `upcoming` 字段），明细改走独立分页接口
+    `GET /lottery_database/bili/GetUpcomingLottery`（items + total，无条数上限）。
+    """
 
     generated_at: int  # 生成时间（Unix 秒）
     latest_created_at: int | None = None  # 全表最新收录时间（判断爬虫是否在跑）
     rows: list[LotterySummaryRow] = Field(default_factory=list)
     trend: list[LotteryTrendPoint] = Field(default_factory=list)
-    upcoming: list[UpcomingLotteryItem] = Field(default_factory=list)
 
 
 # endregion

@@ -16,9 +16,31 @@ from Utils.通用.Common import GLOBAL_SCHEDULER, asyncio_gather
 from controller.v1.background_service import BackgroundServiceController
 from log.base_log import myfastapi_logger
 
+# 单库探活的总超时（秒）。必须用外层 ``asyncio.timeout``：aiomysql 的
+# ``connect_args={"connect_timeout": ...}`` 只包住 TCP 建连（``_open_connection``），
+# 之后的 ``_get_server_information()`` 等握手包不在其保护范围内。
+# 于是「TCP 三次握手成功但服务端一个字节都不回」的路径（典型：防火墙 SYN 代理 /
+# 端口转发进程卡死）会永久阻塞在 ``Waiting for application startup``，
+# 既不报错也不退出。与 QueryFastapiLifespan 保持同一口径。
+_DB_CONNECT_TIMEOUT_SECONDS = 10
+
 
 @contextlib.asynccontextmanager
 async def life_span(app: FastAPI):
+    if settings.is_api_only:
+        # 「只提供接口、不爬取」角色（SERVICE_ROLE=api，本地开发用）：
+        # 到这里就只探库，其余全部跳过 —— 不迁移 / 不校验 schema / 不初始化 Milvus /
+        # 不重投 MQ / 不启动调度器与监控任务 / 不做 critical 依赖探活。
+        # 这样只起了基础设施的机器也能把接口跑起来（缺库的接口在请求时才报错），
+        # 进程启动后不会自动抓任何数据（不依赖 IS_DEV，也不需要 IS_DEV）。
+        await probe_database_connections()
+        myfastapi_logger.info(
+            "接口服务启动完成（api 模式：只提供接口，无迁移 / 无调度 / 无 MQ 消费 / 不自动爬取）"
+        )
+        yield
+        myfastapi_logger.info("接口服务正在退出")
+        return
+
     # 测试数据库连接
     try:
         await test_database_connections()
@@ -27,7 +49,7 @@ async def life_span(app: FastAPI):
             f"数据库（{CONFIG.database.MYSQL._base_url}）连接测试失败: {e}"
         )
         raise e
-    # 测试各个服务的端口和 host 连通性（含 message-service 的 /health 探测）
+    # 测试各个服务的端口和 host 连通性（不包含 be-message-service：它不是本服务的依赖）
     await test_service_ports_and_hosts()
 
     # ---- 启动期自动执行 alembic upgrade head 增量迁移 ----
@@ -46,8 +68,10 @@ async def life_span(app: FastAPI):
     await milvus_sql_helper.ensure_collection_exists()
     myfastapi_logger.info("重试未处理的消息")
     await BiliLotDataPublisher.retry_pending_messages()
-    # RPC handler 由 mq_controller.py 末尾导入 lottery_data 模块触发 @rpc_subscriber 注册
-    # broker 连接由 FastAPI 通过 app.include_router(MqController.router) 自动管理
+    # MQ 消费者由 mq_controller.py 的 @router.subscriber 注册；broker 连接由 FastAPI 通过
+    # app.include_router(MqController.router) 自动管理。
+    # RPC 只做只读取数（2.70.0）：RPC 服务端已交给 query 角色（query_main.py），
+    # 本角色只消费 bili_data 的写库消息，因此这里不 import 任何 RPC handler 模块。
     myfastapi_logger.info("开启其他服务")
     back_ground_tasks = []
     if settings.IS_DEV:
@@ -78,13 +102,20 @@ async def test_database_connections():
     }
 
     for db_name, db_uri in databases.items():
+        engine = create_async_engine(db_uri)
         try:
             myfastapi_logger.info(f"正在测试数据库 '{db_name}' 连接...")
-            engine = create_async_engine(db_uri)
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-            await engine.dispose()
+            # 外层硬超时：覆盖「建连 + 等握手包 + 认证 + SELECT 1」全过程
+            async with asyncio.timeout(_DB_CONNECT_TIMEOUT_SECONDS):
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
             myfastapi_logger.info(f"数据库 '{db_name}' 连接成功")
+        except TimeoutError as e:
+            myfastapi_logger.critical(
+                f"数据库 '{db_name}' 连接超时（>{_DB_CONNECT_TIMEOUT_SECONDS}s）"
+                f" | URI={db_uri} | 错误: {e!r}"
+            )
+            raise
         except OperationalError as e:
             myfastapi_logger.critical(
                 f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}"
@@ -95,6 +126,47 @@ async def test_database_connections():
                 f"数据库 '{db_name}' 连接失败 | URI={db_uri} | 错误: {e}"
             )
             raise SystemExit(f"数据库 '{db_name}' 连接失败") from e
+        finally:
+            await engine.dispose()
+
+
+async def probe_database_connections():
+    """api 角色专用：逐个探库并打日志，**连不上也不拒绝启动**。
+
+    与 ``test_database_connections``（失败即 SystemExit）的区别：本地开发经常只同步了
+    部分库，api 角色的职责只是「把接口挂出去」，缺库让对应接口在请求时自己报错即可，
+    不该因为无关的库导致整个进程起不来。
+    """
+    databases = {
+        "proxy_db": CONFIG.database.MYSQL.proxy_db_URI,
+        "bilidb": CONFIG.database.MYSQL.bili_db_URI,
+        "bili_reserve": CONFIG.database.MYSQL.bili_reserve_URI,
+        "get_other_lot": CONFIG.database.MYSQL.get_other_lot_URI,
+        "dyndetail": CONFIG.database.MYSQL.dyn_detail_URI,
+        "sams_club": CONFIG.database.MYSQL.sams_club_URI,
+    }
+
+    unreachable: list[str] = []
+    for db_name, db_uri in databases.items():
+        engine = create_async_engine(db_uri)
+        try:
+            # 探测同样要限时，否则黑洞路径会让 api 角色也卡在启动阶段
+            async with asyncio.timeout(_DB_CONNECT_TIMEOUT_SECONDS):
+                async with engine.connect() as conn:
+                    await conn.execute(text("SELECT 1"))
+            myfastapi_logger.info(f"数据库 '{db_name}' 连接成功")
+        except Exception as exc:  # noqa: BLE001 —— 探测失败只记录，不阻断接口启动
+            unreachable.append(f"{db_name} ({exc.__class__.__name__}: {exc})")
+        finally:
+            await engine.dispose()
+
+    if unreachable:
+        myfastapi_logger.warning(
+            "以下数据库连接失败，相关接口请求时会报错（api 模式不迁移 / 不校验 schema，不阻断启动）: "
+            + "; ".join(unreachable)
+        )
+    else:
+        myfastapi_logger.info("全部数据库连接正常")
 
 
 async def test_port_connectivity(
@@ -207,6 +279,11 @@ async def test_service_ports_and_hosts():
     failed_critical_services = []
 
     # (name, host, port, kind, path, critical)
+    #
+    # 注意：**be-message-service 不在探活列表里**（2.70.1）。crawler 与它只有「消息队列」的弱耦合：
+    # 推送 / 告警通过 RabbitMQ（message_exchange / message.push）fire-and-forget 发布，
+    # message-service 不在线时消息留在队列里等它上线后消费，crawler 的启动与业务不受影响。
+    # 之前把它列为 critical 会导致「本机没跑 message-service 就完全起不来」，dev 下反复重启。
     services_to_test = [
         ("MySQL", settings.MYSQL_HOST, int(settings.MYSQL_PORT), "port", "", True),
         ("Redis", settings.REDIS_HOST, int(settings.REDIS_PORT), "port", "", True),
@@ -222,14 +299,6 @@ async def test_service_ports_and_hosts():
         ("Unidbg", settings.UNIDBG_HOST, int(settings.UNIDBG_PORT), "http", "", False),
         ("V2Ray", settings.V2RAY_HOST, int(settings.V2RAY_PORT), "http", "", False),
         ("llama.cpp", settings.LLAMA_HOST, int(settings.LLAMA_PORT), "http", "", True),
-        (
-            "message-service",
-            settings.MESSAGE_SERVICE_HOST,
-            int(settings.MESSAGE_SERVICE_PORT),
-            "http",
-            "/health",
-            True,
-        ),
     ]
 
     for name, host, port, kind, path, critical in services_to_test:

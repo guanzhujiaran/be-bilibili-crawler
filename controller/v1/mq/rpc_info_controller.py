@@ -26,6 +26,7 @@ router.prefix = RouterPrefix.RPC
     description=(
         "返回 FastapiApp 当前注册的所有 RPC 业务方法元数据列表，"
         "包含 method_name、display_name、description、routing_key。"
+        "RPC 一律是只读取数（服务端在 query 容器 be-bilibili-crawler-query）；写库走 MQ 消息。"
         "RPA-Browser 的获取外部数据 Action（RPC 模式）可从此接口获取可选方法列表。"
     ),
 )

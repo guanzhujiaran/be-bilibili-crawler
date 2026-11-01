@@ -481,6 +481,14 @@ class SQLHelper(SqlHelperBase):
         if q.sender_uid is not None:
             base_conditions.append(Lotdata.sender_uid == q.sender_uid)
 
+        # business_id 白名单筛选（跨库场景由业务层先查出 ids 再下推，
+        # 与分页/count 使用同一组条件，保证 total 与每页条数一致）
+        if q.business_id_in is not None:
+            if not q.business_id_in:
+                # 空集合语义是「无匹配」，直接短路，避免 IN () 语法错误
+                return [], 0
+            base_conditions.append(Lotdata.business_id.in_(q.business_id_in))
+
         # 参与人数范围筛选
         if q.min_participants is not None:
             base_conditions.append(Lotdata.participants >= q.min_participants)
@@ -942,32 +950,52 @@ class SQLHelper(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def get_upcoming_lottery(
-        self, now_ts: int, limit: int = 20, within_hours: int = 24
-    ) -> list[dict]:
-        """按开奖时间升序取「还没到开奖时间且 within_hours 小时内即将开奖」的抽奖明细。"""
+        self,
+        now_ts: int,
+        limit: int = 8,
+        within_hours: int = 24,
+        offset: int = 0,
+        business_types: Sequence[int] | None = None,
+    ) -> tuple[Sequence[Lotdata], int]:
+        """按开奖时间升序分页取「还没到开奖时间且 within_hours 小时内即将开奖」的抽奖行。
+
+        2.67.0：返回完整 ORM 行（不再只挑 6 列，卡片 raw 由此直接映射）+ 窗口内总数，
+        供 `GetUpcomingLottery` 分页接口一次拿到「本页数据 + total」，与普通抽奖列表
+        的分页范式一致（count + 分页查询，均在窗口条件内）。
+
+        Args:
+            now_ts: 当前 Unix 秒（窗口起点）。
+            limit: 本页条数。
+            within_hours: 开奖时间窗口（小时）。
+            offset: 跳过的条数（= (page_num - 1) * page_size）。
+            business_types: 业务类型过滤（1/10/12…），None = 全部类型。
+
+        Returns:
+            `(本页 ORM 行, 窗口内总条数)`。
+        """
         deadline_ts = now_ts + within_hours * 3600
-        stmt = (
-            select(
-                Lotdata.lottery_id,
-                Lotdata.business_id,
-                Lotdata.business_type,
-                Lotdata.lottery_time,
-                Lotdata.participants,
-                Lotdata.sender_uid,
-            )
-            .where(
-                and_(
-                    Lotdata.status == 0,
-                    Lotdata.lottery_time > now_ts,
-                    Lotdata.lottery_time <= deadline_ts,
-                )
-            )
-            .order_by(Lotdata.lottery_time.asc())
-            .limit(limit)
-        )
+        conditions = [
+            Lotdata.status == 0,
+            Lotdata.lottery_time > now_ts,
+            Lotdata.lottery_time <= deadline_ts,
+        ]
+        if business_types:
+            conditions.append(Lotdata.business_type.in_(list(business_types)))
+        where_clause = and_(*conditions)
         async with self.async_session() as session:
-            res = await session.execute(stmt)
-            return [dict(row) for row in res.mappings().all()]
+            total = (
+                await session.execute(
+                    select(func.count()).select_from(Lotdata).where(where_clause)
+                )
+            ).scalar_one()
+            res = await session.execute(
+                select(Lotdata)
+                .where(where_clause)
+                .order_by(Lotdata.lottery_time.asc())
+                .offset(offset)
+                .limit(limit)
+            )
+            return list(res.scalars().all()), int(total)
 
     # endregion
 

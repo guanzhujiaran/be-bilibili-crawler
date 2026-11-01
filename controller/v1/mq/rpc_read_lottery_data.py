@@ -1,82 +1,36 @@
 """
-LotteryData RPC handlers
+LotteryData RPC handlers —— **只读取数**，由 query 角色提供服务端
 
-为 RPC 服务端提供抽奖数据库核心业务逻辑处理函数。
-对应 controller/v1/lotttery_database/bili/LotteryData.py 的 15 个路由。
+职责边界（2.70.0）：
+- `FastapiApp.rpc.*` 全部是「只读取数」（请求-响应），由 `query_main.py`
+  （SERVICE_ROLE=query，可指向只读账号 / 只读副本）注册并消费，与爬虫进程解耦：
+  爬虫没起 / 迁移失败都不影响 RPA / be-message 取数；
+- **写库不走 RPC**：走 `bili_data` 的普通 MQ 消息（`BiliLotDataPublisher` 发布 →
+  crawler 角色的 `mq_controller` 订阅者落库），因此 crawler 角色不注册任何 RPC 服务端。
 
-使用 @rpc_subscriber 装饰器注册，handler 直接接收强类型参数模型，
-返回 CommonResponseModel，全程由 Pydantic 做参数校验。
+刻意**不 import** 爬虫 / LLM 侧的重依赖（`Service.LangChainCompo.text_embed`（模块级建
+OpenAIEmbeddings + Milvus）、`BackgroundServiceStatus`、`Utils.推送.PushMe`、
+`add_*` 写动作、`reserve_robot` 刷新链路）：query 容器的 lifespan 不初始化 Milvus /
+不跑迁移 / 不启动调度器，把这些拖进来就等于把爬虫依赖重新绑回来。
+
+读路径不做任何写入：预约状态刷新 / lotdata 回写由 crawler 角色的定时任务负责，
+且这些写是纯副作用（不影响本次响应内容），见 `get_reserve_lottery(allow_active_fetch=False)`。
+
+对应只读 HTTP 路由：controller/v1/lotttery_database/bili/LotteryData.py 的 query_router。
 
 不依赖 FastAPI 上下文（无 Request/BackgroundTasks/Depends）：
-- RPC 调用方（RPA-Browser）通过 routing_key 定位方法，handler 内部不做鉴权
+- RPC 调用方（RPA-Browser / be-message）通过 routing_key 定位方法，handler 内部不做鉴权
 """
 
 import time
 
+from sqlalchemy import func, select, text
+from loguru import logger
+
 from bili_common.models.response import StandardResponse as CommonResponseModel
 from bili_common.models.pagination import ResponsePaginationItems
-from Models.lottery_database.bili.LotteryDataBaseQueryModels import (
-    BiliLotDataQueryModel,
-)
-from Models.lottery_database.bili.LotteryDataModels import (
-    AddDynamicLotteryResp,
-    OfficialLotteryResp,
-    AllLotteryResp,
-    ChargeLotteryResp,
-    ReserveInfoResp,
-    TopicLotteryResp,
-    LiveLotteryResp,
-    AddDynamicLotteryReq,
-    AddTopicLotteryReq,
-    AddTopicLotteryResp,
-    BulkAddDynamicLotteryReq,
-    LotdataResp,
-    OthersLotDynItem,
-    LotteryFilterParamsResp,
-    CommonLotExtraInfoResp,
-    EndpointFilterMeta,
-    pydantic_model_to_filter_params,
-)
-from Models.lottery_database.bili.comm import (
-    BiliLotDataStatusEnum,
-    LotteryBusinessType,
-)
 from bili_common.models import (
-    LotteryPaginationParams,
-    LotterySearchPaginationParams,
-    LotteryAdvancedQueryParams,
-    OthersLotDynListFilterMetadata,
-    OthersLotDynSortEnum,
-    OthersLotDynSortOrderEnum,
-    TimePresetEnum,
-    LotteryDataSortEnum,
-    SortOrderEnum,
-)
-from Models.v1.background_service.background_service_model import AllLotScrapyStatusResp
-from Service.BackgroundServiceStatus.GetScrapyStaus import get_scrapy_status
-from Service.LangChainCompo.text_embed import (
-    get_lottery_entity_num,
-    search_lottery_text,
-)
-from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
-from Service.lottery_database.bili_lotterty import (
-    get_reserve_lottery,
-    get_official_lottery,
-    get_all_lottery,
-    get_charge_lottery,
-    get_topic_lottery,
-    get_live_lottery,
-    add_dynamic_lottery_by_dynamic_id,
-    add_topic_lottery,
-    add_others_lot_dyn_by_dynamic_id,
-    process_others_lot_dyn,
-)
-from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
-
-from Utils.推送.PushMe import a_pushme
-from bili_common.models import RpcMethodName
-from bili_common.models import (
+    RpcMethodName,
     GetReserveLotteryRpcParams,
     GetOfficialLotteryRpcParams,
     GetChargeLotteryRpcParams,
@@ -90,13 +44,36 @@ from bili_common.models import (
     CheckOthersLotDynExistRpcResult,
     OthersLotDynDetailItem,
 )
-from controller.v1.mq.rpc_server import rpc_subscriber
-from loguru import logger
-from sqlalchemy import func, or_, select, text
+from Models.lottery_database.bili.LotteryDataBaseQueryModels import (
+    BiliLotDataQueryModel,
+)
+from Models.lottery_database.bili.LotteryDataModels import (
+    OfficialLotteryResp,
+    AllLotteryResp,
+    ChargeLotteryResp,
+    ReserveInfoResp,
+    TopicLotteryResp,
+    OthersLotDynItem,
+    CommonLotExtraInfoResp,
+)
+from Models.lottery_database.bili.comm import (
+    BiliLotDataStatusEnum,
+    LotteryBusinessType,
+)
+from Service.lottery_database.bili_lotterty import (
+    get_reserve_lottery,
+    get_official_lottery,
+    get_all_lottery,
+    get_charge_lottery,
+    get_topic_lottery,
+)
+from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
+from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
+from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
 )
-from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
+from controller.v1.mq.rpc_server import rpc_subscriber
 
 
 def _parse_status(status: str | None) -> BiliLotDataStatusEnum:
@@ -117,11 +94,21 @@ def _parse_status(status: str | None) -> BiliLotDataStatusEnum:
     return status_map.get(status.lower(), BiliLotDataStatusEnum.UNFINISHED)
 
 
-@rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_RESERVE_LOTTERY,
+    GetReserveLotteryRpcParams,
+)
 async def handle_get_reserve_lottery(
     params: GetReserveLotteryRpcParams,
 ) -> CommonResponseModel[ResponsePaginationItems[ReserveInfoResp]]:
-    """获取必抽的预约抽奖数据"""
+    """获取必抽的预约抽奖数据
+
+    RPC 是**只读取数**（RPA 等外部系统批量拉列表）：
+    - 不发起预约信息刷新、不回写 lotdata（`allow_active_fetch=False`）。
+      RPC 没有 BackgroundTasks，写路径会退化为同步 await，逐条访问 B 站与写库，
+      page_size=1000 时必然超过服务端 60s 超时；这些刷新由爬虫角色定时任务负责，
+      且属于纯副作用，不影响本次响应内容。
+    """
     result_items, total = await get_reserve_lottery(
         q=BiliLotDataQueryModel(
             business_type=LotteryBusinessType.Reserve,
@@ -138,15 +125,24 @@ async def handle_get_reserve_lottery(
             pub_time_preset=params.pub_time_preset,
             sort_by=params.sort_by,
             sort_order=params.sort_order,
+            is_grand_prize=params.is_grand_prize,
+            # 与只读 HTTP 端点 GetReserveLottery 默认行为一致（only_available 默认 True）：
+            # 过滤掉已取消 / 已失效 / 已开奖 / 已过期的预约。之前这里漏传，
+            # 模型默认 False，导致 150 条里 108 条是 available=False 的取消预约。
+            only_available=params.only_available,
         ),
         background_task=None,
+        allow_active_fetch=False,
     )
     return CommonResponseModel(
         data=ResponsePaginationItems[ReserveInfoResp](items=result_items, total=total)
     )
 
 
-@rpc_subscriber(RpcMethodName.GET_OFFICIAL_LOTTERY, GetOfficialLotteryRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_OFFICIAL_LOTTERY,
+    GetOfficialLotteryRpcParams,
+)
 async def handle_get_official_lottery(
     params: GetOfficialLotteryRpcParams,
 ) -> CommonResponseModel:
@@ -167,6 +163,7 @@ async def handle_get_official_lottery(
             pub_time_preset=params.pub_time_preset,
             sort_by=params.sort_by,
             sort_order=params.sort_order,
+            is_grand_prize=params.is_grand_prize,
         )
     )
     return CommonResponseModel(
@@ -176,7 +173,10 @@ async def handle_get_official_lottery(
     )
 
 
-@rpc_subscriber(RpcMethodName.GET_CHARGE_LOTTERY, GetChargeLotteryRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_CHARGE_LOTTERY,
+    GetChargeLotteryRpcParams,
+)
 async def handle_get_charge_lottery(
     params: GetChargeLotteryRpcParams,
 ) -> CommonResponseModel:
@@ -197,6 +197,7 @@ async def handle_get_charge_lottery(
             pub_time_preset=params.pub_time_preset,
             sort_by=params.sort_by,
             sort_order=params.sort_order,
+            is_grand_prize=params.is_grand_prize,
         )
     )
     return CommonResponseModel(
@@ -204,7 +205,10 @@ async def handle_get_charge_lottery(
     )
 
 
-@rpc_subscriber(RpcMethodName.GET_TOPIC_LOTTERY, GetTopicLotteryRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_TOPIC_LOTTERY,
+    GetTopicLotteryRpcParams,
+)
 async def handle_get_topic_lottery(
     params: GetTopicLotteryRpcParams,
 ) -> CommonResponseModel:
@@ -219,7 +223,10 @@ async def handle_get_topic_lottery(
     )
 
 
-@rpc_subscriber(RpcMethodName.GET_ALL_LOTTERY, GetAllLotteryRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_ALL_LOTTERY,
+    GetAllLotteryRpcParams,
+)
 async def handle_get_all_lottery(
     params: GetAllLotteryRpcParams,
 ) -> CommonResponseModel[AllLotteryResp]:
@@ -237,7 +244,10 @@ async def handle_get_all_lottery(
     return CommonResponseModel[AllLotteryResp](data=result)
 
 
-@rpc_subscriber(RpcMethodName.GET_OTHERS_LOT_DYN_LIST, GetOthersLotDynListRpcParams)
+@rpc_subscriber(
+    RpcMethodName.GET_OTHERS_LOT_DYN_LIST,
+    GetOthersLotDynListRpcParams,
+)
 async def handle_get_others_lot_dyn_list(
     params: GetOthersLotDynListRpcParams,
 ) -> CommonResponseModel:
@@ -265,6 +275,7 @@ async def handle_get_others_lot_dyn_list(
         sort_by=params.sort_by.value,
         sort_order=params.sort_order.value,
         is_lot=params.is_lot,
+        is_grand_prize=params.is_grand_prize,
         pub_time_start=pub_time_start,
         pub_time_end=params.pub_time_end,
         created_at_start=created_at_start,
@@ -302,7 +313,10 @@ async def handle_get_others_lot_dyn_list(
     )
 
 
-@rpc_subscriber(RpcMethodName.CHECK_LOTTERY_EXIST, CheckLotteryExistRpcParams)
+@rpc_subscriber(
+    RpcMethodName.CHECK_LOTTERY_EXIST,
+    CheckLotteryExistRpcParams,
+)
 async def handle_check_lottery_exist(
     params: CheckLotteryExistRpcParams,
 ) -> CommonResponseModel[CheckLotteryExistRpcResult]:
@@ -434,7 +448,8 @@ async def _log_others_lot_dyn_miss(dyn_ids: list[int]) -> None:
 
 
 @rpc_subscriber(
-    RpcMethodName.CHECK_OTHERS_LOT_DYN_EXIST, CheckOthersLotDynExistRpcParams
+    RpcMethodName.CHECK_OTHERS_LOT_DYN_EXIST,
+    CheckOthersLotDynExistRpcParams,
 )
 async def handle_check_others_lot_dyn_exist(
     params: CheckOthersLotDynExistRpcParams,

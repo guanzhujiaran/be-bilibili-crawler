@@ -9,7 +9,7 @@ BilibiliExplosion 的**核心爬虫后端**。基于 FastAPI，负责 B 站抽�
 - 第三方用户抽奖动态挖掘（`GetOthersLotDyn`）
 - 抽奖大奖判定：SVM 模型 + LLM（Qwen 等）二阶段判定，结果写入子表
 - `rawJsonStr` 全字段回填脚本
-- 统一消息告警推送（对接 `be-message-service`）
+- 统一消息告警推送（经 RabbitMQ 投递给 `be-message-service`，弱耦合、不阻塞本服务）
 - 调用 `unidbgSpringBoot` 计算签名、`llama.cpp` 做本地推理
 - 6 个 MySQL 业务库的 Alembic 版本管理
 
@@ -30,7 +30,8 @@ BilibiliExplosion 的**核心爬虫后端**。基于 FastAPI，负责 B 站抽�
 
 ```
 be-bilibili-crawler/
-├── main.py                       # 主服务入口（端口 23333）：抽奖数据 API + 全局告警
+├── main.py                       # 主服务入口（端口 23333）：爬虫 + 写入 + 控制面 + 全局告警
+├── query_main.py                 # 只读查询服务入口（端口 23336）：只挂只读路由，可连生产只读副本
 ├── faststream_app.py             # MQ 消费服务入口（端口 23334）
 ├── CONFIG.py                     # Settings / 数据库 / Redis / RabbitMQ / 推送 配置
 ├── create_database.py            # 初始化 6 个业务库
@@ -64,8 +65,10 @@ cd be-bilibili-crawler
 uv sync
 # 前端静态资源（部分页面用到）
 npm install
-# 启动主服务
+# 启动主服务（爬虫 + 写入 + 控制面）
 uv run python main.py          # http://0.0.0.0:23333
+# 启动只读查询服务（另一个进程，与主服务共用同一份代码）
+SERVICE_ROLE=query uv run python query_main.py   # http://0.0.0.0:23336
 # 启动 MQ 消费服务（另一个进程）
 uv run python faststream_app.py
 ```
@@ -74,10 +77,47 @@ uv run python faststream_app.py
 
 ```bash
 cd /home/minato/BilibiliExplosion
-docker compose up -d be-bilibili-crawler
+docker compose up -d be-bilibili-crawler              # 爬虫 + 写入 + 控制面，容器内 23333
+docker compose up -d be-bilibili-crawler-query        # 只读查询，容器内 23336
 ```
 
-容器内端口 `23333`，由 `docker-compose.yml` 的 `FASTAPI_PORT` 映射到宿主机；依赖 `mysql` / `redis` / `rabbitmq` / `unidbg` / `milvus` / `be-message-service`。
+两个容器共用同一个 `Dockerfile.mono`，只是 target 不同（`crawler` / `crawler-query`）、入口不同（`main:app` / `query_main:app`）：
+
+| 服务 | target | 端口（容器 → 宿主机变量） | 职责 |
+| --- | --- | --- | --- |
+| `be-bilibili-crawler` | `crawler` | 23333 → `FASTAPI_PORT` | 爬虫、`Add*` 写入、爬虫状态、`zhuanlan`、MQ 消费、alembic 迁移、定时任务 |
+| `be-bilibili-crawler-query` | `crawler-query` | 23336 → `FASTAPI_QUERY_PORT` | 只挂只读路由（抽奖库查询 / 统计 / IP）；不跑迁移、不启动调度器、不消费 MQ |
+
+查询容器通过 `SERVICE_ROLE=query` 关闭「预约信息刷新 / lotdata 回写」等写动作，因此可以安全指向**生产库 + 只读账号**（如 `bili_ro`，建号脚本见 `scripts/database/create_read_only_account/`）。
+
+**RPC 只读 / 写库走 MQ（2.70.0）**：两种交互方式各归一个角色，routing_key 与参数契约不变（客户端无感）：
+
+| 通道 | 角色 / 入口 | 内容 |
+| --- | --- | --- |
+| RPC（请求-响应，**只读取数**） | `query`（`query_main.py` / 23336） | `get_reserve/official/charge/topic/all_lottery`、`get_others_lot_dyn_list`、`check_lottery_exist`、`check_others_lot_dyn_exist`，handler 见 `controller/v1/mq/rpc_read_lottery_data.py` |
+| 普通 MQ 消息（**写库**） | `crawler`（`main.py` / 23333） | `bili_data` 交换机的入库消费者（抽奖入库 / Milvus 同步 / 奖品抽取），`BiliLotDataPublisher` 发布，`controller/v1/mq/mq_controller.py` 消费 |
+
+`rpc_subscriber` 只允许 query 角色注册（其他角色跳过并打 WARNING），避免两个角色消费同一队列
+（competing consumers）；RPC handler 也因此天然无写库能力。
+好处：RPA / be-message 的取数不再依赖爬虫进程是否健康（爬虫挂了只读取数照样可用）。
+
+连接参数由根 `.env` 里一组**独立于爬虫容器**的变量控制，改这几个就只影响查询服务：
+
+| 变量 | 说明 |
+| --- | --- |
+| `CRAWLER_QUERY_MYSQL_HOST` / `PORT` / `USER` / `PASSWORD` | 查询库连接；直连生产时用只读账号。容器内端口是 `3306`，不是宿主机映射的 `10000` |
+| `CRAWLER_QUERY_REDIS_HOST` / `PORT` / `PWD` | 查询用 Redis；容器内端口是 `6379` |
+
+⚠️ Redis 必须一起指过去：`GetLiveLottery` 与 `GetLotteryFilterParams` 的直播数据读的是 Redis 的 `all_live_lot`，不在 MySQL 里；漏配的表现是「直播抽奖页永远空白」且不报错。
+
+网关侧 `BILI_CRAWLER_QUERY_URI` 未配置时自动回落到 `BILI_CRAWLER_URI`，即只跑一个 crawler 容器的老部署方式行为不变。
+
+爬虫容器的**启动期 critical 依赖**是 `mysql` / `redis` / `rabbitmq` / `milvus` / `llama.cpp`
+（`unidbg` / `V2Ray` / 3128 代理只做非阻断探测）；查询容器只依赖 `mysql` / `redis`。
+
+`be-message-service` **不是依赖**（2.70.1 起不再探活）：告警推送经 RabbitMQ
+（`message_exchange` / `message.push`）fire-and-forget 投递，message-service 不在线时
+消息留在队列里等它上线后消费，crawler 照常启动与运行。
 
 ## 配置
 
@@ -93,7 +133,7 @@ docker compose up -d be-bilibili-crawler
 | `LLAMA_HOST` / `LLAMA_PORT` | llama.cpp 推理服务 |
 | `PROXY_SERVER` / `V2RAY_HOST` / `V2RAY_PORT` | IPv6 代理池 / V2Ray 出口 |
 | `MESSAGE_CONFIG` | 统一推送渠道配置（JSON，与 message-service / rpa-browser 共用） |
-| `MESSAGE_SERVICE_HOST` / `MESSAGE_SERVICE_PORT` | message-service 地址 |
+| `MESSAGE_SERVICE_HOST` / `MESSAGE_SERVICE_PORT` | **已废弃**（2.70.1 起不再探活 / 不再调用 message-service），保留仅为兼容既有 .env 与 compose |
 | `llm_apis` | 外部 LLM API 列表（OpenAI 兼容） |
 | `SERVER_NAME` / `SERVER_ADDRESS` | 服务标识（写入告警标题，来自 `bili_common` 的 `PushNotifySettingsMixin`） |
 | `PUSHME_URL` / `PUSHPLUS_URL` / `HITOKOTO_API_URL` | 渠道默认端点 / 一言接口（同上，与其它服务共用默认值） |

@@ -26,7 +26,7 @@ from log.base_log import myfastapi_logger
 from Utils.推送.PushMe import a_push_error
 from Utils.通用.Common import mask_settings_for_log
 from Utils.FastAPI.FastapiLifespan import life_span
-from controller.v1.lotttery_database.bili import LotteryData
+from controller.v1.lotttery_database.bili import LotteryData, ScrapyStatus
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
 from controller.v1.ip_info import get_ip_info
 from controller.v1.background_service import BackgroundServiceController
@@ -42,6 +42,11 @@ from controller.v1.lotttery_database.bili.zhuanlan import zhuanlanController
 
 
 logger.info("运行 settings:{}", mask_settings_for_log(settings))
+if settings.is_api_only:
+    # 本地开发用：只把接口挂出去，不迁移 / 不校验 schema / 不启调度器 / 不消费 MQ
+    logger.warning(
+        "当前 SERVICE_ROLE=api：只提供接口，不迁移 / 不调度 / 不消费 MQ / 不自动爬取"
+    )
 if not settings.SHOW_LOG:
     # 只移除 loguru 默认的 stderr sink（id=0，loguru 在 import 时注册），
     # 保留 log.base_log 注册的业务文件 sink。
@@ -62,13 +67,25 @@ if not settings.SHOW_LOG:
 
 app = FastAPI(lifespan=life_span)
 fastapi_cdn_host.patch_docs(app)
+# 写入 / 控制面路由（Add*、爬虫状态）与只读查询路由分属两个 APIRouter：
+# 爬虫角色两个都挂（对外路径与拆分前一致），查询角色（query_main.py）只挂 query_router
 app.include_router(LotteryData.router)
+app.include_router(LotteryData.query_router)
+# 爬虫实时状态（控制面）：读进程内 background_service 单例，只有爬虫角色需要
+app.include_router(ScrapyStatus.router)
 app.include_router(LotteryStatistic.router)
 app.include_router(get_ip_info.router)
 app.include_router(BackgroundServiceController.router)
 app.include_router(CommonRouter.router)
-app.include_router(MQController.router)
-app.include_router(RpcInfoRouter)
+# MQ 消费者与 RPC 信息路由只有爬虫角色挂：
+# faststream 的 RabbitRouter 一旦被 include，FastAPI 就会在启动时连 broker 并按
+# @router.subscriber 开始**消费队列**（入库 / Milvus / 抽奖结果抽取等真实动作）。
+# SERVICE_ROLE=api（只提供接口、本地开发用）不应该有消费者，其余路由照常挂载。
+if not settings.is_api_only:
+    # 本角色只挂 bili_data 的写库消费者（MQ 消息），不注册任何 RPC：
+    # RPC（FastapiApp.rpc.*）一律是只读取数，由 query 角色（query_main.py）提供。
+    app.include_router(MQController.router)
+    app.include_router(RpcInfoRouter)
 app.include_router(captchaController.router)
 app.include_router(samsClubController.router)
 app.include_router(zhuanlanController.router)

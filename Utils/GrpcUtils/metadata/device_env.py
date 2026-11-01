@@ -18,7 +18,7 @@ ES256 JWT，24h 有效）也属于这台设备（APK: ``kntr.base.region.impl.e`
 """
 
 import base64
-import gzip  # noqa: F401  (保持与历史导入一致，供同包模块直接使用)
+import gzip  # (保持与历史导入一致，供同包模块直接使用)
 import hashlib
 import json
 import random

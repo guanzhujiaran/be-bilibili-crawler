@@ -43,7 +43,7 @@ if sys.platform.startswith("windows"):
     )  # 祖传代码不可删，windows必须替换掉selector，不然跑一半就停了
 from log.base_log import myfastapi_logger
 from Utils.推送.PushMe import a_push_error
-from controller.v1.lotttery_database.bili import LotteryData
+from controller.v1.lotttery_database.bili import LotteryData, ScrapyStatus
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
 from controller.v1.ip_info import get_ip_info
 from controller.common import CommonRouter
@@ -56,7 +56,10 @@ from controller.v1.lotttery_database.bili.zhuanlan import zhuanlanController
 
 app = FastAPI(lifespan=life_span)
 fastapi_cdn_host.patch_docs(app)
+# 写入 / 控制面路由与只读查询路由分属两个 APIRouter，详见 main.py 同名注释
 app.include_router(LotteryData.router)
+app.include_router(LotteryData.query_router)
+app.include_router(ScrapyStatus.router)
 app.include_router(LotteryStatistic.router)
 app.include_router(get_ip_info.router)
 app.include_router(BackgroundServiceController.router)

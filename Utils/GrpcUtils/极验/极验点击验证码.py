@@ -1,5 +1,7 @@
 import asyncio
 import os
+from functools import cached_property
+
 import bili_ticket_gt_python
 from log.base_log import Voucher352_logger
 from Utils.GrpcUtils.UserAgentParser import UserAgentParser
@@ -18,7 +20,18 @@ class GeetestV3Breaker:
         )  # 就是当前文件的路径目录
         # 本地极验校验工具的路径
         self.succ_stats = GeetestSuccessTimeCalc()
-        self.click = bili_ticket_gt_python.ClickPy()
+
+    @cached_property
+    def click(self) -> "bili_ticket_gt_python.ClickPy":
+        """极验点击识别器（惰性创建，首次真正识别验证码时才加载模型）。
+
+        ``ClickPy()`` 的构造函数会从 ``models/`` 加载 yolov11n_captcha.onnx
+        （约 10MB）与 siamese.onnx（约 56MB），并常驻 onnxruntime 推理 session。
+        它只服务于「B 站极验点击验证码」，而本模块的单例 ``geetest_v3_breaker``
+        被爬虫状态查询等接口间接 import —— 原先在 ``__init__`` 里创建，等于让
+        「只读状态」的进程也白背 66MB 模型。改惰性后：不用极验就永远不加载。
+        """
+        return bili_ticket_gt_python.ClickPy()
 
     async def a_validate_form_voucher_ua(
         self,

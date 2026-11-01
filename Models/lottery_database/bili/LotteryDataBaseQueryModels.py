@@ -1,12 +1,38 @@
 from Models.base.custom_pydantic import CustomBaseModel
 from pydantic import Field, computed_field
 
-from Models.lottery_database.bili.comm import BiliLotDataStatusEnum, LotteryBusinessType
+from Models.lottery_database.bili.comm import (
+    BiliLotDataStatusEnum,
+    LotteryAdvancedQueryParams,
+    LotteryBusinessType,
+)
 from Models.lottery_database.bili.LotteryDataModels import (
     LotteryDataSortEnum,
     SortOrderEnum,
     TimePresetEnum,
 )
+
+
+class ReserveLotteryQueryParams(LotteryAdvancedQueryParams):
+    """预约抽奖的 GET 查询参数。
+
+    在通用高级查询参数（``LotteryAdvancedQueryParams``）之上追加「仅看有效预约」：
+    预约是否已取消 / 已失效并不体现在 ``lotdata.status`` 上，而是由预约关系表
+    ``t_up_reserve_relation_info`` 的 ``state / code / etime`` 决定（见
+    ``Service.lottery_database.bili_lotterty._reserve_available``）。因此需要独立参数，
+    不能复用 ``status``。仅加在预约抽奖端点，避免污染其它抽奖接口的 OpenAPI / 筛选元数据。
+    """
+
+    only_available: bool = Field(
+        default=True,
+        description="仅返回预约仍有效（未取消/未失效）的记录；仅在 status=unfinished 时生效",
+        json_schema_extra={
+            "filter_display_name": "仅看有效预约",
+            "filter_widget": "switch",
+            "filter_description": "过滤掉已取消/已失效的预约抽奖",
+            "filter_default": True,
+        },
+    )
 
 
 class BiliLotDataQueryModel(CustomBaseModel):
@@ -34,6 +60,14 @@ class BiliLotDataQueryModel(CustomBaseModel):
     sort_order: SortOrderEnum | None = Field(default=None, description="排序方向")
     is_grand_prize: bool | None = Field(
         default=None, description="是否大奖筛选: True-是, False-否, None-不过滤"
+    )
+    only_available: bool = Field(
+        default=False,
+        description="仅返回预约仍有效的记录（仅预约抽奖、status=unfinished 时由业务层生效）",
+    )
+    business_id_in: list[int] | None = Field(
+        default=None,
+        description="限定 business_id 在给定集合内；跨库（预约关系表）过滤时由业务层填充",
     )
 
     @computed_field

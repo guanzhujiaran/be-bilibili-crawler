@@ -1,14 +1,25 @@
 """
 RabbitMQ RPC 服务端（基于 FastStream 框架）
 
+**职责边界（2.70.0）**：
+
+- ``FastapiApp.rpc.*`` 一律是**只读取数**（请求-响应），服务端只由 **query 角色**
+  （`query_main.py`，可指向只读账号 / 只读副本）提供，handler 在
+  `controller/v1/mq/rpc_read_lottery_data.py`；
+- **写库不走 RPC**：走 `bili_data` 的普通 MQ 消息
+  （`BiliLotDataPublisher` 发布 → crawler 角色的 `mq_controller` 订阅者落库）。
+  所以 crawler / api 角色都不注册任何 RPC 服务端（避免与 query 争抢同一队列）。
+
+本模块只做**注册期校验**：只读 RPC 离开 query 角色就跳过注册并打 WARNING，
+保证「消息不会被两个角色同时消费」（competing consumers）。
+
 使用 @rpc_subscriber 装饰器注册 RPC 函数，handler 直接接收强类型参数模型，
 直接返回 CommonResponseModel，全程由 FastStream + Pydantic 做参数校验和序列化。
 
-router 实例直接复用 Service/MQ/base/MQClient/base.py 中的 RabbitRouter，
-由 FastAPI 通过 app.include_router(MqController.router) 自动管理连接和关闭。
-
-RPC handler 注册方式：在 mq_controller.py 末尾导入 lottery_data 模块，
-触发 @rpc_subscriber 装饰器执行，将 subscriber 注册到 router 上。
+router 实例复用 `Service/MQ/base/MQClient/base.py` 中的 RabbitRouter：
+- query 角色由 `query_main.py` 直接 `app.include_router(router)`（只有只读 RPC 订阅者，
+  不 import mq_controller，因此不会把入库消费者带进来）；
+- crawler 角色把它和 bili_data 的入库消费者放在一起（同一个 broker），但不注册 RPC。
 
 消息处理流程：
 1. FastStream 接收 RabbitMQ 消息，自动将 body JSON validate 为 params_model
@@ -47,11 +58,24 @@ from faststream import AckPolicy
 from pydantic import BaseModel
 from Service.MQ.base.MQClient.base import router
 from log.base_log import MQ_logger as logger
-from bili_common.models import RpcMethodName, ROUTING_KEY_PREFIX
+from bili_common.models import (
+    RpcMethodName,
+    ROUTING_KEY_PREFIX,
+    all_rpc_method_names,
+)
 from bili_common.models.response import StandardResponse as CommonResponseModel
+from CONFIG import settings
 
 # RPC 默认超时时间（秒）：超时后服务器主动取消任务以释放资源
 DEFAULT_RPC_TIMEOUT: float = 60.0
+
+# 当前进程实际注册成功的 RPC 方法（按注册顺序），供启动日志自证注册结果
+_REGISTERED_RPC_METHODS: list[str] = []
+
+
+def registered_rpc_methods() -> list[str]:
+    """当前进程已注册（真正建了队列消费者）的 RPC 方法名"""
+    return list(_REGISTERED_RPC_METHODS)
 
 
 def rpc_subscriber(
@@ -59,7 +83,7 @@ def rpc_subscriber(
     params_model: type[BaseModel],
     timeout: float | None = DEFAULT_RPC_TIMEOUT,
 ):
-    """RPC subscriber 装饰器
+    """RPC subscriber 装饰器（只读，只允许 query 角色注册）
 
     基于 @router.subscriber，FastStream 自动将消息体 JSON validate 为 params_model，
     handler 直接接收强类型参数，返回 CommonResponseModel 即可。
@@ -76,15 +100,9 @@ def rpc_subscriber(
         timeout: 超时时间（秒），默认 DEFAULT_RPC_TIMEOUT；
                  None 表示不限制（不推荐，可能堆积长尾请求）
 
-    用法：
-        @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams)
-        async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
-            ...
-
-        # 为慢方法单独设置更长超时
-        @rpc_subscriber(RpcMethodName.GET_RESERVE_LOTTERY, GetReserveLotteryRpcParams, timeout=120)
-        async def handle_get_reserve_lottery(params: GetReserveLotteryRpcParams) -> CommonResponseModel:
-            ...
+    异常：
+        方法名不在 bili_common 的 RPC 方法清单里 → 直接抛错（契约错误，启动即暴露）
+        当前角色不是 query（只读角色）→ 打 WARNING 并**跳过注册**（不建订阅者，避免双消费者）
     """
     method_name_str = (
         method_name.value
@@ -93,7 +111,29 @@ def rpc_subscriber(
     )
     routing_key = f"{ROUTING_KEY_PREFIX}.{method_name_str}"
 
+    known_methods = all_rpc_method_names()
+    if method_name_str not in known_methods:
+        raise RuntimeError(
+            f"RPC 方法 '{method_name_str}' 不在 bili_common 的 RPC 方法清单里"
+            f"（{', '.join(known_methods)}）：请先在 bili_common.rpc.base 登记"
+        )
+
+    if not settings.is_query_only:
+        logger.warning(
+            f"[RpcServer] 跳过 RPC 订阅者注册: {routing_key}："
+            f"只读 RPC 只由 query 角色提供（当前 SERVICE_ROLE={settings.SERVICE_ROLE.value}）；"
+            "写库请走 bili_data 的普通 MQ 消息，不要用 RPC"
+        )
+
+        def _skip(func):
+            return func
+
+        return _skip
+
     def decorator(func):
+        _REGISTERED_RPC_METHODS.append(method_name_str)
+        logger.info(f"[RpcServer] 注册只读 RPC 订阅者: {routing_key}")
+
         # ACK_FIRST：消息在 handler 执行前就被 ack，避免 _publish 失败后
         # FastStream 尝试 reject → ChannelInvalidStateError → 消息未 ack →
         # RabbitMQ 重新投递 → 无限重试循环。
@@ -137,3 +177,11 @@ def rpc_subscriber(
         return wrapper
 
     return decorator
+
+
+__all__ = [
+    "DEFAULT_RPC_TIMEOUT",
+    "rpc_subscriber",
+    "registered_rpc_methods",
+    "router",
+]

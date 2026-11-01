@@ -32,7 +32,13 @@ from Service.MQ.base.MQClient.BiliLotDataFastStream import (
 )
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.MQ.base.MQClient.base import test_mq_prop
-from controller.v1.mq import lottery_data
+
+# 本模块 = crawler 角色的「写库通道」：bili_data 的普通 MQ 消费者（抽奖入库 / Milvus 同步 /
+# 奖品抽取等）都在这里，落库动作由它们完成。
+# RPC 只做只读取数（2.70.0）：`FastapiApp.rpc.*` 的 handler 在
+# controller/v1/mq/rpc_read_lottery_data.py，由 query 角色的 query_main.py 挂载；
+# 这里**不能** import 那些 handler —— 否则 crawler 进程会再注册一份订阅者与 query 争抢队列
+#（rpc_subscriber 会拒绝并打 WARNING）。
 
 
 @router.subscriber(**official_reserve_charge_lot.sub_params)

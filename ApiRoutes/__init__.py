@@ -110,10 +110,16 @@ class RouterPaths(StrEnumAutoDoc):
     )
     GET_LOTTERY_FILTER_PARAMS = "/GetLotteryFilterParams"  # 获取抽奖查询筛选参数元数据
     GET_LOTTERY_DETAIL = "/GetLotteryDetail"  # 按 lottery_id 获取单个抽奖卡片详情
+    GET_LOTTERY_DETAIL_LIST = (
+        "/GetLotteryDetailList"  # 按 lottery_ids 批量获取抽奖卡片详情（列表页专用）
+    )
     GET_OTHERS_LOT_DYN_DETAIL = (
         "/GetOthersLotDynDetail"  # 按 dynId 获取单个第三方抽奖动态详情
     )
     GET_LOTTERY_DATA_SUMMARY = "/GetLotteryDataSummary"  # 获取管理端抽奖数据汇总
+    GET_UPCOMING_LOTTERY = (
+        "/GetUpcomingLottery"  # 即将开奖明细（分页，默认 24 小时内）
+    )
 
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "/AddDynamicLottery"  # 提交抽奖动态
@@ -216,10 +222,14 @@ class RouterNames(StrEnumAutoDoc):
         "get_lottery_filter_params"  # 获取抽奖查询筛选参数元数据
     )
     GET_LOTTERY_DETAIL = "get_lottery_detail"  # 按 lottery_id 获取单个抽奖卡片详情
+    GET_LOTTERY_DETAIL_LIST = (
+        "get_lottery_detail_list"  # 按 lottery_ids 批量获取抽奖卡片详情
+    )
     GET_OTHERS_LOT_DYN_DETAIL = (
         "get_others_lot_dyn_detail"  # 按 dynId 获取单个第三方抽奖动态详情
     )
     GET_LOTTERY_DATA_SUMMARY = "get_lottery_data_summary"  # 获取管理端抽奖数据汇总
+    GET_UPCOMING_LOTTERY = "get_upcoming_lottery"  # 即将开奖明细（分页）
 
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "add_dynamic_lottery"  # 提交抽奖动态

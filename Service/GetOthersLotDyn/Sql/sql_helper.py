@@ -777,6 +777,26 @@ class __SqlHelper(SqlHelperBase):
                 return ret.rid, ret.dynamic_type
             return None
 
+    def _grand_prize_condition(self, is_grand_prize: bool):
+        """「只看大奖 / 排除大奖」条件（lot_type=common 的 t_lot_extra_info）
+
+        True  → 存在 is_grand_prize=1 的记录；
+        False → 不存在（含没有 extra_info 记录的动态），与 lotdata 侧口径一致
+        （见 DynDetailSqlHelperMysqlVer.query_lottery 的 is_grand_prize 分支）。
+        """
+        exists_clause = (
+            exists()
+            .where(
+                and_(
+                    TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+                    TLotExtraInfo.lot_type == "common",
+                    TLotExtraInfo.is_grand_prize == 1,
+                )
+            )
+            .correlate(TLotdyninfo)
+        )
+        return exists_clause if is_grand_prize else ~exists_clause
+
     @log_sql_retry_wrapper()
     async def getLotDynListPaginated(
         self,
@@ -789,6 +809,7 @@ class __SqlHelper(SqlHelperBase):
         pub_time_end: int | None = None,
         created_at_start: int | None = None,
         created_at_end: int | None = None,
+        is_grand_prize: bool | None = None,
     ) -> tuple[list[TLotdyninfo], int]:
         """分页获取抽奖动态列表，支持排序和时间筛选
 
@@ -797,6 +818,7 @@ class __SqlHelper(SqlHelperBase):
         :param sort_by: 排序字段，支持 pubTime / created_at
         :param sort_order: 排序方向，asc / desc
         :param is_lot: 筛选是否抽奖，None 表示不过滤
+        :param is_grand_prize: 大奖筛选：True-只看大奖 / False-排除大奖 / None-不过滤
         :param pub_time_start: 发布时间起始（Unix 时间戳，秒）
         :param pub_time_end: 发布时间截止（Unix 时间戳，秒）
         :param created_at_start: 创建时间起始（Unix 时间戳，秒）
@@ -825,6 +847,8 @@ class __SqlHelper(SqlHelperBase):
                 conditions.append(
                     TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end)
                 )
+            if is_grand_prize is not None:
+                conditions.append(self._grand_prize_condition(is_grand_prize))
 
             sort_column = getattr(TLotdyninfo, sort_by, TLotdyninfo.pubTime)
             order_clause = (
@@ -863,12 +887,14 @@ class __SqlHelper(SqlHelperBase):
         pub_time_end: int | None = None,
         created_at_start: int | None = None,
         created_at_end: int | None = None,
+        is_grand_prize: bool | None = None,
     ) -> tuple[list[TLotdyninfo], int, dict[int, TLotExtraInfo]]:
         """分页获取抽奖动态列表，并通过 LEFT JOIN 一次查询附带 t_lot_extra_info
 
         奖品信息（prize_names/lottery_time）已并入 t_lot_extra_info，
         使用 LEFT JOIN 替代原先的独立二次查询，减少数据库往返。
 
+        :param is_grand_prize: 大奖筛选：True-只看大奖 / False-排除大奖 / None-不过滤
         :return: (items, total, extra_map) — extra_map 以 dynId(=ref_id) 为键
         """
         async with self.async_session() as session:
@@ -890,6 +916,8 @@ class __SqlHelper(SqlHelperBase):
                 time_conditions.append(
                     TLotdyninfo.created_at <= datetime.fromtimestamp(created_at_end)
                 )
+            if is_grand_prize is not None:
+                time_conditions.append(self._grand_prize_condition(is_grand_prize))
 
             sort_column = getattr(TLotdyninfo, sort_by, TLotdyninfo.pubTime)
             order_clause = (

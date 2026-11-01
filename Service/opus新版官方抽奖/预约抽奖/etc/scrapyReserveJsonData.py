@@ -233,7 +233,13 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         sid_list: list[int | str],
         is_api_fetch: bool,
         background_tasks: BackgroundTasks | None,
+        allow_refresh: bool = True,
     ) -> list[tuple[TUpReserveRelationInfo, dict]]:
+        """批量读取预约关系信息。
+
+        :param allow_refresh: 是否允许对「本地记录失效」的预约发起刷新（刷新会访问 B 站并写库）。
+            纯查询角色（SERVICE_ROLE=query）传 False：只返回库里的既有数据，不做任何写入。
+        """
         if not is_api_fetch:
             _: list[
                 TUpReserveRelationInfo
@@ -247,6 +253,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         for x in _:
             resp_dict = x.raw_JSON
             if not x or x.code != 0 or x.sid is None:
+                if not allow_refresh:
+                    resp.append((x, resp_dict))
+                    continue
                 self.log.info(f"刷新预约信息: {x.sid}")
                 if background_tasks:
                     background_tasks.add_task(

@@ -42,6 +42,7 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
 import asyncio
 from fastapi import BackgroundTasks
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
+from CONFIG import settings
 
 bds = bili_dynamic_sqlhelper  # 获取普通抽奖（主要是非官方的
 brs = bili_reserve_sqlhelper
@@ -136,15 +137,40 @@ def _reserve_available(
 
 
 async def get_reserve_lottery(
-    q: BiliLotDataQueryModel, background_task: BackgroundTasks | None = None
+    q: BiliLotDataQueryModel,
+    background_task: BackgroundTasks | None = None,
+    *,
+    allow_active_fetch: bool | None = None,
 ) -> tuple[list[ReserveInfoResp], int]:
+    # 只有爬虫角色（SERVICE_ROLE=crawler）在读路径上允许刷新 / 回写；
+    # query（纯查询）与 api（只提供接口）都不发起预约信息刷新、不回写 lotdata。
+    # RPC 取数（RPA 等外部系统批量拉列表）必须显式传 False：
+    # 没有 BackgroundTasks 时下面会**同步 await** 逐条访问 B 站刷新预约状态、回写 lotdata，
+    # page_size=1000 时足以把单次调用拖过服务端 60s 超时（表现为 RPC 一直超时）；
+    # 而且这些刷新/回写是纯副作用（不改变本次响应内容），本就该由爬虫角色的定时任务负责。
+    allow_write = (
+        settings.allow_active_fetch
+        if allow_active_fetch is None
+        else allow_active_fetch
+    )
+    # 「仅看有效预约」：预约被取消/失效并不体现在 lotdata.status 上，只能先从预约关系表
+    # 取出仍可参与的 id，再以 business_id IN (...) 下推到 lotdata 查询（两库不同，无法 join）。
+    # 显式选了 finished/canceled 等状态时与「预约有效性」不是同一维度，不叠加过滤。
+    if q.only_available and q.status is BiliLotDataStatusEnum.UNFINISHED:
+        available_ids = await brs.get_available_reserve_ids()
+        if not available_ids:
+            return [], 0
+        q = q.model_copy(update={"business_id_in": available_ids})
     all_lots, total_num = await bos.query_lottery(q)
     # 与主表解耦，批量查询 extra_info（t_lot_extra_info）
     extra_map = await bos.get_extra_info_map([x.lottery_id for x in all_lots])
     reserve_info_list: list[
         tuple[TUpReserveRelationInfo, dict]
     ] = await reserve_robot.bulk_handle_fetch_reserve_info(
-        [x.business_id for x in all_lots], False, background_task
+        [x.business_id for x in all_lots],
+        False,
+        background_task,
+        allow_refresh=allow_write,
     )
     reserve_info_text_list: List[str] = [
         f"预约有奖：{x.first_prize_cmt}*{x.first_prize}份{f'、{str(x.second_prize_cmt)}' if x.second_prize_cmt else ''}{f'*{str(x.second_prize)}份' if x.second_prize else ''}{f'、{str(x.third_prize_cmt)}' if x.third_prize_cmt else ''}{f'*{str(x.third_prize)}' + '份' if x.third_prize else ''}"
@@ -152,7 +178,7 @@ async def get_reserve_lottery(
     ]
     ret_reserve_infos: List[ReserveInfoResp] = []
     for x, _ in reserve_info_list:
-        if x.text is None:
+        if x.text is None and allow_write:
             if background_task:
                 background_task.add_task(
                     update_lot_data,
