@@ -497,6 +497,26 @@ class __SqlHelper(SqlHelperBase):
             ),
         )
 
+    @staticmethod
+    def _exclude_official_lot_condition():
+        """返回「排除官方抽奖数据」的 SQL 条件。
+
+        ``t_lotdyninfo.officialLotType`` 记录官方抽奖类型（预约/充电/官方抽奖），
+        这类记录属于官方抽奖源动态，各自有独立接口；第三方抽奖取数时需排除，
+        避免同一动态被第三方流程重复参与。空值（含空字符串）与
+        ``抽奖动态的源动态`` 不属于官方抽奖活动，仍保留。
+        """
+        official_types = [
+            OfficialLotType.reserve_lot.value,
+            OfficialLotType.charge_lot.value,
+            OfficialLotType.official_lot.value,
+        ]
+        return or_(
+            TLotdyninfo.officialLotType.is_(None),
+            TLotdyninfo.officialLotType == "",
+            TLotdyninfo.officialLotType.notin_(official_types),
+        )
+
     @log_sql_retry_wrapper()
     async def getDynInfoByDynamicId(self, dynamic_id: int | str) -> TLotdyninfo | None:
         """
@@ -810,6 +830,7 @@ class __SqlHelper(SqlHelperBase):
         created_at_start: int | None = None,
         created_at_end: int | None = None,
         is_grand_prize: bool | None = None,
+        exclude_official_lot: bool = False,
     ) -> tuple[list[TLotdyninfo], int]:
         """分页获取抽奖动态列表，支持排序和时间筛选
 
@@ -819,6 +840,7 @@ class __SqlHelper(SqlHelperBase):
         :param sort_order: 排序方向，asc / desc
         :param is_lot: 筛选是否抽奖，None 表示不过滤
         :param is_grand_prize: 大奖筛选：True-只看大奖 / False-排除大奖 / None-不过滤
+        :param exclude_official_lot: 是否排除官方抽奖类型（预约/充电/官方抽奖）的记录
         :param pub_time_start: 发布时间起始（Unix 时间戳，秒）
         :param pub_time_end: 发布时间截止（Unix 时间戳，秒）
         :param created_at_start: 创建时间起始（Unix 时间戳，秒）
@@ -831,6 +853,8 @@ class __SqlHelper(SqlHelperBase):
                 conditions.append(
                     self._is_lot_condition() if is_lot else ~self._is_lot_condition()
                 )
+            if exclude_official_lot:
+                conditions.append(self._exclude_official_lot_condition())
             if pub_time_start is not None:
                 conditions.append(
                     TLotdyninfo.pubTime >= datetime.fromtimestamp(pub_time_start)

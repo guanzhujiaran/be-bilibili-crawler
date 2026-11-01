@@ -276,6 +276,7 @@ async def handle_get_others_lot_dyn_list(
         sort_order=params.sort_order.value,
         is_lot=params.is_lot,
         is_grand_prize=params.is_grand_prize,
+        exclude_official_lot=params.exclude_official_lot,
         pub_time_start=pub_time_start,
         pub_time_end=params.pub_time_end,
         created_at_start=created_at_start,
