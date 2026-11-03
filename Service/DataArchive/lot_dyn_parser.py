@@ -3,7 +3,7 @@
 从 `bilidyndetail.dynData` 原始 JSON 里判断这条动态是不是抽奖动态，
 是的话抽取出抽奖类型、抽奖 id、需要携带的词、互动数等业务字段。
 
-消费方：`Service/DataArchive/lot_dyn_info_export.py`（按天导出 csv.gz）。
+消费方：`Service/DataArchive/lot_dyn_info_export.py`（按月导出 csv.gz）。
 解析逻辑本身与落盘方式无关，因此独立成模块，避免「解析」和「导出」互相耦合。
 """
 

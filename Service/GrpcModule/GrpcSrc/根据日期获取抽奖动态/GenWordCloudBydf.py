@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from CONFIG import CONFIG
 from Models.database_archive.cold_data_archive_models import get_archive_root_dir
 from Models.database_archive.lot_dyn_info_models import LOT_DYN_INFO_JOB_NAME
-from Service.DataArchive.csv_gz_io import build_daily_file_path
+from Service.DataArchive.csv_gz_io import build_monthly_file_path
 
 tokenizer = jieba3.jieba3(model="small")
 

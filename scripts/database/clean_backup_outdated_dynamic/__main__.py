@@ -5,11 +5,11 @@
     # 先干跑：抽奖信息 + 冷数据归档都只统计，不落盘不删库
     python -m scripts.database.clean_backup_outdated_dynamic --dry-run
 
-    # 只跑抽奖信息导出，回补最近 30 天
+    # 只跑抽奖信息导出，回补最近 3 个整月
     python -m scripts.database.clean_backup_outdated_dynamic \
-        --jobs lot_dyn_info --lot-dyn-days 30
+        --jobs lot_dyn_info --lot-dyn-months 3
 
-    # 只归档 dyndetail 的 bilidyndetail，保留 10 天，归档后删库
+    # 只归档 dyndetail 的 bilidyndetail，保留 10 天，归档后删库（按月份分片）
     python -m scripts.database.clean_backup_outdated_dynamic \
         --jobs archive --tables bilidyndetail --keep-days 10
 
@@ -61,16 +61,22 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--root-dir", type=str, default="", help="覆盖归档根目录")
     parser.add_argument(
+        "--max-months",
         "--max-days",
+        dest="max_months",
         type=int,
         default=0,
-        help="单次最多处理多少天（0=不限），首次处理历史数据时建议限制",
+        help="单次最多处理多少个月（0=不限），首次处理历史数据时建议限制；"
+        "--max-days 为兼容旧命令保留的别名",
     )
     parser.add_argument(
+        "--lot-dyn-months",
         "--lot-dyn-days",
+        dest="lot_dyn_months",
         type=int,
         default=None,
-        help="抽奖信息回补天数，默认取配置 LOT_DYN_INFO_DAYS",
+        help="抽奖信息回补月数（只导已过完的整月），默认取配置 LOT_DYN_INFO_MONTHS；"
+        "--lot-dyn-days 为兼容旧命令保留的别名",
     )
     parser.add_argument(
         "--no-delete", action="store_true", help="只导出归档，不删除数据库记录"
@@ -88,7 +94,7 @@ async def _main() -> None:
         keep_days_override=args.keep_days,
         is_delete_after_archive=False if args.no_delete else None,
         is_dry_run=args.dry_run,
-        max_days_per_run=args.max_days,
+        max_months_per_run=args.max_months,
     )
     if args.end_ts:
         archive_conf.end_ts = args.end_ts
@@ -98,8 +104,8 @@ async def _main() -> None:
     output: dict[str, object] = {}
     if _JOB_LOT_DYN_INFO in args.jobs:
         lot_conf = LotDynInfoExportConf(is_dry_run=args.dry_run)
-        if args.lot_dyn_days is not None:
-            lot_conf.days = args.lot_dyn_days
+        if args.lot_dyn_months is not None:
+            lot_conf.months = args.lot_dyn_months
         if args.end_ts:
             lot_conf.end_ts = args.end_ts
         if args.root_dir:

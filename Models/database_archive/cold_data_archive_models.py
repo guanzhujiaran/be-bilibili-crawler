@@ -6,8 +6,12 @@
   `docker_vol/fastapi/dyn_backup`），空值回落到代码根目录下的
   `scripts/database/dyn_backup`。所有表的归档产物都放在这一个目录下，
   方便整体打包上传网盘。
-- **按「表 + 日期」区分文件**：`{root}/{表名}/{年}/{YYYY_MM_DD}_{表名}.csv.gz`。
-  文件名自带表名与日期，脱离目录层级也不会混淆；年目录只用来避免单目录文件过多。
+- **统一产物格式**：最里层是标准 CSV 文本，外层 gzip 压缩（`.csv.gz`），
+  与历史归档文件完全一致（见 `Service/DataArchive/csv_gz_io.py`）。
+- **按「表 + 月份」区分文件**：`{root}/{表名}/{年}/{YYYY_MM}_{表名}.csv.gz`。
+  文件名自带表名与月份，脱离目录层级也不会混淆；年目录只用来避免单目录文件过多。
+  清理是运维动作，按月分片可以让文件数与网盘对象数比按天少一个量级
+  （按天曾因为一个分页 bug 写爆出 14GB 的临时文件）。
 - **保留天数按表配置**：三张表虽然是同一批动态的三份存储，但业务查询窗口不同
   （`bilidyndetail` 只服务最近抽奖信息导出，`t_lotdyninfo` 服务第三方抽奖列表的
   历史范围查询，`t_lotuserspaceresp` 只服务本轮断点续爬），因此保留天数不写死，
@@ -50,9 +54,9 @@ class ColdArchiveTables:
 
 
 class ArchiveFileResult(CustomBaseModel):
-    """单个日期分片的归档结果。"""
+    """单个月份分片的归档结果。"""
 
-    day: str = Field(description="归档日期，格式 YYYY_MM_DD")
+    period: str = Field(description="归档月份，格式 YYYY_MM")
     file_path: str = Field(default="", description="归档文件绝对路径，空表示未生成")
     row_count: int = Field(default=0, description="本次从库里导出（并删除）的行数")
     file_row_count: int = Field(default=0, description="归档包内总行数（含历史续写）")
@@ -72,7 +76,7 @@ class TableArchiveResult(CustomBaseModel):
     total_rows: int = 0
     total_file_size: int = 0
     deleted_rows: int = 0
-    skipped_days: int = Field(default=0, description="无数据 / 已有归档而跳过的天数")
+    skipped_periods: int = Field(default=0, description="无数据 / 已有归档而跳过的月份数")
     is_skipped: bool = False
     skip_reason: str = ""
 
@@ -98,7 +102,7 @@ class ColdArchiveConf(CustomBaseModel):
     is_dry_run: bool = Field(
         default=False, description="只统计不落盘、不删除，用于上线前核对数据量"
     )
-    max_days_per_run: int = Field(
+    max_months_per_run: int = Field(
         default=0,
-        description="单次运行最多处理多少天，0 表示不限制；首次处理历史数据时可用来分批推进",
+        description="单次运行最多处理多少个月，0 表示不限制；首次处理历史数据时可用来分批推进",
     )

@@ -1,25 +1,31 @@
-"""冷数据归档服务：按天把冷数据导出成 csv.gz，校验通过后可选删库。
+"""冷数据归档服务：按月把冷数据导出成 csv.gz，校验通过后可选删库。
 
-整体流程（单表、单天）：
+整体流程（单表、单月）：
 
-1. 按「归档分片字段」分批取该天所有行（主键 keyset 翻页，不整表进内存）；
-2. 边读边写 `{root}/{表名}/{年}/{YYYY_MM_DD}_{表名}.csv.gz.new.tmp`；
+1. 按「归档分片字段」分批取该月所有行（主键 keyset 翻页，不整表进内存）；
+2. 边读边写 `{root}/{表名}/{年}/{YYYY_MM}_{表名}.csv.gz.new.tmp`；
 3. 关闭后原子改名为正式文件：避免半截压缩包被误当成有效归档；
 4. 回读 gzip 统计行数，必须与写入行数一致，否则视为失败、**不删库**；
 5. 校验通过且开启删除时，按主键分批删除这批行。
 
-文件格式与路径由 `csv_gz_io` 统一提供，与业务导出（抽奖信息）完全同构。
+按月而不是按天：清理是「回收磁盘」的运维动作，没必要每天切一个文件，
+月度分片能把小文件数量和上传网盘的对象数降一个量级，也让删除批次的提交
+次数更少；代价是当前这个月要等到整月过完且越过保留窗口才会归档。
+
+文件格式与路径由 `csv_gz_io` 统一提供（里层标准 CSV、外层 gzip），
+与业务导出（抽奖信息）完全同构。
 
 安全边界：
-- 只归档「整天都已经冷掉」的日期（`day_end < cutoff_ts`），不碰保留窗口内的数据；
-- 当天没有数据、或历史上已归档过（文件存在且本次读到 0 行）时跳过，绝不覆盖已有归档；
-- 任意一步失败只影响当天，其他天继续；删库只会发生在该天校验通过之后。
+- 只归档「整月都已经冷掉」的月份（`month_end < cutoff_ts`），不碰保留窗口内的数据，
+  也不碰还在写入的当月；
+- 当月没有数据、或历史上已归档过（文件存在且本次读到 0 行）时跳过，绝不覆盖已有归档；
+- 任意一步失败只影响当月，其他月继续；删库只会发生在该月校验通过之后。
 """
 
 import csv
 import datetime
-import gzip
 import os
+import zlib
 from collections.abc import Iterator
 
 from CONFIG import settings
@@ -30,35 +36,18 @@ from Models.database_archive.cold_data_archive_models import (
     TableArchiveResult,
 )
 from Service.DataArchive.csv_gz_io import (
-    build_daily_file_path,
+    build_monthly_file_path,
     count_csv_gz_rows,
     format_csv_value,
     iter_csv_gz_rows,
+    iter_month_ranges,
+    open_csv_gz_write,
     verify_csv_gz,
     write_csv_gz,
 )
 from Service.DataArchive.targets import BaseColdArchiveTarget, build_default_targets
 
 _SECONDS_PER_DAY = 86400
-
-
-def _iter_day_ranges(start_ts: int, cutoff_ts: int) -> Iterator[tuple[int, int]]:
-    """把 [start_ts, cutoff_ts) 切成「整天」区间，只产出完全冷掉的日期。
-
-    以本地时区 00:00:00 为日界，与库里的 `created_at` / 动态发布时间对齐。
-    """
-    day = datetime.date.fromtimestamp(start_ts)
-    while True:
-        day_start = int(
-            datetime.datetime.combine(day, datetime.time.min).timestamp()
-        )
-        day_end = day_start + _SECONDS_PER_DAY - 1
-        if day_start >= cutoff_ts:
-            return
-        if day_end >= cutoff_ts:
-            return
-        yield day_start, day_end
-        day += datetime.timedelta(days=1)
 
 
 class ColdDataArchiver:
@@ -146,27 +135,33 @@ class ColdDataArchiver:
             f" 冷热分界={datetime.datetime.fromtimestamp(cutoff_ts)}"
             f" 保留 {keep_days} 天"
         )
-        processed_days = 0
-        for day_start, day_end in _iter_day_ranges(earliest_ts, cutoff_ts):
-            # 首次上线可能要处理好几年历史，用 max_days_per_run 限制单次运行的天数，
-            # 让任务可以在多天里分批推进，避免一次跑太久。
-            if self.conf.max_days_per_run and processed_days >= self.conf.max_days_per_run:
+        processed_months = 0
+        for month_start, month_end in iter_month_ranges(earliest_ts, cutoff_ts):
+            # 首次上线可能要处理好几年历史，用 max_months_per_run 限制单次运行的月数，
+            # 让任务可以在多次调度里分批推进，避免一次跑太久。
+            if (
+                self.conf.max_months_per_run
+                and processed_months >= self.conf.max_months_per_run
+            ):
                 self.log.info(
                     f"[{target.table_name}] 达到单次运行上限 "
-                    f"{self.conf.max_days_per_run} 天，本轮先停在这里"
+                    f"{self.conf.max_months_per_run} 个月，本轮先停在这里"
                 )
                 break
-            processed_days += 1
+            processed_months += 1
             try:
-                file_result = await self._archive_one_day(target, day_start, day_end)
+                file_result = await self._archive_one_month(
+                    target, month_start, month_end
+                )
             except Exception as e:
-                # 单天失败（校验不通过 / 删库出错）只影响当天，剩下的天继续
+                # 单月失败（校验不通过 / 删库出错）只影响当月，剩下的月继续
                 self.log.exception(
                     f"[{target.table_name}] "
-                    f"{datetime.date.fromtimestamp(day_start)} 归档失败：{e}"
+                    f"{datetime.date.fromtimestamp(month_start).strftime('%Y_%m')}"
+                    f" 归档失败：{e}"
                 )
                 file_result = ArchiveFileResult(
-                    day=datetime.date.fromtimestamp(day_start).strftime("%Y_%m_%d"),
+                    period=datetime.date.fromtimestamp(month_start).strftime("%Y_%m"),
                     row_count=0,
                 )
             result.files.append(file_result)
@@ -175,22 +170,22 @@ class ColdDataArchiver:
             if file_result.is_deleted:
                 result.deleted_rows += file_result.row_count
             if file_result.row_count == 0 and not file_result.file_path:
-                result.skipped_days += 1
+                result.skipped_periods += 1
         self.log.info(
             f"[{target.table_name}] 归档完成：文件 {len(result.files)} 个，"
             f"行 {result.total_rows}，压缩后 {result.total_file_size} 字节，"
-            f"删除 {result.deleted_rows} 行，跳过 {result.skipped_days} 天"
+            f"删除 {result.deleted_rows} 行，跳过 {result.skipped_periods} 个月"
         )
         return result
 
-    async def _archive_one_day(
-        self, target: BaseColdArchiveTarget, day_start: int, day_end: int
+    async def _archive_one_month(
+        self, target: BaseColdArchiveTarget, month_start: int, month_end: int
     ) -> ArchiveFileResult:
-        day_str = datetime.date.fromtimestamp(day_start).strftime("%Y_%m_%d")
-        file_path = build_daily_file_path(
-            self.conf.root_dir, target.table_name, day_start
+        month_str = datetime.date.fromtimestamp(month_start).strftime("%Y_%m")
+        file_path = build_monthly_file_path(
+            self.conf.root_dir, target.table_name, month_start
         )
-        file_result = ArchiveFileResult(day=day_str)
+        file_result = ArchiveFileResult(period=month_str)
         is_exists = os.path.exists(file_path)
 
         primary_keys: list[str | int] = []
@@ -199,16 +194,14 @@ class ColdDataArchiver:
         row_count = 0
         # 先写新行到 .new.tmp：只有确认本次真的读到数据，才会去碰正式文件
         new_tmp_path = f"{file_path}.new.tmp"
-        gzip_file = None
+        csv_file = None
         writer = None
         try:
-            async for row in target.iter_row_values(day_start, day_end):
+            async for row in target.iter_row_values(month_start, month_end):
                 if writer is None and not self.conf.is_dry_run:
                     os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    gzip_file = gzip.open(
-                        new_tmp_path, "wt", encoding="utf-8", newline=""
-                    )
-                    writer = csv.writer(gzip_file)
+                    csv_file = open_csv_gz_write(new_tmp_path)
+                    writer = csv.writer(csv_file)
                     writer.writerow(target.columns)
                 if writer is not None:
                     writer.writerow([format_csv_value(value) for value in row])
@@ -216,21 +209,23 @@ class ColdDataArchiver:
                 if need_pk:
                     primary_keys.append(row[pk_index])  # type: ignore[arg-type]
         finally:
-            if gzip_file is not None:
-                gzip_file.close()
+            if csv_file is not None:
+                csv_file.close()
 
         if row_count == 0:
             if os.path.exists(new_tmp_path):
                 os.remove(new_tmp_path)
             if is_exists:
                 # 历史上已归档过（数据可能上次已删），保留原文件不覆盖
-                self.log.debug(f"[{target.table_name}] {day_str} 无数据，已有归档保留")
+                self.log.debug(
+                    f"[{target.table_name}] {month_str} 无数据，已有归档保留"
+                )
             return file_result
 
         if self.conf.is_dry_run:
             file_result.row_count = row_count
             self.log.info(
-                f"[{target.table_name}] {day_str} dry_run：待归档 {row_count} 行"
+                f"[{target.table_name}] {month_str} dry_run：待归档 {row_count} 行"
             )
             return file_result
 
@@ -255,14 +250,14 @@ class ColdDataArchiver:
                 f"{file_path} 回读校验失败：{reason}，已保留文件但不删库"
             )
         self.log.info(
-            f"[{target.table_name}] {day_str} 归档 {expected_rows} 行 -> "
+            f"[{target.table_name}] {month_str} 归档 {expected_rows} 行 -> "
             f"{file_path}（{file_result.file_size} 字节）"
         )
         if self.is_delete:
             await target.delete_by_primary_keys(primary_keys)
             file_result.is_deleted = True
             self.log.info(
-                f"[{target.table_name}] {day_str} 已删除 {row_count} 行冷数据"
+                f"[{target.table_name}] {month_str} 已删除 {row_count} 行冷数据"
             )
         return file_result
 
@@ -278,7 +273,7 @@ class ColdDataArchiver:
     ) -> int:
         """把本次新增行续写到已有归档包末尾（按主键去重），返回合并后的总行数。
 
-        为什么需要去重：若配置成「只归档不删库」，每次跑都会把同一天的数据再导出
+        为什么需要去重：若配置成「只归档不删库」，每次跑都会把同一分片的数据再导出
         一遍，直接追加会让归档包重复膨胀；这里按主键跳过已存在行。
 
         旧归档不可读时退化为「只用本次数据重建」，并把旧文件备份成 `.broken`。
@@ -287,7 +282,14 @@ class ColdDataArchiver:
         try:
             for row in iter_csv_gz_rows(file_path):
                 existing_primary_keys.add(row[pk_index])
-        except (OSError, UnicodeDecodeError, csv.Error, IndexError) as e:
+        except (
+            OSError,
+            EOFError,
+            zlib.error,
+            UnicodeDecodeError,
+            csv.Error,
+            IndexError,
+        ) as e:
             self.log.error(
                 f"已有归档不可读，改用本次数据重建：{file_path}，{e}；"
                 f"旧文件备份为 {file_path}.broken"

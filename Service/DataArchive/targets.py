@@ -140,6 +140,11 @@ class BaseColdArchiveTarget(ABC):
         if self.primary_key_name not in select_names:
             select_names.append(self.primary_key_name)
         pk_is_extra = len(select_names) > len(column_names)
+        # 翻页上界必须取「主键那一列」，不能想当然取最后一列：主键本来就在
+        # 列清单里时（`iter_row_values` 传整表列）它不在末尾，取最后一列会拿
+        # 到别的字段（如 `dynLotRound_id`）当上界，条件恒真 -> 每批都读回同样
+        # 的行，文件无限膨胀（曾产生 14GB 的 .new.tmp）。
+        pk_index = select_names.index(self.primary_key_name)
         column_objects = [
             cast(getattr(self.model, name), Text)
             if isinstance(self.model.__table__.columns[name].type, JSON)
@@ -163,7 +168,12 @@ class BaseColdArchiveTarget(ABC):
                     yield tuple(row[:-1]) if pk_is_extra else tuple(row)
                 if len(rows) < self.fetch_batch_size:
                     break
-                last_pk = rows[-1][-1]
+                next_pk = rows[-1][pk_index]
+                # 防御：分页上界没有推进（主键值异常 / 类型转换后比较失效）时立刻
+                # 收尾，避免「同一批行反复读」把归档文件写到撑爆磁盘。
+                if last_pk is not None and next_pk <= last_pk:
+                    break
+                last_pk = next_pk
 
     @log_sql_retry_wrapper()
     async def delete_by_primary_keys(self, primary_keys: list[str | int]) -> int:
