@@ -48,3 +48,5 @@ Service/GrpcModule/Utils/极验/Geetest_html
 Service/samsclub/api/app_storage.json
 __test/
 Service/GrpcModule/GrpcSrc/监控up动态/data/monitor_uid_list.json
+# 冷数据归档产物（本地直跑时的默认落盘目录，DYN_BACKUP_DIR 未配置时才用）
+scripts/database/dyn_backup/

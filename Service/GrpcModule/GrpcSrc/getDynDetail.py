@@ -21,9 +21,6 @@ from Service.GrpcModule.GrpcSrc.DynObjectClass import dynAllDetail
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
 )
-from Service.GrpcModule.GrpcSrc.根据日期获取抽奖动态.getLotDynSortByDate import (
-    LotDynSortByDate,
-)
 from Service.opus新版官方抽奖.Model.BaseLotModel import BaseSuccCounter, BaseStopCounter
 from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import bili_reserve_sqlhelper
 from Utils.通用.Common import sem_gen, asyncio_gather
@@ -579,8 +576,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             task_list.append(task3)
             await asyncio_gather(*task_list, log=self.log)
             self.log.error("爬取动态任务全部完成！")
-            lot_dyn_sort_by_date = LotDynSortByDate()
-            await lot_dyn_sort_by_date.main()
+            # 抽奖信息导出不再跟在爬取任务尾部做：它属于「每日 dyn_backup」的一环，
+            # 由 DYN_DETAIL_DATABASE_CLEANER 定时任务统一产出 csv.gz
+            # （见 scripts/database/clean_backup_outdated_dynamic/cleaner.py）。
         except Exception as e:
             self.log.error(f"爬取动态任务出错：{e}")
             await a_push_error(

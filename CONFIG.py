@@ -185,11 +185,28 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     llm_apis: list[LLMApiConfig] = []
 
     sqlalchemy_logging: bool = False
-    # 动态数据归档（每日清理过期动态时导出的 csv.gz）落盘目录。
+    # 冷数据归档（导出 csv.gz + 可选删库）的统一落盘根目录。
     # 空值表示用代码根目录下的 scripts/database/dyn_backup（本地直跑时的默认）。
     # 容器部署时由 docker-compose.yml 指向挂载出来的宿主机目录，
     # 避免备份产物写进 bind mount 的源码树。
+    # 目录结构：{DYN_BACKUP_DIR}/{表名}/{年}/{YYYY_MM_DD}_{表名}.csv.gz
     DYN_BACKUP_DIR: str = ""
+    # ===== 冷数据归档保留窗口（见 Service/DataArchive/cold_data_archiver.py）=====
+    # 每个表只归档「整天都早于 now - keep_days」的数据，窗口内的热数据不导出、不删除。
+    # 三张表是同一批动态原始 JSON 的三份存储，统一用同一套窗口与产物格式：
+    # - dyndetail 的 bilidyndetail（dynData）：动态详情，抽奖信息导出与查询都靠它；
+    # - biliopusdb 的 t_lotdyninfo（rawJsonStr）：第三方抽奖动态，抽奖列表按时间范围查；
+    # - biliopusdb 的 t_lotuserspaceresp（spaceRespJson）：用户空间分页响应，只服务
+    #   本轮断点续爬，轮次结束后即死数据（体积最大）。
+    COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL: int = 180
+    COLD_ARCHIVE_KEEP_DAYS_LOTDYNINFO: int = 180
+    COLD_ARCHIVE_KEEP_DAYS_LOTUSERSPACERESP: int = 180
+    # 归档文件校验通过后是否真的删库（0=只归档不删，1=归档后删）。先在 0 观察几轮再开。
+    COLD_ARCHIVE_DELETE_AFTER: int = 1
+    # 每日「抽奖信息导出」回补天数：每次跑导出「截止日之前最近 N 天」，
+    # 产物与冷数据归档同格式同根目录（lot_dyn_info/{年}/{日期}_lot_dyn_info.csv.gz）。
+    # 默认 2 天，保证某天漏跑后下一次能自愈，同时不至于每天重复解析过多数据。
+    LOT_DYN_INFO_DAYS: int = 2
     # FastStream（RabbitMQ 消费者 / 发布者）内部日志级别：DEBUG / INFO / WARNING / ERROR / CRITICAL，
     # 通过环境变量 FASTSTREAM_LOG_LEVEL 覆盖。仅影响 FastStream 框架自身的标准库日志，
     # 不影响本项目 loguru 业务日志（MQ_logger 等）。

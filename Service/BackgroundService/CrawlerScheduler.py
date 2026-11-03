@@ -44,7 +44,8 @@ class BackgroundService:
             crawler_name=BackgroundServiceName.STUCK_CHECK_SCHEDULER.value,
         )
         self.DYN_DETAIL_DATABASE_CLEANER = BaseScheduler(
-            func=cleaner.do_clean,
+            # 每日：先导出抽奖信息 csv.gz，再归档冷数据 csv.gz 并删库
+            func=cleaner.run_daily_backup,
             cron_expr="0 0 * * *",
             crawler_name=BackgroundServiceName.DYN_DETAIL_DATABASE_CLEANER.value,
             default_interval_seconds=2 * 3600,

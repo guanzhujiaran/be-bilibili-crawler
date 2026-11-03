@@ -1,34 +1,53 @@
-from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
-    grpc_sql_helper,
+"""定时任务入口：每日 dyn_backup（抽奖信息导出 + 冷数据归档）。
+
+由 `Service/BackgroundService/CrawlerScheduler.py` 的 DYN_DETAIL_DATABASE_CLEANER
+每天 0 点触发，两件事共用同一套产物格式与落盘根目录（`settings.DYN_BACKUP_DIR`）：
+
+1. **抽奖信息导出**（`Service/DataArchive/lot_dyn_info_export.py`）：
+   `{root}/lot_dyn_info/{年}/{YYYY_MM_DD}_lot_dyn_info.csv.gz`，只读不删库；
+2. **冷数据归档**（`Service/DataArchive/cold_data_archiver.py`）：
+   - dyndetail 库 · `bilidyndetail`（动态详情，dynData 大字段）
+   - biliopusdb 库 · `t_lotdyninfo`（第三方抽奖动态，rawJsonStr 大字段）
+   - biliopusdb 库 · `t_lotuserspaceresp`（用户空间分页响应，spaceRespJson 大字段）
+   校验通过后按保留窗口删库，回收服务器磁盘。
+
+顺序不能反：抽奖信息要读 `bilidyndetail.dynData`，所以先导业务数据再归档删库
+（即便当天数据落在保留窗口内不会被删，先导出也能避免「删了才发现没导」）。
+"""
+
+from Models.database_archive.cold_data_archive_models import (
+    ColdArchiveConf,
+    TableArchiveResult,
 )
-from Service.GrpcModule.GrpcSrc.根据日期获取抽奖动态.getLotDynSortByDate import (
-    LotDynSortByDate,
+from Models.database_archive.daily_backup_models import DailyBackupResult
+from Models.database_archive.lot_dyn_info_models import (
+    LotDynInfoExportConf,
+    LotDynInfoExportResult,
 )
-from Service.GrpcModule.Models.getLotDynSortByDate import MainConf
-from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
-import asyncio
+from Service.DataArchive.cold_data_archiver import ColdDataArchiver
+from Service.DataArchive.lot_dyn_info_export import LotDynInfoExportJob
 
 
-async def do_clean():
-    first_dyn = await grpc_sql_helper.get_rid_bili_dyn_detail(
-        is_asc=True, is_available_data=True
+async def do_clean(conf: ColdArchiveConf | None = None) -> list[TableArchiveResult]:
+    """只跑冷数据归档（保留原入口，便于单独调用 / 手测）。"""
+    archiver = ColdDataArchiver(conf)
+    return await archiver.archive_all()
+
+
+async def do_export_lot_dyn_info(
+    conf: LotDynInfoExportConf | None = None,
+) -> LotDynInfoExportResult:
+    """只跑抽奖信息导出。"""
+    return await LotDynInfoExportJob().export_all(conf)
+
+
+async def run_daily_backup(
+    archive_conf: ColdArchiveConf | None = None,
+    lot_dyn_info_conf: LotDynInfoExportConf | None = None,
+) -> DailyBackupResult:
+    """定时任务主入口：先导出抽奖信息，再做冷数据归档 + 删库。"""
+    lot_dyn_info_result = await do_export_lot_dyn_info(lot_dyn_info_conf)
+    archive_results = await do_clean(archive_conf)
+    return DailyBackupResult(
+        lot_dyn_info=lot_dyn_info_result, archive=archive_results
     )
-    latest_dyn = await grpc_sql_helper.get_rid_bili_dyn_detail(
-        is_asc=False, is_available_data=True
-    )
-    if not latest_dyn:
-        return
-    lot_dyn_sort_by_date = LotDynSortByDate()
-    latest_dyn_ts = dynamic_id_2_ts(latest_dyn.dynamic_id_int)
-    first_dyn_ts = dynamic_id_2_ts(first_dyn.dynamic_id_int)
-    between_ts = [first_dyn_ts - 10000, latest_dyn_ts - 10 * 24 * 60 * 60]
-    print(f"between_ts: {between_ts}")
-    await lot_dyn_sort_by_date.main(
-        conf=MainConf(
-            between_ts=between_ts, is_gen_zip=True, is_delete_generated_data=True
-        )
-    )
-
-
-if __name__ == "__main__":
-    asyncio.run(do_clean())
