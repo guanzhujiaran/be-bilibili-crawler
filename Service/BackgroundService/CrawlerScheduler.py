@@ -1,5 +1,6 @@
 from log.base_log import reserve_lot_logger, official_lot_logger
 from scripts.database.clean_backup_outdated_dynamic import cleaner
+from Service.DataArchive.tablespace_maintenance import run_monthly_maintenance
 from Service.BaseCrawler.launcher.scheduler_launcher import (
     GenericCrawlerScheduler,
     BaseScheduler,
@@ -24,6 +25,7 @@ from Models.v1.background_service.background_service_model import BackgroundServ
 class BackgroundService:
     STUCK_CHECK_SCHEDULER: BaseScheduler | None = None
     DYN_DETAIL_DATABASE_CLEANER: BaseScheduler | None = None
+    TABLESPACE_MAINTENANCE: BaseScheduler | None = None
     GET_PROXY_METHODS_SCHEDULER: GenericCrawlerScheduler | None = None
     SAMSCCLUB_SCHEDULER: GenericCrawlerScheduler | None = None
     SAMSCCLUB_SPU_DETAIL_SCHEDULER: GenericCrawlerScheduler | None = None
@@ -49,6 +51,17 @@ class BackgroundService:
             cron_expr="0 0 * * *",
             crawler_name=BackgroundServiceName.DYN_DETAIL_DATABASE_CLEANER.value,
             default_interval_seconds=2 * 3600,
+        )
+        self.TABLESPACE_MAINTENANCE = BaseScheduler(
+            # 每月 1 号 04:30：把上月归档删库后残留的 InnoDB 空洞还给操作系统。
+            # 放在 0 点归档任务之后、白天业务前，整表重建（ALTER TABLE ... FORCE）
+            # 需要接近表大小的临时磁盘，默认只有空洞够大才真的重建。
+            # 注意：与其他任务一致，服务首次启动会立即执行一次，那一次通常只做
+            # ANALYZE（空洞为 0），不会触发重建。
+            func=run_monthly_maintenance,
+            cron_expr="30 4 1 * *",
+            crawler_name=BackgroundServiceName.TABLESPACE_MAINTENANCE.value,
+            default_interval_seconds=25 * 86400,
         )
         self.GET_PROXY_METHODS_SCHEDULER = GenericCrawlerScheduler(
             crawler=get_proxy_methods,

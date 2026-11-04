@@ -9,7 +9,7 @@ from typing import List, Sequence, Optional, Tuple
 from pydantic import BaseModel
 
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
-from sqlalchemy import select, and_, func, text, or_, exists, case
+from sqlalchemy import BigInteger, select, and_, func, text, or_, exists, case
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from CONFIG import CONFIG
 from Utils.通用.dynamic_id_caculate import ts_2_fake_dynamic_id
@@ -36,6 +36,18 @@ class TargetUserItem(BaseModel):
     last_dyn_pub_datetime: datetime | None = None  # 最后一条抽奖动态发布时间(人类可读)
     last_round_lot_count: int = 0  # 最后一轮有效抽奖次数
     last_round_total_count: int = 0  # 最后一轮总动态数
+
+
+class LotUserFetchStat(BaseModel):
+    """单个用户的空间动态抓取命中统计
+
+    total：窗口内抓到的、原动态在 t_lotdyninfo 中的转发动态数
+    lot：其中原动态被判定为抽奖的数量
+    """
+
+    uid: int
+    total: int = 0
+    lot: int = 0
 
 
 class GetOtherLotRedisManager(RedisManagerBase):
@@ -318,6 +330,128 @@ class __SqlHelper(SqlHelperBase):
             res = await session.execute(stmt)
             rows = res.all()
             return {int(row[0]): row[1] for row in rows}
+
+    @staticmethod
+    def _fetched_orig_lot_condition():
+        """「用户抓到的转发动态，其原动态属于抽奖」的统计条件。
+
+        与 ``_is_lot_condition`` 的区别：这里统计的是「用户转发出去的原动态是否抽奖」，
+        因此官方抽奖类型（含 lot_dyn_origin_dyn）都算命中，只看是否为抽奖动态本身。
+        """
+        return or_(
+            TLotdyninfo.officialLotType.isnot(None),
+            exists()
+            .correlate_except(TLotExtraInfo)
+            .where(
+                and_(
+                    TLotExtraInfo.ref_id == TLotdyninfo.dynId,
+                    TLotExtraInfo.lot_type == "common",
+                    TLotExtraInfo.is_lot == 1,
+                )
+            ),
+        )
+
+    @staticmethod
+    def _space_orig_dyn_id_expr():
+        """从空间动态原始 JSON 里取出被转发原动态的 id（numeric），用于关联 t_lotdyninfo"""
+        return func.cast(
+            func.json_unquote(
+                func.json_extract(TLotuserspaceresp.spaceRespJson, "$.orig.id_str")
+            ),
+            BigInteger,
+        )
+
+    @log_sql_retry_wrapper()
+    async def getUserLotHitStats(
+        self, uid_list: list[int | str], days: int = 7
+    ) -> list[LotUserFetchStat]:
+        """统计每个用户「自己空间里转发的原动态命中抽奖」的数量，用于剔除低产出用户。
+
+        口径说明：t_lotuserspaceresp 记录的是用户空间里抓到的动态（spaceOffset 为外层
+        转发动态 id，各用户互不冲突），通过 spaceRespJson.orig.id_str 关联 t_lotdyninfo，
+        判断该原动态是否为抽奖。这正是「参与者」的产出，而不是原动态作者（up_uid）。
+
+        时间窗口按「最近 days 轮」计算（正常每天一轮）：参与者的空间里大量是几天前
+        发布的抽奖动态，用原动态 pubTime 过滤会把「今天才被抓到的老抽奖」漏掉。
+
+        total 为 0 表示该用户在窗口内没有可统计的抓取记录（新用户或抓取失败），
+        调用方应跳过这类用户的剔除判断，避免误杀。
+        """
+        latest_round = select(func.max(TLotmaininfo.lotRound_id)).scalar_subquery()
+        async with self.async_session() as session:
+            stmt = (
+                select(
+                    TLotuserspaceresp.spaceUid,
+                    func.count(TLotuserspaceresp.spaceOffset).label("total"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (self._fetched_orig_lot_condition(), 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("lot"),
+                )
+                .join(
+                    TLotdyninfo,
+                    TLotdyninfo.dynId == self._space_orig_dyn_id_expr(),
+                )
+                .where(
+                    and_(
+                        TLotuserspaceresp.spaceUid.in_(uid_list),
+                        TLotuserspaceresp.dynLotRound_id > latest_round - days,
+                    )
+                )
+                .group_by(TLotuserspaceresp.spaceUid)
+            )
+            res = await session.execute(stmt)
+            return [
+                LotUserFetchStat(
+                    uid=int(row[0]), total=int(row[1]), lot=int(row[2])
+                )
+                for row in res.all()
+            ]
+
+    @log_sql_retry_wrapper()
+    async def getUserLotHitStatsByRound(
+        self, uid_list: list[int | str], lot_round_id: int
+    ) -> list[LotUserFetchStat]:
+        """同 ``getUserLotHitStats``，但按轮次统计（用于用户列表的展示字段）"""
+        async with self.async_session() as session:
+            stmt = (
+                select(
+                    TLotuserspaceresp.spaceUid,
+                    func.count(TLotuserspaceresp.spaceOffset).label("total"),
+                    func.coalesce(
+                        func.sum(
+                            case(
+                                (self._fetched_orig_lot_condition(), 1),
+                                else_=0,
+                            )
+                        ),
+                        0,
+                    ).label("lot"),
+                )
+                .join(
+                    TLotdyninfo,
+                    TLotdyninfo.dynId == self._space_orig_dyn_id_expr(),
+                )
+                .where(
+                    and_(
+                        TLotuserspaceresp.spaceUid.in_(uid_list),
+                        TLotuserspaceresp.dynLotRound_id == lot_round_id,
+                    )
+                )
+                .group_by(TLotuserspaceresp.spaceUid)
+            )
+            res = await session.execute(stmt)
+            return [
+                LotUserFetchStat(
+                    uid=int(row[0]), total=int(row[1]), lot=int(row[2])
+                )
+                for row in res.all()
+            ]
 
     @log_sql_retry_wrapper()
     async def getUserLotStatsByRound(

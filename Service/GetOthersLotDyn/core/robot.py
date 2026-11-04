@@ -7,6 +7,7 @@ from log.base_log import get_others_lot_logger as get_others_lot_log
 from Models.get_other_lot_dyn.dyn_robot_model import RobotScrapyInfo
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
+from Service.GetOthersLotDyn.core.user_pool_service import lot_user_pool_service
 from Service.GetOthersLotDyn.fetcher.space_dynamic_fetcher import BiliSpaceUserItem
 from CONFIG import settings
 from Models.lottery_database.bili.LotteryDataModels import OfficialLotType
@@ -268,7 +269,11 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         await self._after_scrapy()
         self.nowRound.isRoundFinished = 1
         await SqlHelper.addLotMainInfo(self.nowRound)
-        # 抽奖获取结束 尝试将这一轮获取到的非图片抽奖添加进数据库
+        # 用户池管理（剔除低产出用户 + 从评论区补充参与者）与总结推送。
+        # 必须放在调度入口里执行：此前只在 HTTP 触发的 get_new_dyn() 中调用，
+        # 定时任务走本方法时用户列表从不更新，池子长期停留在默认名单。
+        pool_summary = await lot_user_pool_service.manage_user_list()
+        await lot_user_pool_service.push_round_summary(pool_summary)
 
     _MQ_POLL_INTERVAL = 30  # 秒：轮询 extra_info 间隔
     _MQ_POLL_MAX_IDLE = 360  # 秒：连续无新增记录时放弃等待

@@ -27,9 +27,11 @@ class GetOthersLotDynConfig(BaseModel):
     spare_time: int = 86400 * 7  # 多久以前的动态不再获取(秒)，默认7天
     get_dyn_interval: int = 86400 * 2  # 两次完整采集的最小间隔(秒)，默认2天
     dyn_time_limit: int = 1728000  # 返回数据的时间范围(秒)，默认20天
-    max_user_list_size: int = 20  # 用户列表最大长度
-    remove_check_days: int = 14  # 剔除用户时检查最近N天内的抽奖数
-    min_valid_lot_threshold: int = 10  # 低于此阈值的用户将被剔除
+    max_user_list_size: int = 200  # 用户列表最大长度
+    remove_check_days: int = 7  # 剔除用户时检查最近N天内抓到的抽奖数
+    # 统计口径：用户自己空间里转发的原动态命中抽奖数，<= 此值即剔除（N天内抓不到才会命中 0）
+    min_valid_lot_threshold: int = 1
+    supplement_max_per_round: int = 50  # 单轮最多补充的新用户数
     hot_lot_dyn_count: int = 5  # 从评论区挖掘用户时选取的高互动动态数量
     hot_lot_dyn_days: int = 7  # 高互动动态的时间范围(天)
     # 用户列表为空且无法从评论区补充时使用的默认用户 uid 列表
@@ -204,6 +206,13 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     COLD_ARCHIVE_KEEP_DAYS_LOTUSERSPACERESP: int = 180
     # 归档文件校验通过后是否真的删库（0=只归档不删，1=归档后删）。先在 0 观察几轮再开。
     COLD_ARCHIVE_DELETE_AFTER: int = 1
+    # ===== 表空间维护（归档删库后的 InnoDB 空洞回收，见 Service/DataArchive/tablespace_maintenance.py）=====
+    # DELETE 只把页标记可复用，.ibd 不会缩小；每月单独跑一次整表重建（ALTER TABLE ... FORCE）
+    # 把空洞还给操作系统。两个阈值必须**同时**满足才重建，避免每天归档后都重写整表：
+    # - 空洞占比：data_free / (data_length + data_free)；
+    # - 空洞绝对值：小表占比高也不值得重建，避免频繁重写。
+    TABLESPACE_MAINTENANCE_MIN_FREE_PCT: float = 20.0
+    TABLESPACE_MAINTENANCE_MIN_FREE_GB: float = 1.0
     # ===== 抽奖信息导出（业务视图，见 Service/DataArchive/lot_dyn_info_export.py）=====
     # 和上面的「冷数据归档」是同一个每日任务里的两个独立步骤，职责不要混：
     # - 冷数据归档：导出**原始表行**（dynData / rawJsonStr / spaceRespJson 原文），
