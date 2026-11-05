@@ -154,6 +154,13 @@ class RouterPaths(StrEnumAutoDoc):
     STOP_SERVICE = "/BackgroundService/Stop"  # 停止服务
     RESTART_SERVICE = "/BackgroundService/Restart"  # 重启服务
 
+    # --- 爬虫推送开关（本地文件持久化）---
+    GET_CRAWLER_PUSH_SWITCH = "/BackgroundService/CrawlerPushSwitch"  # 查询推送开关
+    SET_CRAWLER_PUSH_SWITCH = "/BackgroundService/CrawlerPushSwitch/Set"  # 修改推送开关
+    DELETE_CRAWLER_PUSH_SWITCH = (
+        "/BackgroundService/CrawlerPushSwitch/Delete"  # 删除某爬虫的文件配置
+    )
+
     # ==================== 验证码路由 ====================
     GEN_CAPTCHA = "/gen"  # 生成验证码
     VERIFY_CAPTCHA = "/verify"  # 验证验证码
@@ -265,6 +272,11 @@ class RouterNames(StrEnumAutoDoc):
     START_SERVICE = "start_service"  # 启动服务
     STOP_SERVICE = "stop_service"  # 停止服务
     RESTART_SERVICE = "restart_service"  # 重启服务
+
+    # --- 爬虫推送开关 ---
+    GET_CRAWLER_PUSH_SWITCH = "get_crawler_push_switch"  # 查询推送开关
+    SET_CRAWLER_PUSH_SWITCH = "set_crawler_push_switch"  # 修改推送开关
+    DELETE_CRAWLER_PUSH_SWITCH = "delete_crawler_push_switch"  # 删除某爬虫的文件配置
 
     # ==================== 验证码路由 ====================
     GEN_CAPTCHA = "gen_captcha"  # 生成验证码

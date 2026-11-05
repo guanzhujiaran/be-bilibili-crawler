@@ -87,6 +87,45 @@ class GetOthersLotDynConfig(BaseModel):
     ]
 
 
+class CrawlerPushConfig(BaseModel):
+    """爬虫「开始 / 结束」推送开关，**默认全关**。
+
+    两个触发点分别配置，值为逗号分隔的 ``crawler_name``（与
+    ``BackgroundServiceName`` 枚举值一致），支持 ``*`` / ``all`` 通配全部爬虫。
+
+    环境变量示例::
+
+        CRAWLER_PUSH_START=GET_OTHERS_LOT_DYN,GET_DYN
+        CRAWLER_PUSH_END=*
+
+    留空（默认）表示不推送。推送只做通知，失败不影响爬虫任务本身。
+    """
+
+    start: str = ""
+    end: str = ""
+
+    @staticmethod
+    def _parse(raw: str) -> set[str]:
+        return {item.strip() for item in (raw or "").split(",") if item.strip()}
+
+    @classmethod
+    def _match(cls, raw: str, crawler_name: str) -> bool:
+        names = cls._parse(raw)
+        if not names:
+            return False
+        if "*" in names or "all" in names:
+            return True
+        return crawler_name in names
+
+    def is_start_enabled(self, crawler_name: str) -> bool:
+        """该爬虫开始执行时是否需要推送"""
+        return self._match(self.start, crawler_name)
+
+    def is_end_enabled(self, crawler_name: str) -> bool:
+        """该爬虫结束（正常 / 终止 / 失败）时是否需要推送"""
+        return self._match(self.end, crawler_name)
+
+
 class LLMApiConfig(BaseModel):
     """OpenAI 兼容 API 配置 —— 作为 Settings 的嵌套子模型列表元素，
     部署时可整个列表填 JSON，也可逐字段用双下划线覆盖。
@@ -182,6 +221,18 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
 
     # ===== 第三方抽奖动态获取 =====
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
+
+    # ===== 运行期可变状态目录（不入库，落本地文件）=====
+    # 目前用于爬虫推送开关（crawler_push_switch.json）：接口改完立即生效、重启后保留。
+    # 空值 = 代码根目录下的 runtime/；容器里由 compose 指向挂载出来的 /app/runtime。
+    RUNTIME_DIR: str = ""
+
+    # ===== 爬虫开始 / 结束推送开关（默认全关，见 CrawlerPushConfig）=====
+    # 直接用顶层环境变量，避免嵌套模型需要 env_nested_delimiter：
+    #   CRAWLER_PUSH_START=GET_OTHERS_LOT_DYN,GET_DYN
+    #   CRAWLER_PUSH_END=*
+    CRAWLER_PUSH_START: str = ""
+    CRAWLER_PUSH_END: str = ""
 
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []

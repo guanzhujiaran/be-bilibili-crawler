@@ -15,6 +15,12 @@ from Models.v1.background_service.scheduler_status_model import (
     SchedulerJobDetailModel,
     ExecutionInfoModel,
 )
+from Models.v1.background_service.crawler_push_model import (
+    CrawlerPushState,
+    CrawlerPushStateResp,
+)
+from Utils.推送 import push_switch
+from CONFIG import settings
 from Service.BackgroundService.CrawlerScheduler import background_service
 
 from Service.BackgroundServiceStatus.GetScrapyStaus import get_scrapy_status
@@ -282,3 +288,50 @@ def global_scheduler_status():
     )
 
     return CommonResponseModel(data=result)
+
+
+@router.get(
+    RouterPaths.GET_CRAWLER_PUSH_SWITCH,
+    name=RouterNames.GET_CRAWLER_PUSH_SWITCH,
+    description="查询爬虫「开始 / 结束」推送开关（本地文件 + 环境变量合并后的生效状态）",
+    response_model=CommonResponseModel[CrawlerPushStateResp],
+)
+def get_crawler_push_switch():
+    state = push_switch.load_state()
+    effective = [
+        push_switch.resolve(name.value) for name in BackgroundServiceName
+    ]
+    return CommonResponseModel(
+        data=CrawlerPushStateResp(
+            state=state,
+            env_start=settings.CRAWLER_PUSH_START,
+            env_end=settings.CRAWLER_PUSH_END,
+            state_file=str(push_switch.state_file_path()),
+            effective=effective,
+        )
+    )
+
+
+@router.post(
+    RouterPaths.SET_CRAWLER_PUSH_SWITCH,
+    name=RouterNames.SET_CRAWLER_PUSH_SWITCH,
+    description="修改爬虫「开始 / 结束」推送开关（写入本地文件，立即生效，重启后保留）",
+    response_model=CommonResponseModel[CrawlerPushState],
+)
+def set_crawler_push_switch(body: CrawlerPushState):
+    """
+    按 crawler_name 覆盖写入；未出现在 items 里的爬虫保持原配置。
+    想恢复成「跟随环境变量」，请调用 Delete 接口删掉该爬虫的文件配置。
+    """
+    return CommonResponseModel(data=push_switch.upsert_items(body.items))
+
+
+@router.post(
+    RouterPaths.DELETE_CRAWLER_PUSH_SWITCH,
+    name=RouterNames.DELETE_CRAWLER_PUSH_SWITCH,
+    description="删除某个爬虫的推送开关文件配置（回退到环境变量）",
+    response_model=CommonResponseModel[CrawlerPushState],
+)
+def delete_crawler_push_switch(crawler_name: BackgroundServiceName):
+    return CommonResponseModel(data=push_switch.delete_item(crawler_name.value))
+

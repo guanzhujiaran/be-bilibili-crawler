@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
+import time
 from datetime import datetime
-from typing import Optional, AsyncGenerator, Any
+from typing import Literal, Optional, AsyncGenerator, Any
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable, CustomBaseModel
@@ -8,7 +9,13 @@ from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import ParamsType, WorkerStatus
 from Utils.通用.Common import GLOBAL_SCHEDULER
-from Utils.推送.PushMe import async_pushme_try_catch_decorator, a_push_error
+from Utils.推送 import push_switch
+from Utils.推送.PushMe import (
+    PushSubject,
+    a_push_error,
+    a_pushme,
+    async_pushme_try_catch_decorator,
+)
 import asyncio
 from typing import Callable
 from dao.commStorageRedisObj import comm_storage_redis_obj
@@ -180,23 +187,100 @@ class BaseScheduler:
             )
 
     async def _run_and_save_exec_time(self):
-        """在后台执行爬虫任务，完成后保存执行时间。"""
+        """在后台执行爬虫任务，完成后保存执行时间。
+
+        开始 / 结束推送的开关见 ``Utils.推送.push_switch``：
+        本地文件（接口改，热生效）优先，其次环境变量 CRAWLER_PUSH_START / CRAWLER_PUSH_END；
+        默认全关，``*`` / ``all`` 匹配全部爬虫。
+        """
+        crawler_name = self.exec_info.info.crawler_name
+        start_ts = time.time()
+        await self._push_stage(
+            crawler_name, "start", f"开始时间：{datetime.now():%Y-%m-%d %H:%M:%S}"
+        )
         try:
             await self.func()
             await self.exec_info.save_last_exec_time()
+            await self._push_stage(
+                crawler_name,
+                "end",
+                "状态：执行完成\n"
+                f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
+                f"结束时间：{datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                f"耗时：{time.time() - start_ts:.0f}秒",
+            )
         except asyncio.CancelledError:
             self.logger.warning(
                 f"[{self.exec_info.info.crawler_name}] 爬虫任务被终止（杀旧开新）。"
+            )
+            await self._push_stage(
+                crawler_name,
+                "end",
+                "状态：执行被终止（检测到上一次任务仍在运行，已杀旧开新）\n"
+                f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
+                f"耗时：{time.time() - start_ts:.0f}秒",
             )
             raise
         except Exception as e:
             self.logger.exception(
                 f"[{self.exec_info.info.crawler_name}] 爬虫执行出错：{e}"
             )
-            await a_push_error(
-                subject="运行异常",
-                content=f"{self.exec_info.info.crawler_name} 执行异常\n错误详情：{str(e)}",
+            pushed = await self._push_stage(
+                crawler_name,
+                "end",
+                "状态：执行失败\n"
+                f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
+                f"耗时：{time.time() - start_ts:.0f}秒\n"
+                f"错误详情：{e}",
             )
+            # 结束开关已推送「执行失败」时不再重复发一条「运行异常」；
+            # 开关关闭（默认）时保持原有的失败告警行为不变。
+            if not pushed:
+                await a_push_error(
+                    subject="运行异常",
+                    content=f"{self.exec_info.info.crawler_name} 执行异常\n错误详情：{str(e)}",
+                )
+
+    async def _push_stage(
+        self, crawler_name: str, stage: Literal["start", "end"], content: str
+    ) -> bool:
+        """按开关推送「开始 / 结束」通知；返回是否真的推送了。
+
+        推送失败只记日志，不影响爬虫任务。
+        """
+        try:
+            # 最终开关 = 本地文件配置（接口改，热生效）优先，其次环境变量
+            enabled = (
+                push_switch.is_start_enabled(crawler_name)
+                if stage == "start"
+                else push_switch.is_end_enabled(crawler_name)
+            )
+            if not enabled:
+                return False
+            if stage == "start":
+                await a_pushme(
+                    f"{crawler_name} 爬虫开始执行",
+                    content,
+                    subject=PushSubject.INFO,
+                )
+            elif content.startswith("状态：执行完成"):
+                await a_pushme(
+                    f"{crawler_name} 爬虫执行完成",
+                    content,
+                    subject=PushSubject.SUCCESS,
+                )
+            else:
+                await a_push_error(
+                    content=content,
+                    subject=f"{crawler_name} 爬虫{content.splitlines()[0].removeprefix('状态：')}",
+                    topic=PushSubject.FAILURE,
+                )
+            return True
+        except Exception as e:
+            self.logger.warning(
+                f"[{crawler_name}] 推送 {stage} 通知失败：{e!r}"
+            )
+            return False
 
     def terminate(self):
         """
