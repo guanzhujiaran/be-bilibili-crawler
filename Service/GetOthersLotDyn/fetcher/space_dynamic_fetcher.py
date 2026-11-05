@@ -87,6 +87,8 @@ class BiliSpaceUserItem:
     # O(1) 查找缓存：记录 pub_lot_users 中已有的 uid 字符串，避免遍历集合
     _pub_lot_uids: set = field(default_factory=set)
     updateNum: int = field(default=0)
+    # 本轮实际抓到的动态数量（用于轮次汇总「本轮无产出用户」，不再逐条打 warning）
+    fetched_dyn_count: int = field(default=0)
     is_use_available_proxy: bool = field(default=_is_use_available_proxy)
     params: BiliSpaceUserParamsType | None = field(default=None)
 
@@ -361,13 +363,17 @@ class BiliSpaceUserItem:
             )
         # n 只统计「本轮」（含断点续爬时从数据库恢复的本轮动态）获取到的动态数量，
         # 因此重新启动续爬时不会被上一轮的历史动态放大，也不会因为本轮只爬了一部分而误报
+        if not secondRound:
+            self.fetched_dyn_count = n
         if (
             n <= 50
             and time.time() - time_list[-1] >= SpareTime
             and secondRound == False
             and not isPubLotUser
         ):
-            get_others_lot_log.warning(
+            # 逐条 warning 会在低活跃号较多时刷屏（实测单轮 33 条），
+            # 改为 debug，由 robot.main() 汇总为「本轮无产出用户: N 个」写入轮次总结。
+            get_others_lot_log.debug(
                 f"用户uid={self.uid}本轮获取到的动态数量过少({n}条)，可能存在异常，请前往主页查看：https://space.bilibili.com/{self.uid}"
             )
         get_others_lot_log.debug(

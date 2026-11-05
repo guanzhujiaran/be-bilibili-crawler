@@ -22,6 +22,7 @@ from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import GetOthersLotDynRobotConfig
+from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.BaseCrawler.model.base import WorkerStatus
 from pydantic import Field
 
@@ -59,6 +60,8 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self.goto_check_dynamic_item_set: Set[BiliDynamicItem] = set()
         # 当前阶段：1=第一阶段空间动态；2=第二阶段(发起抽奖用户)空间动态；3=判定是否为抽奖
         self._phase: int = 1
+        # 本轮抓到 0 条动态的用户，用于轮次总结（避免逐条 warning 刷屏）
+        self._low_active_uids: list[int] = []
         self._current_phase_objs: list[BiliSpaceUserItem | BiliDynamicItem] = []
         # 配置（logger / 超时 / 重试 / 插件等）统一由 GetOthersLotDynRobotConfig 控制；
         # max_sem 由 main() 中的 _set_concurrency 按阶段动态调整，故此处无需传入
@@ -225,6 +228,17 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         await self.run(init_params=None)
         self.space_succ_counter.is_running = False
 
+        # 本轮一条动态都没抓到的用户（低活跃号）：逐条打 warning 会刷屏，
+        # 统一在这里汇总一条日志，并作为轮次总结的一部分推送。
+        self._low_active_uids = sorted(
+            int(x.uid) for x in self.bili_space_user_items_set if x.fetched_dyn_count == 0
+        )
+        if self._low_active_uids:
+            get_others_lot_log.info(
+                f"第一阶段：{len(self._low_active_uids)}个用户本轮无新增动态（低活跃），"
+                f"uid={self._low_active_uids[:50]}"
+            )
+
         pub_lot_uid_set: Set[BiliSpaceUserItem] = set()
         for x in self.bili_space_user_items_set:
             pub_lot_uid_set.update(x.pub_lot_users)
@@ -272,14 +286,54 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         # 用户池管理（剔除低产出用户 + 从评论区补充参与者）与总结推送。
         # 必须放在调度入口里执行：此前只在 HTTP 触发的 get_new_dyn() 中调用，
         # 定时任务走本方法时用户列表从不更新，池子长期停留在默认名单。
-        pool_summary = await lot_user_pool_service.manage_user_list()
+        pool_summary = await lot_user_pool_service.manage_user_list(
+            low_active_uids=self._low_active_uids
+        )
         await lot_user_pool_service.push_round_summary(pool_summary)
 
     _MQ_POLL_INTERVAL = 30  # 秒：轮询 extra_info 间隔
     _MQ_POLL_MAX_IDLE = 360  # 秒：连续无新增记录时放弃等待
     _MQ_POLL_TOTAL_TIMEOUT = 900  # 秒：总超时（15 分钟）
 
+    async def _retry_pending_extra_refs(self) -> None:
+        """补偿重投上一轮 MQ 未处理完的动态。
+
+        上一轮等待超时后，未写入 t_lot_extra_info 的 dynamic_id 会存进 Redis；
+        本轮开始判定前先补投一次，避免这些动态永远被判成「非抽奖」。
+        """
+        pending_ids = await get_other_lot_redis_manager.get_pending_extra_refs()
+        if not pending_ids:
+            return
+        dyns = await SqlHelper.getDynInfoByIds(pending_ids)
+        if not dyns:
+            get_others_lot_log.warning(
+                f"上一轮待补偿的{len(pending_ids)}条动态在库中已不存在，清空待补偿列表"
+            )
+            await get_other_lot_redis_manager.set_pending_extra_refs([])
+            return
+        for x in dyns:
+            try:
+                await BiliLotDataPublisher.pub_prize_extract_from_dyn(
+                    dyn_id=int(x.dynId),
+                    dyn_content=x.dynContent or "",
+                    dyn_publish_time=x.pubTime,
+                    comment_count=x.commentCount,
+                    forward_count=x.repostCount,
+                    extra_routing_key="GetOthersLotDyn.retry_pending_extra",
+                )
+            except Exception as e:
+                get_others_lot_log.error(
+                    f"补偿重投动态失败，dyn_id={x.dynId}，error={e}"
+                )
+        get_others_lot_log.info(
+            f"已补偿重投上一轮未处理的{len(dyns)}条动态到 MQ: "
+            f"{[int(x.dynId) for x in dyns]}"
+        )
+        await get_other_lot_redis_manager.set_pending_extra_refs([])
+
     async def _after_scrapy(self):
+        # 先补偿上一轮没等到 extra_info 的动态
+        await self._retry_pending_extra_refs()
         all_dyn_this_round = await SqlHelper.getAllLotDynInfoByRoundNum(
             self.nowRound.lotRound_id
         )
@@ -311,6 +365,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
         # 轮询等待 MQ 消费者处理完成
         common_dyn_ids = [int(x.dynId) for x in common_dyns]
+        pending: list[int] = []
         if common_dyn_ids:
             total_start = time.monotonic()
             last_pending = len(common_dyn_ids)
@@ -356,6 +411,16 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 await asyncio.sleep(self._MQ_POLL_INTERVAL)
         else:
             extra_map = {}
+
+        # 仍有未写入 extra_info 的动态：记录到 Redis，下一轮开始前补偿重投，
+        # 避免这些动态被永久判为「非抽奖」（旧逻辑只打一行 warning 就丢弃）。
+        if pending:
+            await get_other_lot_redis_manager.set_pending_extra_refs(pending)
+            get_others_lot_log.error(
+                f"本轮有{len(pending)}条动态未等到 extra_info，已记入待补偿列表: {pending}"
+            )
+        else:
+            await get_other_lot_redis_manager.set_pending_extra_refs([])
 
         # 分类统计
         all_t_lot_dyn_info = list(official_dyns)

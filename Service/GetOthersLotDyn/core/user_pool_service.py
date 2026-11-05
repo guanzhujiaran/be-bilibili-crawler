@@ -64,18 +64,27 @@ class LotUserPoolSummary:
     round_all: int
     round_lot: int
     round_useless: int
+    low_active_uids: list[int] = field(default_factory=list)
 
 
 class LotUserPoolService:
     """用户池的剔除 / 补充 / 推送"""
 
-    async def manage_user_list(self) -> LotUserPoolSummary:
-        """管理用户列表：先剔除再补充，聚合两阶段摘要用于推送。"""
+    async def manage_user_list(
+        self, low_active_uids: list[int] | None = None
+    ) -> LotUserPoolSummary:
+        """管理用户列表：先剔除再补充，聚合两阶段摘要用于推送。
+
+        :param low_active_uids: 本轮抓到 0 条动态的用户（由 robot 阶段一统计），
+            仅用于轮次总结展示；是否剔除仍由 ``cull_users`` 的窗口统计决定。
+        """
         cull = await self.cull_users()
         supp = await self.supplement_users()
         return LotUserPoolSummary(
-            before_count=supp.before_count,
-            after_count=cull.after_count,
+            # 进入管理前的列表长度：剔除阶段的 before_count
+            before_count=cull.before_count,
+            # 补充之后的最终长度：补充阶段的 after_count
+            after_count=supp.after_count,
             added=supp.added,
             removed=cull.removed,
             active_in_window=cull.active_in_window,
@@ -83,6 +92,7 @@ class LotUserPoolService:
             round_all=supp.round_all,
             round_lot=supp.round_lot,
             round_useless=supp.round_useless,
+            low_active_uids=low_active_uids or [],
         )
 
     async def cull_users(self) -> UserPoolCullSummary:
@@ -156,7 +166,7 @@ class LotUserPoolService:
 
         latest_round: TLotmaininfo | None = await SqlHelper.getLatestFinishedRound()
         if latest_round:
-            summary.round_id = latest_round.lotRoundId
+            summary.round_id = latest_round.lotRound_id
             summary.round_all = latest_round.allNum or 0
             summary.round_lot = latest_round.lotNum or 0
             summary.round_useless = latest_round.uselessNum or 0
@@ -214,7 +224,7 @@ class LotUserPoolService:
         round_stats: list[LotUserFetchStat] = []
         if latest_round:
             round_stats = await SqlHelper.getUserLotHitStatsByRound(
-                uids, latest_round.lotRoundId
+                uids, latest_round.lotRound_id
             )
         round_stat_map = {stat.uid: stat for stat in round_stats}
 
@@ -364,6 +374,11 @@ class LotUserPoolService:
             )
         if summary.added:
             lines.append(f"新补充: {len(summary.added)}个 {summary.added}")
+        if summary.low_active_uids:
+            lines.append(
+                f"本轮无新增动态: {len(summary.low_active_uids)}个 "
+                f"{summary.low_active_uids}"
+            )
         lines.append(f"{days}天活跃用户: {summary.active_in_window}个")
 
         title = f"第三方抽奖采集完成 - 轮次{summary.round_id}"

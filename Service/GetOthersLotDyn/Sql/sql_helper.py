@@ -54,6 +54,8 @@ class GetOtherLotRedisManager(RedisManagerBase):
     class RedisMap(StrEnumAutoDoc):
         target_uid_list = "get_other_lot_redis_manager:target_uid_list"
         get_dyn_ts = "get_other_lot_redis_manager:get_dyn_ts"
+        # MQ 消费者未处理完的 dynamic_id，下一轮补偿重投，避免 extra_info 永久丢失
+        pending_extra_refs = "get_other_lot_redis_manager:pending_extra_refs"
 
     def __init__(self):
         super().__init__(
@@ -97,6 +99,20 @@ class GetOtherLotRedisManager(RedisManagerBase):
 
     async def set_get_dyn_ts(self, get_dyn_ts: int):
         await self._set(self.RedisMap.get_dyn_ts.value, get_dyn_ts)
+
+    async def get_pending_extra_refs(self) -> list[int]:
+        """读取上一轮 MQ 未处理完、待补偿重投的 dynamic_id"""
+        val = await self._get(self.RedisMap.pending_extra_refs.value)
+        if not val:
+            return []
+        return [int(x) for x in json.loads(val)]
+
+    async def set_pending_extra_refs(self, dyn_ids: list[int]) -> None:
+        """保存本轮回调未成功的 dynamic_id（空列表也要写，用于覆盖上一轮的残留）"""
+        await self._set(
+            self.RedisMap.pending_extra_refs.value,
+            json.dumps([int(x) for x in dyn_ids]),
+        )
 
 
 class __SqlHelper(SqlHelperBase):
@@ -855,6 +871,16 @@ class __SqlHelper(SqlHelperBase):
             res = await session.execute(sql)
             ret = res.scalars().first()
             return ret
+
+    @log_sql_retry_wrapper()
+    async def getDynInfoByIds(self, dyn_ids: list[int | str]) -> Sequence[TLotdyninfo]:
+        """按 dynamic_id 批量取动态记录（用于 MQ 未处理完的补偿重投）"""
+        if not dyn_ids:
+            return []
+        async with self.async_session() as session:
+            sql = select(TLotdyninfo).filter(TLotdyninfo.dynId.in_(dyn_ids))
+            res = await session.execute(sql)
+            return res.scalars().all()
 
     @log_sql_retry_wrapper()
     async def getLatestLotDynInfoByUidList(
