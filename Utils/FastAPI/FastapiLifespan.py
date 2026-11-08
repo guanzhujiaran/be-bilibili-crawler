@@ -10,6 +10,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 from CONFIG import settings, CONFIG
 from Service.LangChainCompo.lottery_data_vec_sql.sql_helper import milvus_sql_helper
+from Service.llm_service import config_store
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Utils.FastAPI.alembic_manager import check_schemas, run_alembic_upgrade_head
 from Utils.通用.Common import GLOBAL_SCHEDULER, asyncio_gather
@@ -27,6 +28,11 @@ _DB_CONNECT_TIMEOUT_SECONDS = 10
 
 @contextlib.asynccontextmanager
 async def life_span(app: FastAPI):
+    # ---- 云端 LLM 配置来源：runtime/llm_apis.json 优先，缺失 / 损坏回退 .env ----
+    # 只覆盖 settings.llm_apis（不建实例池、不联网）；文件不存在时保持 .env 原样。
+    # 来源会打一行日志（LLM 配置来源: file/env），便于运维确认当前生效的是哪份。
+    config_store.apply_to_settings()
+
     if settings.is_api_only:
         # 「只提供接口、不爬取」角色（SERVICE_ROLE=api，本地开发用）：
         # 到这里就只探库，其余全部跳过 —— 不迁移 / 不校验 schema / 不初始化 Milvus /

@@ -37,6 +37,8 @@ node_modules
 
 # Runtime / build artifacts
 volumes/
+# 运行期可变状态（RUNTIME_DIR 为空时的默认落盘目录：推送开关 / 云端 LLM 配置，含明文 token）
+runtime/
 
 # gRPC 抓包解析测试的产物（可随时重新生成）
 test/grpc_capture/captures/_parsed/

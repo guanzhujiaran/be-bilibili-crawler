@@ -193,6 +193,11 @@ class RouterPaths(StrEnumAutoDoc):
     LLM_CONFIG = (
         "/llm/config"  # 云端LLM配置列表/新增/整体替换（内部接口，网关白名单不转发）
     )
+    # 撤销人工保存：删除持久化文件并热切回 .env 配置（必须声明在 LLM_CONFIG_ITEM 之前，
+    # 否则 DELETE /llm/config/override 会先命中 /llm/config/{index} 而报 422）
+    LLM_CONFIG_OVERRIDE = "/llm/config/override"
+    # 单实例连通性测试（管理端「测试」按钮）：同样要声明在 LLM_CONFIG_ITEM 之前
+    LLM_CONFIG_TEST = "/llm/config/test"
     LLM_CONFIG_ITEM = "/llm/config/{index}"  # 云端LLM配置单条：按索引读取/更新/删除
 
 
@@ -311,6 +316,8 @@ class RouterNames(StrEnumAutoDoc):
     UPDATE_LLM_CONFIG = "update_llm_config"  # 整体更新单条云端LLM配置
     PATCH_LLM_CONFIG = "patch_llm_config"  # 部分更新单条云端LLM配置
     DELETE_LLM_CONFIG = "delete_llm_config"  # 删除单条云端LLM配置
+    DELETE_LLM_CONFIG_OVERRIDE = "delete_llm_config_override"  # 撤销人工保存，切回环境变量
+    TEST_LLM_CONFIG = "test_llm_config"  # 单实例连通性测试（最小 completion 探测）
 
 
 class RouterModule(StrEnumAutoDoc):

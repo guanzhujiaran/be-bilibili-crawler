@@ -4,6 +4,7 @@
 - presets.py      采样参数预设（SamplingPreset）
 - health.py       LLM 健康状态机：错误分类 + healthy/cooling/quota_wait/suspended/removed
 - tracked_llm.py  带调用统计的 ChatOpenAI 子类（TrackedChatOpenAI / LLMUsageStats）+ 槽位指纹
+- config_store.py 配置持久化（runtime/llm_apis.json，人工保存的列表重启后仍生效）
 - pool.py         实例池：构建、缓存、轮询（get_all_free_llms / get_llm_stats）+ 每实例 rate limiter
 
 请求节流完全交给 langchain 的 InMemoryRateLimiter（每个实例一个，见 pool.py），
@@ -13,6 +14,7 @@
     from Service.llm_service import get_all_free_llms, SamplingPreset
 """
 
+from . import config_store
 from .presets import SamplingPreset
 from .health import (
     LLMFailureKind,
@@ -35,11 +37,14 @@ from .pool import (
     get_removed_llm_records,
     patch_llm_api,
     remove_llm_by_fingerprint,
+    restore_llm_apis_from_env,
     set_llm_apis,
     update_llm_api,
 )
 
 __all__ = [
+    "config_store",
+    "restore_llm_apis_from_env",
     "SamplingPreset",
     "LLMFailureKind",
     "LLMHealth",

@@ -224,7 +224,10 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
 
     # ===== 运行期可变状态目录（不入库，落本地文件）=====
-    # 目前用于爬虫推送开关（crawler_push_switch.json）：接口改完立即生效、重启后保留。
+    # 目前用于：
+    # - 爬虫推送开关（crawler_push_switch.json）：接口改完立即生效、重启后保留；
+    # - 云端 LLM 配置（llm_apis.json）：人工保存的列表重启后仍生效，
+    #   事实来源「runtime 文件 > .env」，见 Service/llm_service/config_store.py。
     # 空值 = 代码根目录下的 runtime/；容器里由 compose 指向挂载出来的 /app/runtime。
     RUNTIME_DIR: str = ""
 
@@ -237,6 +240,10 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
 
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []
+    # 管理端「测试」按钮的探测超时（秒）：单次最小 completion，不重试。
+    # 偏大是因为部分推理模型首个 token 很慢（实测 deepseek-v4.1-flash 需 1~3 分钟）：
+    # 45s 能覆盖多数 chat 模型，超时会如实返回「请求超时」而不误判为配置错误。
+    llm_test_timeout: float = 45.0
 
     sqlalchemy_logging: bool = False
     # 冷数据归档（导出 csv.gz + 可选删库）的统一落盘根目录。

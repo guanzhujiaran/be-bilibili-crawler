@@ -16,8 +16,15 @@ from Service.llm_service import (
     get_llm_configs,
     get_llm_stats,
     patch_llm_api,
+    restore_llm_apis_from_env,
     set_llm_apis,
     update_llm_api,
+)
+from Service.llm_service.probe import (
+    LLMApiTestRequest,
+    LLMProbeResult,
+    probe_llm_api,
+    resolve_probe_config,
 )
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
     grpc_sql_helper,
@@ -74,8 +81,8 @@ async def api_get_llm_stats():
 # region 云端 LLM 配置 CRUD（内部接口：路径不在网关白名单内，故不对外公开）
 _LLM_CONFIG_DESC = (
     "【内部接口】云端 LLM 配置在线 CRUD，修改立即生效、无需重启服务；"
-    "仅运行时内存生效，不写回 .env，服务重启后回退为环境变量中的 llm_apis；"
-    "token 一律脱敏返回，路径不在网关转发白名单内，不对外公开。"
+    "写操作会持久化到 runtime/llm_apis.json（事实来源：文件 > .env），重启后仍然生效；"
+    "不写回 .env；token 一律脱敏返回，路径不在网关转发白名单内，不对外公开。"
 )
 
 
@@ -97,6 +104,44 @@ def _run_llm_config_op(op):
 )
 async def api_list_llm_config():
     return _run_llm_config_op(get_llm_configs)
+
+
+@router.post(
+    RouterPaths.LLM_CONFIG_TEST,
+    name=RouterNames.TEST_LLM_CONFIG,
+    response_model=dict,
+    description=f"{_LLM_CONFIG_DESC} 对单条配置做一次最小 completion 探测（管理端「测试」按钮）。"
+    "token 为空或脱敏时按 index 沿用原密钥；探测不参与健康状态机、不改统计、不落盘。",
+)
+async def api_test_llm_config(req: LLMApiTestRequest = Body(...)):
+    """一次性诊断：能连上并返回 2xx 即成功，失败返回状态码 + 错误摘要（不含 token）。"""
+    cfg, invalid = resolve_probe_config(req)
+    if invalid is not None:
+        # 未提供密钥 / 地址非法等：直接判定失败，不发请求（避免白打一次上游）
+        return LLMProbeResult(
+            ok=False,
+            base_url=cfg.base_url,
+            model_name=cfg.model_name,
+            error=invalid,
+        ).model_dump()
+    return (await probe_llm_api(cfg)).model_dump()
+
+
+@router.delete(
+    RouterPaths.LLM_CONFIG_OVERRIDE,
+    name=RouterNames.DELETE_LLM_CONFIG_OVERRIDE,
+    response_model=dict,
+    description=f"{_LLM_CONFIG_DESC} 撤销人工保存：删除持久化文件并热切回环境变量（.env）配置，"
+    "返回切换后的脱敏列表与当前生效来源。",
+)
+async def api_delete_llm_config_override():
+    """回退入口：文件删掉 → 配置切回 .env 快照 → 重建实例池。
+
+    ``configs`` 里的 token 同样脱敏；``source`` 固定为 ``env``（表示已切回环境变量）。
+    """
+    # 同步调用：全部是内存 + 单次文件删除，无 IO 阻塞；避免线程外改全局实例池缓存
+    configs = restore_llm_apis_from_env()
+    return {"source": "env", "configs": configs}
 
 
 @router.get(

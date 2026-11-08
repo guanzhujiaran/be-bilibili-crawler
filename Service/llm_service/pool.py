@@ -19,6 +19,11 @@
 
 支持运行时热更新：set_llm_apis() 可在线替换 settings.llm_apis 并立即重建实例池
 （get_llm_configs() 读取当前配置，token 已脱敏），对应内部接口 GET/POST /llm/config。
+
+持久化（2026-11-08）：set_llm_apis() 在实例池构建成功后**落盘** ``runtime/llm_apis.json``，
+因此「接口 / 管理页保存的配置」重启后仍然生效。事实来源为「runtime 文件 > .env」。
+**但状态机的自动摘除（REMOVED）刻意不落盘**：那是运行时观测结论，
+保留「上游误报 401 时重启即恢复」的防误删兜底（见 remove_llm_by_fingerprint）。
 """
 
 import time
@@ -28,7 +33,7 @@ from langchain_core.rate_limiters import InMemoryRateLimiter
 from loguru import logger
 from pydantic import BaseModel, Field, SecretStr
 
-from Service.llm_service import SamplingPreset
+from Service.llm_service import SamplingPreset, config_store
 from Service.llm_service.health import LLMState
 from Service.llm_service.tracked_llm import (
     StateChangeHandler,
@@ -186,7 +191,10 @@ def remove_llm_by_fingerprint(fingerprint: str) -> bool:
     与整池重建（``set_llm_apis``）不同：这里**保留其他槽位的实例对象**，
     因此其他槽位的统计与健康状态（冷却进度等）不会因为删掉一个坏 key 而被清零。
 
-    仅影响运行时内存，不写回 .env：重启后以环境变量配置为准。
+    **刻意只影响运行时内存**：不写 ``.env``，也**不写** ``runtime/llm_apis.json``
+    （与人工保存走的两条路彻底分开）。这样上游误报 401/404 导致误判 ``REMOVED`` 时，
+    重启即可恢复该槽位，不会把好 key 永久钉死。运维要真正删除坏配置，
+    应在列表里删掉后保存一次（人工保存由 :func:`set_llm_apis` 落盘）。
     """
     global _free_llm_cache, _free_llm_cache_key
     # 先确保缓存已按当前配置构建，否则可能只删了配置、留下悬空实例
@@ -248,8 +256,10 @@ def _remove_slot_from_cache(
 ) -> None:
     """把某个槽位从「配置 + 缓存实例」里摘掉，并记一条删除记录。
 
-    只动运行时内存（与 :func:`set_llm_apis` 的语义一致，不写回 .env）：
-    重启后以环境变量配置为准，运维可据此确认坏配置是否已从部署里清掉。
+    只动运行时内存：不写 ``.env``，也**不写** ``runtime/llm_apis.json``
+    （刻意设计，见 :func:`remove_llm_by_fingerprint`）。重启后该槽位会从
+    持久化文件 / 环境变量原样回来，运维可据此确认「一次 401 告警」不是永久损失，
+    也提醒运维去人工删掉真正的坏配置（人工保存才落盘）。
     """
     removed = remove_llm_by_fingerprint(fingerprint)
     _removed_records.append(
@@ -357,13 +367,21 @@ def get_llm_configs() -> list[dict[str, Any]]:
     ]
 
 
-def set_llm_apis(apis: list[LLMApiConfig]) -> list[dict[str, Any]]:
-    """在线替换云端 LLM 配置并立即生效（无需重启服务）。
+def set_llm_apis(
+    apis: list[LLMApiConfig], *, persist: bool = True
+) -> list[dict[str, Any]]:
+    """在线替换云端 LLM 配置并立即生效，同时**持久化**到本地文件（无需重启服务）。
 
-    - 仅修改运行时内存中的 settings.llm_apis，不写回 .env 文件，重启后回退为环境变量配置。
-    - 立即重建实例池（不等待下一次调用），使新配置即时生效；
-      若重建失败则回滚到原配置并抛出异常，避免留下「改一半」的坏状态。
+    - 修改运行时内存中的 ``settings.llm_apis``，并重建实例池（不等待下一次调用）；
+    - 实例池构建成功后，把整份列表写入 ``runtime/llm_apis.json``
+      （见 :mod:`Service.llm_service.config_store`），因此重启后配置仍然生效；
+      不写回 ``.env``（容器改宿主机文件不可靠且无审计）；
+    - 任一步失败都回滚 ``settings.llm_apis`` 与实例池缓存到旧值并抛出异常，
+      避免出现「内存已改、文件未改」的撕裂状态；
     - 校验：每个配置项必须同时提供 base_url 与 model_name。
+
+    ``persist=False`` 仅供「删除持久化文件后热切回 ``.env``」使用
+    （:func:`restore_llm_apis_from_env`），否则切回动作会立刻把配置又写回去。
 
     返回：更新后的配置（token 已脱敏）。
     """
@@ -382,12 +400,29 @@ def set_llm_apis(apis: list[LLMApiConfig]) -> list[dict[str, Any]]:
     try:
         _free_llm_cache = _build_free_llms()
         _free_llm_cache_key = _config_key()
+        if persist:
+            # 落盘放在建池成功之后：非法配置进不来，写失败则整体回滚
+            config_store.save_persisted(settings.llm_apis)
+            config_store.mark_source("file")
     except Exception:
         # 回滚，保证「改一半失败」不会污染当前运行配置
         settings.llm_apis = old_apis
         _free_llm_cache, _free_llm_cache_key = old_cache, old_key
         raise
     return get_llm_configs()
+
+
+def restore_llm_apis_from_env() -> list[dict[str, Any]]:
+    """删除持久化文件并热切回 ``.env`` 配置，返回切换后的脱敏列表。
+
+    对应内部接口 ``DELETE /llm/config/override``：运维想「撤销所有人工保存」时用。
+    文件删除后再切配置（``persist=False``），否则会立刻把 ``.env`` 的列表又写回文件。
+    """
+    config_store.delete_persisted()
+    configs = set_llm_apis(config_store.env_apis(), persist=False)
+    config_store.mark_source("env")
+    logger.warning("云端 LLM 配置已切回环境变量（{} 条，持久化文件已删除）", len(configs))
+    return configs
 
 
 def _validate_index(index: int) -> None:

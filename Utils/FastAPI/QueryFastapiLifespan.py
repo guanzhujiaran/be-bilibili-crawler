@@ -23,6 +23,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from CONFIG import CONFIG
+from Service.llm_service import config_store
 from log.base_log import myfastapi_logger
 
 # 单库探活的总超时（秒），必须用外层 ``asyncio.timeout`` 而不是 SQLAlchemy 的
@@ -36,6 +37,9 @@ _DB_CONNECT_TIMEOUT_SECONDS = 10
 
 @contextlib.asynccontextmanager
 async def query_life_span(app: FastAPI):
+    # 与爬虫角色保持同一份 LLM 配置（只读）：本角色不调用 LLM、也不提供 /llm/* 写接口，
+    # 加载只为「两容器看到同一份列表」；读不到文件时回退 .env，不影响启动。
+    config_store.apply_to_settings()
     await test_query_database_connections()
     myfastapi_logger.info(
         "查询服务启动完成（只读模式：无迁移 / 无调度 / 无入库消费；"
