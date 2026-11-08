@@ -765,8 +765,8 @@ class TestConstants:
     """测试模块常量"""
 
     def test_max_user_list_size(self):
-        """用户池容量回到 20，且单轮补充上限不得超过容量"""
-        assert settings.get_others_lot.max_user_list_size == 20
+        """用户池容量为 40，且单轮补充上限不得超过容量"""
+        assert settings.get_others_lot.max_user_list_size == 40
         assert (
             0
             < settings.get_others_lot.supplement_max_per_round
@@ -871,7 +871,7 @@ def _patch_user_pool(
 
 
 class TestUserPoolCapacity:
-    """容量硬约束：194 用户裁剪到 20、高 lot 保留、幂等、补充后不越界。"""
+    """容量硬约束：194 用户裁剪到 40、高 lot 保留、幂等、补充后不越界。"""
 
     @staticmethod
     def _build_194_users() -> tuple[list[TargetUserItem], list[LotUserFetchStat]]:
@@ -895,15 +895,15 @@ class TestUserPoolCapacity:
         kept, trimmed = ups.LotUserPoolService._trim_to_capacity(
             items, stats, max_size
         )
-        assert len(kept) == max_size == 20
+        assert len(kept) == max_size == 40
         assert len(trimmed) == 194 - max_size
-        # 保留窗口内命中抽奖数最高的 20 个（lot=100..81）
-        top20 = {
+        # 保留窗口内命中抽奖数最高的 40 个：30 个 lot>1 的高命中 + lot=1 的前 10 个
+        top_n = {
             stat.uid
             for stat in sorted(stats, key=lambda s: -s.lot)[:max_size]
         }
         kept_uids = {item.uid for item in kept}
-        assert kept_uids == top20
+        assert kept_uids == top_n
         assert set(trimmed).isdisjoint(kept_uids)
         assert kept_uids | set(trimmed) == {item.uid for item in items}
         # total == 0 的用户因 lot=0 排在高命中用户之后，不会占掉名额
@@ -944,13 +944,20 @@ class TestUserPoolCapacity:
         assert len(first.removed) == 30
         assert len(first.trimmed) == 194 - len(first.removed) - max_size
         assert first.added == []
-        top20 = {
+        # 先剔除（total>0 且 lot<=阈值），再在存活用户里按 lot 降序保留前 max_size 个
+        threshold = settings.get_others_lot.min_valid_lot_threshold
+        survivors = [
+            stat
+            for stat in stats
+            if not (stat.total > 0 and stat.lot <= threshold)
+        ]
+        top_n = {
             stat.uid
-            for stat in sorted(stats, key=lambda s: -s.lot)[:max_size]
+            for stat in sorted(survivors, key=lambda s: -s.lot)[:max_size]
         }
-        assert {item.uid for item in redis.items} == top20
+        assert {item.uid for item in redis.items} == top_n
 
-        # 第二轮：不再触发裁剪 / 剔除 / 补充，池子稳定在 20
+        # 第二轮：不再触发裁剪 / 剔除 / 补充，池子稳定在 40
         second = await service.manage_user_list()
         assert second.before_count == max_size
         assert second.after_count == max_size
@@ -964,7 +971,7 @@ class TestUserPoolCapacity:
         items = [TargetUserItem(uid=8_000_000 + i) for i in range(3)]
         stats = [LotUserFetchStat(uid=item.uid, total=10, lot=50) for item in items]
         redis = _FakeTargetUidRedisManager(items)
-        # 评论区故意返回 50 个用户，远超 17 个缺口
+        # 评论区故意返回 50 个用户，远超 37 个缺口
         comment_users = [TargetUserItem(uid=9_000_000 + i) for i in range(50)]
         service = _patch_user_pool(
             monkeypatch, redis, stats, comment_users=comment_users
@@ -1013,7 +1020,7 @@ class TestUserPoolCapacity:
         monkeypatch.setattr(ups, "a_pushme", _fake_pushme)
         summary = ups.LotUserPoolSummary(
             before_count=194,
-            after_count=20,
+            after_count=40,
             added=[901],
             removed=[1, 2],
             active_in_window=18,
@@ -1026,7 +1033,7 @@ class TestUserPoolCapacity:
         await ups.LotUserPoolService().push_round_summary(summary)
         assert len(pushed) == 1
         content = pushed[0][1]
-        assert "194 -> 20个" in content
+        assert "194 -> 40个" in content
         assert "剔除" in content and "2个" in content
         assert "超容量裁剪" in content and "3个" in content
         assert "新补充" in content and "1个" in content

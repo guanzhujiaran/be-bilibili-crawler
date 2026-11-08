@@ -27,12 +27,12 @@ class GetOthersLotDynConfig(BaseModel):
     spare_time: int = 86400 * 7  # 多久以前的动态不再获取(秒)，默认7天
     get_dyn_interval: int = 86400 * 2  # 两次完整采集的最小间隔(秒)，默认2天
     dyn_time_limit: int = 1728000  # 返回数据的时间范围(秒)，默认20天
-    max_user_list_size: int = 20  # 用户列表最大长度（硬上限，超出会被裁剪）
+    max_user_list_size: int = 40  # 用户列表最大长度（硬上限，超出会被裁剪）
     remove_check_days: int = 7  # 剔除用户时检查最近N天内抓到的抽奖数
     # 统计口径：用户自己空间里转发的原动态命中抽奖数，<= 此值即剔除（N天内抓不到才会命中 0）
     min_valid_lot_threshold: int = 1
     # 单轮最多补充的新用户数，不得超过 max_user_list_size，避免语义不一致
-    supplement_max_per_round: int = 20
+    supplement_max_per_round: int = 40
     hot_lot_dyn_count: int = 5  # 从评论区挖掘用户时选取的高互动动态数量
     hot_lot_dyn_days: int = 7  # 高互动动态的时间范围(天)
     # 用户列表为空且无法从评论区补充时使用的默认用户 uid 列表
