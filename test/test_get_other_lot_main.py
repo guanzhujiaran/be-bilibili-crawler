@@ -26,6 +26,8 @@ from Service.GetOthersLotDyn import (
 )
 from CONFIG import settings
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
+from Service.GetOthersLotDyn.Sql.sql_helper import LotUserFetchStat, TargetUserItem
+from Service.GetOthersLotDyn.core import user_pool_service as ups
 from Service.GetOthersLotDyn.parser.dynamic_detail_parsed import DynamicDetailParsed
 from Service.GetOthersLotDyn.filter.lottery_filter import is_need_lot
 
@@ -123,9 +125,6 @@ def _make_lot_dyn_info(**kwargs) -> TLotdyninfo:
         "officialLotType": "",
         "officialLotId": None,
         "isOfficialAccount": 0,
-        "isManualReply": "",
-        "isLot": 1,
-        "hashTag": "",
         "dynLotRound_id": 1,
         "rawJsonStr": None,
     }
@@ -766,8 +765,13 @@ class TestConstants:
     """测试模块常量"""
 
     def test_max_user_list_size(self):
-        """用户列表最大长度应为正数"""
-        assert settings.get_others_lot.max_user_list_size > 0
+        """用户池容量回到 20，且单轮补充上限不得超过容量"""
+        assert settings.get_others_lot.max_user_list_size == 20
+        assert (
+            0
+            < settings.get_others_lot.supplement_max_per_round
+            <= settings.get_others_lot.max_user_list_size
+        )
 
     def test_min_valid_lot_threshold(self):
         """有效抽奖阈值应为正数"""
@@ -795,6 +799,237 @@ class TestOfficialLotType:
         assert OfficialLotType.charge_lot.value == "充电抽奖"
         assert OfficialLotType.official_lot.value == "官方抽奖"
         assert OfficialLotType.lot_dyn_origin_dyn.value == "抽奖动态的源动态"
+
+
+# ============================================================================
+# 测试: 用户池容量硬约束（超容量裁剪 / 幂等 / 补充不越界 / 轮次摘要）
+# ============================================================================
+
+
+class _FakeTargetUidRedisManager:
+    """内存版 target_uid_list，替代真实 Redis 读写。"""
+
+    def __init__(self, items: list[TargetUserItem]):
+        self.items = [item.model_copy(deep=True) for item in items]
+        self.write_count = 0
+
+    async def get_target_uid_list(self) -> list[TargetUserItem]:
+        return [item.model_copy(deep=True) for item in self.items]
+
+    async def set_target_uid_list(self, uid_list: list[TargetUserItem]) -> None:
+        self.items = [item.model_copy(deep=True) for item in uid_list]
+        self.write_count += 1
+
+
+class _FakeUserPoolSqlHelper:
+    """只实现用户池管理用到的只读查询，返回预置的窗口命中统计。"""
+
+    def __init__(self, stats: list[LotUserFetchStat] | None = None):
+        self.stats = list(stats) if stats else []
+
+    async def getUserLotHitStats(
+        self, uid_list: list[int], days: int = 7
+    ) -> list[LotUserFetchStat]:
+        wanted = set(uid_list)
+        return [stat for stat in self.stats if stat.uid in wanted]
+
+    async def getLatestFinishedRound(self):
+        return None
+
+    async def getLatestLotDynInfoByUidList(self, uid_list):
+        return []
+
+    async def getLotUserInfoByUidList(self, uid_list):
+        return {}
+
+    async def getUserLotHitStatsByRound(self, uid_list, lot_round_id):
+        return []
+
+    async def getRecentHotLotDyns(self, days, top_n):
+        return []
+
+
+def _patch_user_pool(
+    monkeypatch: pytest.MonkeyPatch,
+    redis: _FakeTargetUidRedisManager,
+    stats: list[LotUserFetchStat] | None = None,
+    comment_users: list[TargetUserItem] | None = None,
+) -> ups.LotUserPoolService:
+    """把用户池服务的外部依赖替换成内存实现。"""
+    monkeypatch.setattr(ups, "get_other_lot_redis_manager", redis)
+    monkeypatch.setattr(ups, "SqlHelper", _FakeUserPoolSqlHelper(stats))
+
+    async def _fake_comment_users(self, pick_count=5, exclude_uids=None):
+        return list(comment_users) if comment_users else []
+
+    monkeypatch.setattr(
+        ups.LotUserPoolService,
+        "_get_users_from_latest_lot_dyn_comment",
+        _fake_comment_users,
+    )
+    return ups.LotUserPoolService()
+
+
+class TestUserPoolCapacity:
+    """容量硬约束：194 用户裁剪到 20、高 lot 保留、幂等、补充后不越界。"""
+
+    @staticmethod
+    def _build_194_users() -> tuple[list[TargetUserItem], list[LotUserFetchStat]]:
+        """194 个 uid：30 个高命中 + 30 个 total==0 + 30 个低命中 + 104 个统计缺失。"""
+        items = [TargetUserItem(uid=1_000_000 + i) for i in range(194)]
+        stats: list[LotUserFetchStat] = []
+        for index, item in enumerate(items):
+            if index < 30:
+                stats.append(LotUserFetchStat(uid=item.uid, total=20, lot=100 - index))
+            elif index < 60:
+                # total == 0：新补入 / 抓取失败，豁免剔除，但不得因此突破容量
+                stats.append(LotUserFetchStat(uid=item.uid, total=0, lot=0))
+            elif index < 90:
+                # total > 0 且 lot <= min_valid_lot_threshold，会被剔除
+                stats.append(LotUserFetchStat(uid=item.uid, total=5, lot=1))
+        return items, stats
+
+    def test_trim_194_users_to_capacity(self):
+        items, stats = self._build_194_users()
+        max_size = settings.get_others_lot.max_user_list_size
+        kept, trimmed = ups.LotUserPoolService._trim_to_capacity(
+            items, stats, max_size
+        )
+        assert len(kept) == max_size == 20
+        assert len(trimmed) == 194 - max_size
+        # 保留窗口内命中抽奖数最高的 20 个（lot=100..81）
+        top20 = {
+            stat.uid
+            for stat in sorted(stats, key=lambda s: -s.lot)[:max_size]
+        }
+        kept_uids = {item.uid for item in kept}
+        assert kept_uids == top20
+        assert set(trimmed).isdisjoint(kept_uids)
+        assert kept_uids | set(trimmed) == {item.uid for item in items}
+        # total == 0 的用户因 lot=0 排在高命中用户之后，不会占掉名额
+        assert all(
+            item.uid not in {stat.uid for stat in stats if stat.total == 0}
+            for item in kept
+        )
+
+    def test_trim_ties_keep_original_order(self):
+        items = [TargetUserItem(uid=7_000_000 + i) for i in range(30)]
+        stats = [LotUserFetchStat(uid=item.uid, total=3, lot=5) for item in items]
+        kept, trimmed = ups.LotUserPoolService._trim_to_capacity(items, stats, 20)
+        # 同分按原列表顺序保留（先入池者优先），保留结果也维持原顺序
+        assert [item.uid for item in kept] == [item.uid for item in items[:20]]
+        assert trimmed == [item.uid for item in items[20:]]
+
+    def test_trim_is_idempotent(self):
+        items, stats = self._build_194_users()
+        max_size = settings.get_others_lot.max_user_list_size
+        kept, _ = ups.LotUserPoolService._trim_to_capacity(items, stats, max_size)
+        kept_again, trimmed_again = ups.LotUserPoolService._trim_to_capacity(
+            kept, stats, max_size
+        )
+        assert [item.uid for item in kept_again] == [item.uid for item in kept]
+        assert trimmed_again == []
+
+    @pytest.mark.asyncio
+    async def test_manage_user_list_trims_194_and_is_stable(self, monkeypatch):
+        items, stats = self._build_194_users()
+        redis = _FakeTargetUidRedisManager(items)
+        service = _patch_user_pool(monkeypatch, redis, stats)
+        max_size = settings.get_others_lot.max_user_list_size
+
+        first = await service.manage_user_list()
+        assert first.before_count == 194
+        assert first.after_count == max_size
+        assert len(redis.items) == max_size
+        assert len(first.removed) == 30
+        assert len(first.trimmed) == 194 - len(first.removed) - max_size
+        assert first.added == []
+        top20 = {
+            stat.uid
+            for stat in sorted(stats, key=lambda s: -s.lot)[:max_size]
+        }
+        assert {item.uid for item in redis.items} == top20
+
+        # 第二轮：不再触发裁剪 / 剔除 / 补充，池子稳定在 20
+        second = await service.manage_user_list()
+        assert second.before_count == max_size
+        assert second.after_count == max_size
+        assert second.trimmed == []
+        assert second.removed == []
+        assert second.added == []
+        assert len(redis.items) == max_size
+
+    @pytest.mark.asyncio
+    async def test_supplement_added_never_exceeds_capacity(self, monkeypatch):
+        items = [TargetUserItem(uid=8_000_000 + i) for i in range(3)]
+        stats = [LotUserFetchStat(uid=item.uid, total=10, lot=50) for item in items]
+        redis = _FakeTargetUidRedisManager(items)
+        # 评论区故意返回 50 个用户，远超 17 个缺口
+        comment_users = [TargetUserItem(uid=9_000_000 + i) for i in range(50)]
+        service = _patch_user_pool(
+            monkeypatch, redis, stats, comment_users=comment_users
+        )
+        summary = await service.supplement_users()
+        max_size = settings.get_others_lot.max_user_list_size
+        assert summary.after_count == max_size
+        assert len(summary.added) == max_size - len(items)
+        assert summary.trimmed == []
+        assert len(redis.items) == max_size
+
+    @pytest.mark.asyncio
+    async def test_supplement_defensive_trim_when_start_over_capacity(
+        self, monkeypatch
+    ):
+        """即便上游没走裁剪，补充阶段也不能让 Redis 列表超过容量。"""
+        items = [TargetUserItem(uid=6_000_000 + i) for i in range(194)]
+        stats = [LotUserFetchStat(uid=item.uid, total=2, lot=9) for item in items]
+        redis = _FakeTargetUidRedisManager(items)
+        service = _patch_user_pool(monkeypatch, redis, stats)
+        summary = await service.supplement_users()
+        max_size = settings.get_others_lot.max_user_list_size
+        assert summary.after_count == max_size
+        assert len(summary.trimmed) == 194 - max_size
+        assert len(redis.items) == max_size
+
+    @pytest.mark.asyncio
+    async def test_default_uids_fallback_is_capped(self, monkeypatch):
+        """默认名单仍只在列表完全为空时兜底，但数量不得超过容量。"""
+        redis = _FakeTargetUidRedisManager([])
+        service = _patch_user_pool(monkeypatch, redis)
+        summary = await service.supplement_users()
+        max_size = settings.get_others_lot.max_user_list_size
+        assert summary.after_count == max_size
+        assert len(summary.added) == max_size
+        assert summary.added == settings.get_others_lot.default_user_uids[:max_size]
+        assert len(redis.items) == max_size
+
+    @pytest.mark.asyncio
+    async def test_push_round_summary_shows_three_counts(self, monkeypatch):
+        pushed: list[tuple[str, str]] = []
+
+        async def _fake_pushme(title, content, push_type="text"):
+            pushed.append((title, content))
+
+        monkeypatch.setattr(ups, "a_pushme", _fake_pushme)
+        summary = ups.LotUserPoolSummary(
+            before_count=194,
+            after_count=20,
+            added=[901],
+            removed=[1, 2],
+            active_in_window=18,
+            round_id=366,
+            round_all=100,
+            round_lot=80,
+            round_useless=20,
+            trimmed=[3, 4, 5],
+        )
+        await ups.LotUserPoolService().push_round_summary(summary)
+        assert len(pushed) == 1
+        content = pushed[0][1]
+        assert "194 -> 20个" in content
+        assert "剔除" in content and "2个" in content
+        assert "超容量裁剪" in content and "3个" in content
+        assert "新补充" in content and "1个" in content
 
 
 # ============================================================================
