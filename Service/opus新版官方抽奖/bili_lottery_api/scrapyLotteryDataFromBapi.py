@@ -65,17 +65,16 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         return await self.pipeline(params.business_type, params.business_id)
 
     def _load_config(self) -> LotteryApiRobotConfig:
-        """运行时由调用方注入 logger 与 max_sem（sem_num）。"""
+        """运行时只注入 logger；并发统一由 CONFIG.concurrency.lottery_api 决定。"""
         return CONFIG.get_crawler_config(self.Config).model_copy(
-            update={"max_sem": self.sem_limit, "logger": self._injected_log}
+            update={"logger": self._injected_log}
         )
 
-    def __init__(self, log, business_type: BusinessType, sem_num=1):
+    def __init__(self, log, business_type: BusinessType):
         self.__business_type: BusinessType = business_type
         self._injected_log = log
         self.default_dyn_rid = 346492727
         self.default_reserve_sid = 4234284
-        self.sem_limit = sem_num
         self.min_reserve_sep_ts = 8 * 3600  # 最小的间隔时间
         self.min_dyn_sep_ts = 12 * 3600
         self.__max_stop_times = 5  # 遇到超过时间的次数
@@ -84,7 +83,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         self._cur_stop_times = 0
         self.latest_ts = 0
         # 配置（logger / 超时 / 重试 / 插件等）统一由 LotteryApiRobotConfig 控制，
-        # 其中 logger 与 max_sem 由调用方通过 _load_config 动态注入
+        # 其中 logger 由调用方通过 _load_config 注入，并发取自 ConcurrencyConfig
         super().__init__()
 
     async def solve_dyn_data(self, *, data: dict, rid: int) -> WorkerStatus:

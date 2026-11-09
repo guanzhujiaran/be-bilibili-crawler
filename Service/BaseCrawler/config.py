@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from log.base_log import (
     myfastapi_logger,
-    sql_log,
     official_lot_logger,
     get_rm_following_list_logger,
     reserve_lot_logger,
@@ -54,7 +53,8 @@ class CrawlerConfig(BaseModel):
 
     字段默认值与 ``UnlimitedCrawler`` 原有的硬编码默认值保持一致。
 
-    ``max_sem`` / ``logger`` / ``plugins`` 等运行参数统一在此管理，
+    ``logger`` / ``plugins`` 等在配置类里声明；**并发数不在这里**，
+    统一用 ``concurrency_key`` 指向 ``CONFIG.concurrency``。
     爬虫初始化时直接读取 ``self.Config`` 对应的配置实例，不再接受外部传参。
     """
 
@@ -68,22 +68,28 @@ class CrawlerConfig(BaseModel):
         default="", description="爬虫实例名称（留空则回退为类名）"
     )
 
-    # 最大并发数（同时运行的 worker 数量）
-    max_sem: int = Field(default=10, description="最大并发数")
-    # 任务失败时是否重新入队
-    requeue_on_fetch_fail: bool = Field(default=False)
-    # 任务超时时是否重新入队（独立于 requeue_on_fetch_fail）
-    requeue_on_timeout: bool = Field(default=True)
-    # 失败任务最大重试次数，-1 表示无限重试
-    max_retries: int = Field(default=-1)
-    # 单个任务最大超时时间（秒），None 表示不限制
-    worker_max_timeout: int | None = Field(default=None)
-    # 是否打印超时错误日志
-    log_timeout_error: bool = Field(default=True)
-    # 是否打印抓取异常日志
-    log_error: bool = Field(default=True)
-    # 任务失败后的延迟时间（秒）
-    worker_error_delay: int = Field(default=300)
+    # ===== 并发：不在各爬虫里写数字，只声明去 CONFIG.concurrency 的哪一项取 =====
+    # 例如 ``concurrency_key = "reserve"`` → 读 CONFIG.concurrency.reserve。
+    # 留空则用 CONFIG.concurrency.crawler_workers 作为兜底。
+    concurrency_key: str = Field(
+        default="", description="并发数取自 CONFIG.concurrency 的字段名"
+    )
+    # ===== 运行行为：全部跟随统一配置，子类只在「不一样」时才覆盖 =====
+    # 统一来源见 CONFIG.crawler_runtime（超时/重试/退避/日志），
+    # 由 UnlimitedCrawler.__init__ 解析；这里的 None / -1 都是「跟随」的哨兵值。
+    # 任务失败时是否重新入队：None = 跟随
+    requeue_on_fetch_fail: bool | None = Field(default=None)
+    # 任务超时时是否重新入队（独立于 requeue_on_fetch_fail）：None = 跟随
+    requeue_on_timeout: bool | None = Field(default=None)
+    # 失败任务最大重试次数，-1 = 无限重试：None = 跟随
+    max_retries: int | None = Field(default=None)
+    # 单个任务最大超时时间（秒），None = 不限制：-1 = 跟随
+    worker_max_timeout: int | None = Field(default=-1)
+    # 是否打印超时 / 抓取异常日志：None = 跟随
+    log_timeout_error: bool | None = Field(default=None)
+    log_error: bool | None = Field(default=None)
+    # 任务失败后的延迟时间（秒）：None = 跟随
+    worker_error_delay: int | None = Field(default=None)
 
     # 日志对象（由 Config 集中管理；运行时可用对应环境变量覆盖其子字段前的 logger 选择）
     logger: Any = myfastapi_logger
@@ -98,25 +104,13 @@ class CrawlerConfig(BaseModel):
 # 注意：pydantic v2 要求子类覆盖字段必须带类型注解。
 
 
-class GetProxyMethodsConfig(CrawlerConfig):
-    """代理获取爬虫配置（env: PROXY__*）"""
-
-    max_sem: int = 10
-    worker_max_timeout: int | None = 300
-    requeue_on_fetch_fail: bool = False
-    requeue_on_timeout: bool = True
-    logger: Any = sql_log
-    plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
-
-
 class DynDetailScrapyConfig(CrawlerConfig):
     """动态详情爬虫配置（env: DYN_DETAIL__*）"""
 
-    max_sem: int = 20
-    worker_max_timeout: int | None = 300
+    concurrency_key: str = "dyn_detail"
+    # 差异：失败也重入队；单条详情最长 300s
     requeue_on_fetch_fail: bool = True
-    requeue_on_timeout: bool = True
-    log_timeout_error: bool = False
+    worker_max_timeout: int | None = 300
     logger: Any = official_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("status_plugin", StatsPlugin, {"push_result": True}),
@@ -126,7 +120,7 @@ class DynDetailScrapyConfig(CrawlerConfig):
 class GetRmFollowingListV2Config(CrawlerConfig):
     """取关对象爬虫配置（env: RM_FOLLOWING__*）"""
 
-    max_sem: int = 20
+    concurrency_key: str = "rm_following"
     logger: Any = get_rm_following_list_logger
     plugins: List[PluginConfig] = [
         PluginConfig("status", StatsPlugin),
@@ -136,10 +130,8 @@ class GetRmFollowingListV2Config(CrawlerConfig):
 class ReserveScrapyRobotConfig(CrawlerConfig):
     """预约抽奖爬虫配置（env: RESERVE__*）"""
 
-    max_sem: int = 1
+    concurrency_key: str = "reserve"
     worker_max_timeout: int | None = 300
-    requeue_on_fetch_fail: bool = False
-    requeue_on_timeout: bool = True
     logger: Any = reserve_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
@@ -150,10 +142,8 @@ class ReserveScrapyRobotConfig(CrawlerConfig):
 class TopicRobotConfig(CrawlerConfig):
     """话题抽奖爬虫配置（env: TOPIC__*）"""
 
-    max_sem: int = 1
+    concurrency_key: str = "topic"
     worker_max_timeout: int | None = 300
-    requeue_on_fetch_fail: bool = False
-    requeue_on_timeout: bool = True
     logger: Any = topic_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
@@ -164,10 +154,11 @@ class TopicRobotConfig(CrawlerConfig):
 class LotteryApiRobotConfig(CrawlerConfig):
     """抽奖 API 爬虫配置（env: LOTTERY_API__*）
 
-    max_sem 与 logger 由运行时调用方注入（见 LotteryApiRobot._load_config），
+    并发取自 CONFIG.concurrency.lottery_api，logger 由运行时调用方注入（LotteryApiRobot._load_config），
     故此处保持默认；plugins 固定为 StatsPlugin。
     """
 
+    concurrency_key: str = "lottery_api"
     logger: Any = myfastapi_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
@@ -177,7 +168,7 @@ class LotteryApiRobotConfig(CrawlerConfig):
 class RefreshBiliLotDatabaseConfig(CrawlerConfig):
     """刷新抽奖数据库爬虫配置（env: REFRESH_LOT__*）"""
 
-    max_sem: int = 1
+    concurrency_key: str = "refresh_lot_db"
     logger: Any = background_task_logger
     plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
 
@@ -185,8 +176,7 @@ class RefreshBiliLotDatabaseConfig(CrawlerConfig):
 class SamsClubCrawlerConfig(CrawlerConfig):
     """山姆分类爬虫配置（env: SAMS_CLUB__*）"""
 
-    max_sem: int = 1
-    requeue_on_fetch_fail: bool = False
+    concurrency_key: str = "sams_club"
     logger: Any = sams_club_logger
     plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
 
@@ -194,8 +184,7 @@ class SamsClubCrawlerConfig(CrawlerConfig):
 class SamsClubSPUDetailCrawlerConfig(CrawlerConfig):
     """山姆 SPU 详情爬虫配置（env: SAMS_CLUB_SPU__*）"""
 
-    max_sem: int = 1
-    requeue_on_fetch_fail: bool = False
+    concurrency_key: str = "sams_club_spu"
     logger: Any = sams_club_logger
     plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
 
@@ -203,6 +192,7 @@ class SamsClubSPUDetailCrawlerConfig(CrawlerConfig):
 class BiliLiveCrawlerConfig(CrawlerConfig):
     """直播监控爬虫配置（env: BILI_LIVE__*）"""
 
+    concurrency_key: str = "bili_live"
     logger: Any = live_monitor_logger
     plugins: List[PluginConfig] = []
 
@@ -210,15 +200,12 @@ class BiliLiveCrawlerConfig(CrawlerConfig):
 class GetOthersLotDynRobotConfig(CrawlerConfig):
     """获取他人抽奖动态爬虫配置（直接构造，不依赖全局 Settings 注入）"""
 
-    max_sem: int = 1
+    concurrency_key: str = "get_others_lot_dyn"
     # 空间动态 / 抽奖判定可能持续很久（逐页抓取），不做整体超时
     worker_max_timeout: int | None = None
-    # 单个用户/动态抓取失败时不再重入队（与原始逻辑一致：跳过并继续）
-    requeue_on_fetch_fail: bool = False
+    # 单个用户/动态抓取失败时跳过并继续：不重入队、不重试、不退避
     requeue_on_timeout: bool = False
     max_retries: int = 0
-    log_timeout_error: bool = False
-    # 避免异常时长时间休眠，异常已在各业务方法内部处理
     worker_error_delay: int = 0
     logger: Any = get_others_lot_logger
     plugins: List[PluginConfig] = [
@@ -229,7 +216,6 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
 # ===== 爬虫配置注册表（集中管理，不依赖全局 Settings） =====
 # config 类 -> 默认配置实例。新增爬虫配置时在此登记即可，无需改动 CONFIG.Settings。
 CRAWLER_CONFIG_REGISTRY: dict[type[CrawlerConfig], CrawlerConfig] = {
-    GetProxyMethodsConfig: GetProxyMethodsConfig(),
     DynDetailScrapyConfig: DynDetailScrapyConfig(),
     GetRmFollowingListV2Config: GetRmFollowingListV2Config(),
     ReserveScrapyRobotConfig: ReserveScrapyRobotConfig(),

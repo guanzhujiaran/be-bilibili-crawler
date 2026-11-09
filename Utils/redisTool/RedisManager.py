@@ -523,6 +523,36 @@ class RedisManagerBase:
             )
 
     @retry
+    async def _zrangebyscore_desc(
+        self,
+        key,
+        max_score: int | float | str,
+        min_score: int | float | str,
+        offset: int = 0,
+        num: int | None = None,
+    ):
+        """按分数从高到低，取分数区间内的成员（ZRANGE ... BYSCORE REV LIMIT）。
+
+        ``max_score`` / ``min_score`` 支持 ``"+inf"`` / ``"-inf"``。
+        """
+        async with redis_client_factory(pool=self.pool) as r:
+            return await r.zrange(
+                key,
+                max_score,
+                min_score,
+                byscore=True,
+                desc=True,
+                offset=offset,
+                num=num,
+            )
+
+    @retry
+    async def _zremrangebyscore(self, key, min_score, max_score):
+        """按分数区间批量移除成员，返回移除数量。"""
+        async with redis_client_factory(pool=self.pool) as r:
+            return await r.zremrangebyscore(key, min_score, max_score)
+
+    @retry
     async def _zdel_elements(self, key, *elements_to_remove):
         if not elements_to_remove:
             return

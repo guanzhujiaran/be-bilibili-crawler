@@ -41,7 +41,12 @@ class GetOthersLotDyn:
     def __init__(self):
         self.is_getting_dyn_flag_lock = asyncio.Lock()
         self.is_getting_dyn_flag = False
-        self.robot: GetOthersLotDynRobot | None = None
+        # 控制面（GetSingleScrapyStatus / GetAllLotScrapyStatus 的 other_space / other_dyn）
+        # 从 get_others_lot_dyn.robot 读取进度计数器。定时调度走
+        # GenericCrawlerScheduler(crawler=get_others_lot_dyn_robot) 直接调用 robot.main()，
+        # 不经过 get_new_dyn()，因此这里在构造时就挂上全局单例，
+        # 保证「定时调度 / HTTP 触发」两条路径都有监控数据。
+        self.robot: GetOthersLotDynRobot = get_others_lot_dyn_robot
         self.get_dyn_ts = 0
 
     async def get_get_dyn_ts(self):
@@ -76,8 +81,7 @@ class GetOthersLotDyn:
             int(time.time()) - self.get_dyn_ts
             >= settings.get_others_lot.get_dyn_interval
         ):
-            # 复用全局单例机器人（与其它爬虫保持一致，不再每次新建）
-            self.robot = get_others_lot_dyn_robot
+            # 复用构造时挂上的全局单例机器人（与其它爬虫保持一致，不再每次新建）
             await self.robot.main()
             await get_other_lot_redis_manager.set_get_dyn_ts(int(time.time()))
         self.is_getting_dyn_flag = False

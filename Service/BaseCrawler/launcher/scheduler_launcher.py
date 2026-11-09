@@ -336,7 +336,7 @@ class GenericCrawlerScheduler(BaseScheduler):
 
     def __init__(
         self,
-        crawler: UnlimitedCrawler,
+        crawler: Any,
         cron_expr: str,
         default_interval_seconds: int = 2 * 3600,
         crawler_name: Optional[str] = None,
@@ -370,7 +370,7 @@ if __name__ == "__main__":
             return hash(self.a)
 
     class MockCrawlerConfig(CrawlerConfig):
-        max_sem = 1
+        pass
 
     class MockCrawler(UnlimitedCrawler[MockParams]):
         """模拟的爬虫类，仅用于测试"""

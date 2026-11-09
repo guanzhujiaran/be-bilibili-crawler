@@ -2,7 +2,7 @@ from bili_common.models import StrEnumAutoDoc
 import os
 from dataclasses import dataclass
 from fake_useragent import UserAgent
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import AsyncAdaptedQueuePool
 
@@ -15,15 +15,73 @@ from Service.BaseCrawler.config import CrawlerConfig, get_crawler_config
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
 
+class ConcurrencyConfig(BaseModel):
+    """**所有并发数的统一入口**——每个爬虫一项，另有代理抓取与分阶段采集的项。
+
+    各爬虫的 ``CrawlerConfig`` 不再写并发数字，只用 ``concurrency_key`` 指向这里的字段：
+        class ReserveScrapyRobotConfig(CrawlerConfig):
+            concurrency_key: str = "reserve"
+
+    部署时改这里，或用环境变量覆盖（嵌套模型用双下划线）：
+      CONCURRENCY__RESERVE=2
+      CONCURRENCY__SPACE_DYN=6
+    """
+
+    # ---- 各爬虫 worker 池并发（一个爬虫一项）----
+    crawler_workers: int = 50  # 兜底：爬虫未声明 concurrency_key 时用这个
+    dyn_detail: int = 100  # 动态详情
+    rm_following: int = 20  # 取关对象
+    reserve: int = 1  # 预约抽奖（串行：接口要求顺序执行）
+    topic: int = 1  # 话题抽奖（串行）
+    lottery_api: int = 20  # 抽奖 API（LotteryApiRobot 的 DYN/RESERVE 两个实例共用）
+    refresh_lot_db: int = 1  # 刷新抽奖库（串行，避免与采集抢 DB）
+    sams_club: int = 1  # 山姆分类
+    sams_club_spu: int = 1  # 山姆 SPU 详情
+    bili_live: int = 20  # 直播监控
+    get_others_lot_dyn: int = 1  # 第三方抽奖动态（初始 1，运行时按阶段切到下面两项）
+
+    # ---- 第三方抽奖采集：按阶段切换（GetOthersLotDynRobot._set_concurrency）----
+    space_dyn: int = 20
+    judge_dyn: int = 20
+
+    # ---- 代理抓取：同时流式读取的源数量 / 入库并发 / 补充源内部并发 ----
+    proxy_source_fetch: int = 32
+    proxy_source_ingest: int = 10
+    proxy_source_supplement: int = 12
+
+
+class CrawlerRuntimeConfig(BaseModel):
+    """**所有爬虫的运行行为**统一入口（原先在每个 ``CrawlerConfig`` 子类里重复抄一遍）。
+
+    各爬虫的 Config 子类只需在「与这里不同」时显式覆盖，未声明的字段跟随本配置。
+    env 覆盖（嵌套双下划线）：``CRAWLER_RUNTIME__MAX_RETRIES=3``
+    """
+
+    # 单个任务最大超时（秒），None = 不限制。
+    # 默认不限制：多数爬虫的单任务时长不可预估（刷新抽奖库 / 直播监控 / 分页抓取），
+    # 强行给 300s 会把原本跑得通的长任务打断。需要限制的爬虫在自己的 Config 里写值。
+    worker_max_timeout: int | None = None
+    # 抓取失败 / 超时是否重新入队（两者独立）
+    requeue_on_fetch_fail: bool = False
+    requeue_on_timeout: bool = True
+    # 失败任务最大重试次数，-1 = 无限重试
+    max_retries: int = -1
+    # 是否打印超时 / 抓取异常日志（默认只记超时以外的异常，减少噪音）
+    log_timeout_error: bool = False
+    log_error: bool = True
+    # 任务失败后的等待时间（秒）
+    worker_error_delay: int = 300
+
+
 class GetOthersLotDynConfig(BaseModel):
     """第三方抽奖动态获取配置 —— 作为 Settings 的嵌套子模型，
     部署时可整个对象填 JSON，也可逐字段用双下划线覆盖。
-    例如：get_others_lot='{"space_dyn_concurrency":3}'
-    或：  get_others_lot__space_dyn_concurrency=3
+    例如：get_others_lot='{"dyn_time_limit":864000}'
+    或：  get_others_lot__dyn_time_limit=864000
+
+    注意：**并发数不在这里**，统一由 ``ConcurrencyConfig``（CONFIG.concurrency）控制。
     """
 
-    space_dyn_concurrency: int = 2  # 空间动态并发数
-    judge_dyn_concurrency: int = 2  # 抽奖判定并发数
     spare_time: int = 86400 * 7  # 多久以前的动态不再获取(秒)，默认7天
     get_dyn_interval: int = 86400 * 2  # 两次完整采集的最小间隔(秒)，默认2天
     dyn_time_limit: int = 1728000  # 返回数据的时间范围(秒)，默认20天
@@ -220,6 +278,146 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     LOG_LEVEL: str = "WARNING"
     IS_DEV: int = 1  # 默认开发环境
 
+    # ===== GitHub 系资源（raw.githubusercontent.com / cdn.jsdelivr.net）的镜像 =====
+    # 通用设置：任何需要通过 GitHub 拉文件的模块都读这里，不要各自硬编码镜像域名。
+    # 语义与 RPA-Browser 的 settings.github_proxy_urls 一致：
+    # - None 表示直连原始 URL（可与镜像混用）；
+    # - 其余元素作为前缀拼在原 URL 之前（如 "https://ghproxy.net/" + raw URL）；
+    # - **顺序即尝试顺序**，列表会持续追加新镜像，失效的留在原位置即可。
+    # 可用同名环境变量覆盖（JSON 数组），例如：
+    #   GITHUB_PROXY_URLS='[null, "https://ghproxy.net/"]'
+    github_proxy_urls: list[str | None] = Field(
+        default_factory=lambda: [
+            None,
+            "https://gh-proxy.com/",
+            "https://gh-proxy.org/",
+            "https://ghproxy.net/",
+            "https://gh.b52m.cn/",
+            "https://github.xxlab.tech/",
+            "https://ghproxy.053000.xyz/",
+            "https://proxy.yaoyaoling.net/",
+            "https://gh.aaa.team/",
+            "https://g.blfrp.cn/",
+            "https://github.chenc.dev/",
+            "https://github.dpik.top/",
+            "https://github.cnxiaobai.com/",
+            "https://gh.padao.fun/",
+            "https://ghproxy.sakuramoe.dev/",
+            "https://30006000.xyz/",
+            "https://gh.monlor.com/",
+            "https://ghp.keleyaa.com/",
+            "https://ghproxy.mirror.skybyte.me/",
+            "https://fastgit.cc/",
+            "https://xiaomo-station.top/",
+            "https://github-proxy.lixxing.top/",
+            "https://gh.shiina-rimo.cafe/",
+            "https://gh.idayer.com/",
+            "https://gh.996986.xyz/",
+            "https://gitproxy.mrhjx.cn/",
+            "https://getgit.love8yun.eu.org/",
+            "https://ghm.078465.xyz/",
+            "https://gh.ddlc.top/",
+            "https://git.yylx.win/",
+            "https://gh.198962.xyz/",
+            "https://proxy.baguoyuyan.com/",
+            "https://ghproxy.imciel.com/",
+            "https://jiashu.1win.eu.org/",
+            "https://git.820828.xyz/",
+            "https://gh.1k.ink/",
+            "https://github.ihnic.com/",
+            "https://ghpxy.hwinzniej.top/",
+            "https://github.mlmle.cn/",
+            "https://gp.871201.xyz/",
+            "https://github.zzrbk.xyz/",
+            "https://ghproxy.cxkpro.top/",
+            "https://gh.catmak.name/",
+            "https://ghproxy.xzhouqd.com/",
+            "https://hub.ddayh.com/",
+            "https://kenyu.ggff.net/",
+            "https://gh.halonice.com/",
+            "https://gh.nxnow.top/",
+            "https://github.boringhex.top/",
+            "https://github.crdz.eu.org/",
+            "https://github.lsdfxdk.nyc.mn/",
+            "https://github.ednovas.xyz/",
+            "https://tvv.tw/",
+            "https://ggg.clwap.dpdns.org/",
+            "https://github.788787.xyz/",
+            "https://github.tianrld.top/",
+            "https://gh.chjina.com/",
+            "https://github.1ms.xx.kg/",
+            "https://git.951959483.xyz/",
+            "https://github.880824.xyz/",
+            "https://gh.chalin.tk/",
+            "https://gh.noki.icu/",
+            "https://www.5555.cab/",
+            "https://y.whereisdoge.work/",
+            "https://gh.xxooo.cf/",
+            "https://github-proxy.memory-echoes.cn/",
+            "https://free.cn.eu.org/",
+            "https://github.geekery.cn/",
+            "https://ghps.cc/",
+            "https://gitproxy.127731.xyz/",
+            "https://gh.con.sh/",
+            "https://down.npee.cn/",
+            "https://git.669966.xyz/",
+            "https://ghfile.geekertao.top/",
+            "https://ghproxy.cn/",
+            "https://git.40609891.xyz/",
+            "https://ghproxy.monkeyray.net/",
+            "https://gitproxy1.127731.xyz/",
+            "https://hub.gitmirror.com/",
+            "https://ghproxy.xiaopa.cc/",
+            "https://ghproxy.cfd/",
+            "https://github.tbedu.top/",
+            "https://ghproxy.vansour.top/",
+            "https://gh.wsmdn.dpdns.org/",
+            "https://gh.bugdey.us.kg/",
+            "https://github.bullb.net/",
+            "https://github.ruojian.space/",
+            "https://code-hub-hk.freexy.top/",
+            "https://gitproxy.197545.xyz/",
+            "https://ghproxy.mf-dust.dpdns.org/",
+            "https://gh.jasonzeng.dev/",
+            "https://j.1lin.dpdns.org/",
+            "https://j.1win.ggff.net/",
+            "https://git.zeas.cc/",
+            "https://gh.echofree.xyz/",
+            "https://github.kkproxy.dpdns.org/",
+            "https://ghb.nilive.top/",
+            "https://github.cn86.dev/",
+            "https://github.oterea.top/",
+            "https://ghproxy.fangkuai.fun/",
+            "https://gh-proxy.net/",
+            "https://gitproxy.click/",
+            "https://ghproxy.cc/",
+            "https://cf.ghproxy.cc/",
+            "https://proxy.atoposs.com/",
+            "https://github-proxy.com/",
+            "https://github.zjzzy.cloudns.org/",
+            "https://ghfast.top/",
+            "https://gp.zkitefly.eu.org/",
+            "https://gh.jdck.fun/",
+            "https://git.tangbai.cc/",
+            "https://ghproxy.1888866.xyz/",
+            "https://github.limoruirui.com/",
+            "https://gh.llkk.cc/",
+            "https://gh.39.al/",
+        ]
+    )
+    # 单个 GitHub 资源的镜像候选上限：列表有 100+ 项，逐个试会把一轮抓取拖死，
+    # 按配置顺序最多尝试 N 个（含 None 直连），命中即停。
+    github_proxy_max_attempts: int = 6
+    # 单个镜像候选的请求超时上限（秒）。代理源里的「历史归档」分支单文件能到 5MB/50 万行，
+    # 不再按行数截断后必须完整下载，12s 测下来只能下 1~1.5MB，故放宽到 45s。
+    # 单源最坏 10s(V2Ray) + 6×45s = 280s，仍小于单源任务上限 300s。
+    github_proxy_timeout: float = 45.0
+
+    # ===== 并发统一配置（所有并发数都从这里取，见 ConcurrencyConfig）=====
+    concurrency: ConcurrencyConfig = ConcurrencyConfig()
+    # ===== 爬虫运行行为统一配置（超时 / 重试 / 退避 / 日志开关）=====
+    crawler_runtime: CrawlerRuntimeConfig = CrawlerRuntimeConfig()
+
     # ===== 第三方抽奖动态获取 =====
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
 
@@ -354,7 +552,12 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
         env_file=(
             os.path.join(_current_dir, ".env.fastapi.prod"),
             os.path.join(_current_dir, ".env.fastapi.dev"),
-        )
+        ),
+        # 嵌套模型可用「双下划线」逐字段覆盖，例如：
+        #   CONCURRENCY__SPACE_DYN=6
+        #   GET_OTHERS_LOT__DYN_TIME_LIMIT=864000
+        # 不加这个开关时，嵌套字段只能整体填 JSON，逐字段 env 会被忽略。
+        env_nested_delimiter="__",
     )
 
 
@@ -552,6 +755,9 @@ class _CONFIG:
         settings.message_config
     )  # 推送设置
     database = DataBaseConfig()
+    # 并发 / 爬虫运行行为的统一配置（CrawlerType、抓取模块都从这里读）
+    concurrency = settings.concurrency
+    crawler_runtime = settings.crawler_runtime
     my_ipv6_addr = settings.PROXY_SERVER
     unidbg_addr = f"http://{settings.UNIDBG_HOST}:{settings.UNIDBG_PORT}"
     RabbitMQConfig = RabbitMQConfig()

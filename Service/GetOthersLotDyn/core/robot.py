@@ -224,7 +224,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self.space_succ_counter = ProgressCounter()
         self.space_succ_counter.total_num = len(self._current_phase_objs)
         self.space_succ_counter.is_running = True
-        self._set_concurrency(settings.get_others_lot.space_dyn_concurrency)
+        self._set_concurrency(settings.concurrency.space_dyn)
         await self.run(init_params=None)
         self.space_succ_counter.is_running = False
 
@@ -252,7 +252,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self.space_succ_counter = ProgressCounter()
         self.space_succ_counter.total_num = len(self._current_phase_objs)
         self.space_succ_counter.is_running = True
-        self._set_concurrency(settings.get_others_lot.space_dyn_concurrency)
+        self._set_concurrency(settings.concurrency.space_dyn)
         await self.run(init_params=None)
         self.space_succ_counter.is_running = False
 
@@ -277,7 +277,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self.dyn_succ_counter = ProgressCounter()
         self.dyn_succ_counter.total_num = len(self._current_phase_objs)
         self.dyn_succ_counter.is_running = True
-        self._set_concurrency(settings.get_others_lot.judge_dyn_concurrency)
+        self._set_concurrency(settings.concurrency.judge_dyn)
         await self.run(init_params=None)
         self.dyn_succ_counter.is_running = False
         await self._after_scrapy()

@@ -782,8 +782,10 @@ class TestConstants:
         assert settings.get_others_lot.dyn_time_limit > 0
 
     def test_space_dyn_concurrency(self):
-        """空间动态并发数应为正数"""
-        assert settings.get_others_lot.space_dyn_concurrency > 0
+        """并发统一由 CONFIG.concurrency 控制（GetOthersLotDynConfig 里已不再单独配置）。"""
+        assert settings.concurrency.space_dyn > 0
+        assert settings.concurrency.judge_dyn > 0
+        assert not hasattr(settings.get_others_lot, "space_dyn_concurrency")
 
 
 # ============================================================================

@@ -1,19 +1,12 @@
-from typing import List
-
 from sqlalchemy import (
-    Column,
     Computed,
-    ForeignKeyConstraint,
     Index,
     Integer,
     JSON,
     String,
-    TIMESTAMP,
     text,
 )
-from sqlalchemy.dialects.mysql import TINYINT
-from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
-from sqlalchemy.orm.base import Mapped
+from sqlalchemy.orm import declarative_base, mapped_column
 
 Base = declarative_base()
 
@@ -53,35 +46,5 @@ class ProxyTab(Base):
         ),
     )
 
-    available_proxy: Mapped[List["AvailableProxy"]] = relationship(
-        "AvailableProxy", uselist=True, back_populates="proxy_tab"
-    )
-
     def __str__(self):
         return f"ProxyTab(proxy_id={self.proxy_id}, proxy={self.proxy}, status={self.status}, update_ts={self.update_ts}, score={self.score}, add_ts={self.add_ts}, success_times={self.success_times}, zhihu_status={self.zhihu_status})"
-
-
-class AvailableProxy(Base):
-    __tablename__ = "available_proxy"
-    __table_args__ = (
-        ForeignKeyConstraint(
-            ["proxy_tab_id"],
-            ["proxy_tab.proxy_id"],
-            name="FK_available_proxy_proxy_tab",
-        ),
-        Index("proxy_tab_id", "proxy_tab_id", unique=True),
-    )
-
-    proxy_tab_id = mapped_column(Integer, nullable=False)
-    pk = mapped_column(Integer, primary_key=True)
-    ip = mapped_column(String(1024))
-    counter = mapped_column(Integer)
-    max_counter_ts = mapped_column(TIMESTAMP)
-    resp_code = mapped_column(Integer)
-    available = mapped_column(TINYINT(1))
-    latest_352_ts = mapped_column(TIMESTAMP)
-    latest_used_ts = mapped_column(TIMESTAMP)
-
-    proxy_tab: Mapped["ProxyTab"] = relationship(
-        "ProxyTab", back_populates="available_proxy"
-    )

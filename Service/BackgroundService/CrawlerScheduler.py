@@ -112,17 +112,13 @@ class BackgroundService:
             crawler_name=BackgroundServiceName.REFRESH_BILI_LOTDATA_DATABASE.value,
         )
         self.LOTTERY_API_ROBOT_DYN_SCHEDULER = GenericCrawlerScheduler(
-            crawler=LotteryApiRobot(
-                log=official_lot_logger, business_type=2, sem_num=2
-            ),
+            crawler=LotteryApiRobot(log=official_lot_logger, business_type=2),
             cron_expr="0 5 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.LOTTERY_API_ROBOT_DYN_SCHEDULER.value,
         )
         self.LOTTERY_API_ROBOT_RESERVE_SCHEDULER = GenericCrawlerScheduler(
-            crawler=LotteryApiRobot(
-                log=reserve_lot_logger, business_type=10, sem_num=2
-            ),
+            crawler=LotteryApiRobot(log=reserve_lot_logger, business_type=10),
             cron_expr="0 6 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.LOTTERY_API_ROBOT_RESERVE_SCHEDULER.value,

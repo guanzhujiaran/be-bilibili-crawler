@@ -60,8 +60,10 @@ class RequestWithProxy:
         self.use_p_dict_flag = False
         self.channel = "bili"
         self.log = request_with_proxy_logger
-        self.timeout = 30
-        self.available_proxy_timeout = 30
+        # 代理请求超时：免费代理大多在 5~10s 内要么连通要么直接失败，
+        # 30s 只会让坏代理白占 worker，改成 15s 后失败能更快被打分淘汰。
+        self.timeout = 15
+        self.available_proxy_timeout = 15
         self.task_set = set()
 
     def _timeshift(self, timestamp):

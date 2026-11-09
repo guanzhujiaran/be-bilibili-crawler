@@ -3,6 +3,7 @@ from abc import abstractmethod
 import asyncio
 from types import EllipsisType
 from CONFIG import CONFIG
+from log.base_log import myfastapi_logger
 from Service.BaseCrawler.base.core import BaseCrawler
 from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus, ParamsType
@@ -11,6 +12,15 @@ from Utils.通用.Common import asyncio_gather
 from Utils.推送.PushMe import a_push_error
 
 P = TypeVar("P", bound=CrawlerPlugin)
+
+
+def _resolve(value, fallback, sentinel=None):
+    """Config 里的值优先；等于哨兵值（默认 None）时回退统一配置。
+
+    ``worker_max_timeout`` 的哨兵是 ``-1``：它的合法值里 ``None`` 表示「不限制」，
+    不能跟「跟随统一配置」混用。
+    """
+    return fallback if value is sentinel or value == sentinel else value
 
 
 class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
@@ -70,7 +80,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         加载爬虫配置。
 
         默认直接返回 ``self.Config`` 对应的集中配置实例。
-        若需要在运行时注入动态值（如根据业务类型选择 logger / max_sem），
+        若需要在运行时注入动态值（如根据业务类型选择 logger），
         子类可重写本方法，返回 ``CONFIG.get_crawler_config(self.Config).model_copy(update=...)``。
         """
         return CONFIG.get_crawler_config(self.Config)
@@ -79,22 +89,49 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         """
         初始化无限爬虫。
 
-        所有运行参数（max_sem、logger、plugins 等）均来自 ``self.Config`` 对应的配置实例，
+        并发来自 ``CONFIG.concurrency``（按 Config 的 concurrency_key 取），
+        其余运行参数（logger / plugins / 超时 / 重试）来自 ``self.Config`` 对应的配置实例，
         不再接受任何外部传参。各插件会按 Config 中声明的 ``plugin_name`` 自动绑定到
         ``self.<plugin_name>``，子类直接用该属性即可（也可通过 ``self.get_plugin(PluginType)`` 查找）。
         """
         # 直接使用 self.Config 对应的集中配置实例（由 CONFIG 注入）
         self.config = self._load_config()
 
-        self.requeue_on_fetch_fail = self.config.requeue_on_fetch_fail
-        self.requeue_on_timeout = self.config.requeue_on_timeout
-        self.max_retries = self.config.max_retries
-        self.worker_max_timeout = self.config.worker_max_timeout
-        self.log_timeout_error = self.config.log_timeout_error
-        self.log_error = self.config.log_error
-        self.worker_error_delay = self.config.worker_error_delay
+        # 运行行为：Config 里留哨兵值（None / -1）表示「跟随 CONFIG.crawler_runtime」，
+        # 这样各爬虫 Config 只声明与统一值不同的项，不重复抄默认值。
+        runtime = CONFIG.crawler_runtime
+        self.requeue_on_fetch_fail = _resolve(
+            self.config.requeue_on_fetch_fail, runtime.requeue_on_fetch_fail
+        )
+        self.requeue_on_timeout = _resolve(
+            self.config.requeue_on_timeout, runtime.requeue_on_timeout
+        )
+        self.max_retries = _resolve(self.config.max_retries, runtime.max_retries)
+        self.worker_max_timeout = _resolve(
+            self.config.worker_max_timeout, runtime.worker_max_timeout, sentinel=-1
+        )
+        self.log_timeout_error = _resolve(
+            self.config.log_timeout_error, runtime.log_timeout_error
+        )
+        self.log_error = _resolve(self.config.log_error, runtime.log_error)
+        self.worker_error_delay = _resolve(
+            self.config.worker_error_delay, runtime.worker_error_delay
+        )
 
-        super().__init__(max_sem=self.config.max_sem, _logger=self.config.logger)
+        # 并发：统一从 CONFIG.concurrency 取，各爬虫只声明 concurrency_key。
+        concurrency = CONFIG.concurrency
+        key = self.config.concurrency_key
+        if key and key not in type(concurrency).model_fields:
+            myfastapi_logger.warning(
+                f"[{type(self).__name__}] concurrency_key={key!r} 在 ConcurrencyConfig "
+                f"里不存在，回退 crawler_workers={concurrency.crawler_workers}"
+            )
+            key = ""
+        crawler_sem = getattr(concurrency, key or "crawler_workers")
+        super().__init__(
+            max_sem=crawler_sem,
+            _logger=self.config.logger,
+        )
 
         # 实例名优先取 Config 声明的 crawler_name（支持同类多实例各自命名），
         # 留空则保持基类的类名；调度器创建时还会进一步回填为 BackgroundServiceName 的值。
