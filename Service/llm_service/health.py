@@ -17,7 +17,8 @@
     HEALTHY ── OUTPUT_INVALID ×N ─────► COOLING ──(冷却到点 / 成功)──► HEALTHY
     HEALTHY ── QUOTA_EXHAUSTED ───────► QUOTA_WAIT ──(跨过次日 0 点)──► HEALTHY
     HEALTHY ── SUSPENDED ─────────────► SUSPENDED ──(冷却到点 / 热更新)──► HEALTHY
-    HEALTHY ── PERMANENT ─────────────► REMOVED（终态，配置被删除）
+    HEALTHY ── PERMANENT ×1 ──────────► SUSPENDED ──(冷却到点)──► HEALTHY（复验）
+    HEALTHY ── PERMANENT ×2 ──────────► REMOVED（终态，配置被删除）
 
 设计要点：
 
@@ -41,6 +42,14 @@ from pydantic import BaseModel, PrivateAttr, computed_field
 #: 连续失败（瞬时故障 / 本次请求问题）达到该次数后进入冷却
 MAX_CONSECUTIVE_FAILURES = 3
 
+#: 不可恢复错误（401/403/404/410）需要**连续命中**多少次才真的删除配置。
+#: 一次 404 就永久摘除太激进：网关路由抖动、base_url 少写 `/v1`、上游 LB 短时间
+#: 返回 404 都会命中这条判定，而删配置是不可逆的（只能重启或重新配置 llm_apis）。
+PERMANENT_CONFIRM_HITS = 2
+#: 秒：第 1 次命中不可恢复错误后的「复验等待」时长（期间该槽位不参与调用，
+#: 到点自动恢复为 healthy 并再被调用一次；再失败才删除配置）。
+PERMANENT_RECHECK_SECONDS = 600.0
+
 #: 秒：限流（429）首次冷却时长
 COOLING_BASE_SECONDS = 60.0
 #: 秒：限流冷却上限（30 分钟）
@@ -62,7 +71,8 @@ REASON_MAX_LENGTH = 300
 class LLMFailureKind(StrEnumAutoDoc):
     """一次 LLM 调用失败按「能否恢复 / 怎么恢复」分成的类别。"""
 
-    #: 不可恢复：鉴权失败 / 模型下线 / 模型不存在 → 直接删除配置
+    #: 不可恢复：鉴权失败 / 模型下线 / 模型不存在 → 连续命中 PERMANENT_CONFIRM_HITS
+    #: 次才删除配置（首次只停用 PERMANENT_RECHECK_SECONDS 秒后复验，防误删）
     PERMANENT = "permanent"
     #: 欠费 / 余额不足 → 长时间停用，充值或人工热更新后恢复
     SUSPENDED = "suspended"
@@ -387,6 +397,8 @@ class LLMHealth(BaseModel):
     _escalation: int = PrivateAttr(default=0)
     _escalation_kind: LLMFailureKind | None = PrivateAttr(default=None)
     _failure_kind: LLMFailureKind | None = PrivateAttr(default=None)
+    # 累计命中「不可恢复」的次数（达到 PERMANENT_CONFIRM_HITS 才真正删除配置）
+    _permanent_hits: int = PrivateAttr(default=0)
 
     # region 内部：惰性刷新与迁移
     def _refresh(self) -> None:
@@ -475,6 +487,9 @@ class LLMHealth(BaseModel):
         self._failure_kind = None
         self._escalation = 0
         self._escalation_kind = None
+        # 成功即证明配置可用：把「不可恢复」的累计命中清零，
+        # 这样偶然一次 404 不会和几小时后的另一次 404 凑成「连续命中」。
+        self._permanent_hits = 0
         if self._state is not LLMState.REMOVED:
             self._set_state(LLMState.HEALTHY, reason=None, resume_at=None)
         return self._state
@@ -505,7 +520,21 @@ class LLMHealth(BaseModel):
         now = time.time()
 
         if kind is LLMFailureKind.PERMANENT:
-            # 模型下线 / 鉴权失败 / 模型不存在：重试无意义，直接删除配置（终态）
+            # 模型下线 / 鉴权失败 / 模型不存在：重试大概率无意义，但**一次不足以判死**。
+            # 404 也可能来自网关路由抖动 / base_url 少写路径 / 上游 LB 短暂误报，
+            # 而删除配置是不可逆的（只影响运行时，重启或重新配置才能恢复）。
+            # 因此第 1 次命中只做「停用 + 复验等待」：到点自动回到 healthy 再被调用一次，
+            # 再命中一次才真正进入 REMOVED（配置被删除）。
+            self._permanent_hits += 1
+            if self._permanent_hits < PERMANENT_CONFIRM_HITS:
+                self._set_state(
+                    LLMState.SUSPENDED,
+                    reason=f"{reason}（疑似不可恢复，第"
+                    f"{self._permanent_hits}/{PERMANENT_CONFIRM_HITS} 次命中，"
+                    f"{PERMANENT_RECHECK_SECONDS:.0f}s 后复验）",
+                    resume_at=now + PERMANENT_RECHECK_SECONDS,
+                )
+                return self._state
             self._set_state(LLMState.REMOVED, reason=reason, resume_at=None)
             return self._state
 
@@ -561,6 +590,8 @@ __all__ = [
     "LLMHealth",
     "LLMState",
     "MAX_CONSECUTIVE_FAILURES",
+    "PERMANENT_CONFIRM_HITS",
+    "PERMANENT_RECHECK_SECONDS",
     "QUOTA_RESET_JITTER_SECONDS",
     "SUSPENDED_BASE_SECONDS",
     "SUSPENDED_MAX_SECONDS",

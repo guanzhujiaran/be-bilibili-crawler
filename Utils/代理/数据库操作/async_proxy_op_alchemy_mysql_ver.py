@@ -43,6 +43,11 @@ ZOMBIE_SUCCESS_TIMES_MAX = 0
 FRESH_PROXY_KEEP_SECONDS = 24 * 3600
 # 从 fresh 池取代理时，只在「最新的一批」里随机，避免老成员反复被抽中
 FRESH_PROXY_PICK_WINDOW = 300
+# 代理池概览（GetProxyStatus）的进程内缓存 TTL（秒）。
+# 4 个计数都是 158 万行表的全量聚合，冷查询合计 300~400ms；代理池本身是分钟级变化，
+# 30s 缓存对可观测性没有影响，又足以让轮询该接口的前端 / 网关稳定拿到毫秒级响应。
+# 刻意用进程内缓存而不是 Redis：代理池 Redis 已整体废弃（见 ProxyCommOp 模块注释）。
+PROXY_STATUS_CACHE_TTL_SECONDS = 30
 
 database = CONFIG.database
 
@@ -124,6 +129,9 @@ class SQLHelperClass(SqlHelperBase):
         # 每 10 分钟的任务顺带刷新即可，这里只在首次为空时懒加载。
         self._proxy_id_range: tuple[int, int] | None = None
         self._proxy_id_range_ts: int = 0
+        # 代理池概览的进程内缓存（见 PROXY_STATUS_CACHE_TTL_SECONDS）
+        self._proxy_status_cache: ProxyStatusResp | None = None
+        self._proxy_status_cache_ts: float = 0.0
 
     @log_sql_retry_wrapper()
     async def clear_unusable_proxy(self) -> int:
@@ -474,15 +482,17 @@ class SQLHelperClass(SqlHelperBase):
         return res
 
     async def get_latest_add_ts(self) -> int:
+        """最近一次入库代理的 ``add_ts``（代理源最新产出时间）。
+
+        只取 ``add_ts`` 一列：原实现 ``select(ProxyTab)`` 会把整行（含 JSON 列
+        ``proxy``）取回内存再排序，158 万行实测 1.6~2.0s；改成单列 + ``add_ts``
+        索引后走「索引倒序取第一条」，实测 < 2ms。
+        """
         try:
-            sql = select(ProxyTab).order_by(ProxyTab.add_ts.desc()).limit(1)
+            sql = select(ProxyTab.add_ts).order_by(ProxyTab.add_ts.desc()).limit(1)
             async with self.async_session() as session:
                 result = await session.execute(sql)
-            res = result.scalars().first()
-            if res:
-                return res.add_ts
-            else:
-                return 0
+            return result.scalars().first() or 0
         except Exception as e:
             sql_log.exception(e)
             return 0
@@ -585,29 +595,68 @@ class SQLHelperClass(SqlHelperBase):
         return res.scalars().first() or 0
 
     async def get_proxy_database_redis(self) -> ProxyStatusResp:
-        """代理池概览（Redis 池已废弃，改为 MySQL 实时统计）。"""
-        total_count, black_count, usable_count, latest_add_ts = await asyncio_gather(
-            self.get_all_proxy_nums(),
-            self.get_black_proxy_num(),
-            self.get_usable_proxy_num(),
-            self.get_latest_add_ts(),
-            log=sql_log,
+        """代理池概览（Redis 池已废弃，改为 MySQL 实时统计）。
+
+        4 个计数都是 158 万行表的全量聚合（实测冷查询合计 300~400ms），
+        而该接口会被前端 / 网关周期轮询，因此在进程内缓存
+        ``PROXY_STATUS_CACHE_TTL_SECONDS`` 秒：命中约 1~2ms，
+        过期后的第一次请求仍需付一次全量聚合并并发的代价。
+        """
+        now = time.monotonic()
+        if (
+            self._proxy_status_cache is not None
+            and now - self._proxy_status_cache_ts < PROXY_STATUS_CACHE_TTL_SECONDS
+        ):
+            return self._proxy_status_cache
+
+        total_count, black_count, usable_count, unknown_count, latest_add_ts = (
+            await asyncio_gather(
+                self.get_all_proxy_nums(),
+                self.get_black_proxy_num(),
+                self.get_usable_proxy_num(),
+                self.get_unknown_proxy_num(),
+                self.get_latest_add_ts(),
+                log=sql_log,
+            )
         )
-        return ProxyStatusResp(
+        resp = ProxyStatusResp(
             proxy_total_count=total_count or 0,
             proxy_black_count=black_count or 0,
-            proxy_unknown_count=(total_count or 0) - (black_count or 0),
+            # 真实「从未使用」口径（success_times 为 NULL 或 0），
+            # 不再用「total - black」冒充（旧口径来自已废弃的 Redis zset 成员数）
+            proxy_unknown_count=unknown_count or 0,
             proxy_usable_count=usable_count or 0,
-            mysql_sync_redis_ts=0,  # 已无 Redis 同步
             free_proxy_fetch_ts=latest_add_ts or 0,
-            sync_ts=int(time.time()),
         )
+        self._proxy_status_cache = resp
+        self._proxy_status_cache_ts = time.monotonic()
+        return resp
 
     async def get_usable_proxy_num(self) -> int:
-        """可参与随机取用的行数（status=0 且非僵尸）。"""
+        """可参与随机取用的行数（status=0 且非僵尸）。
+
+        条件必须写成可走索引的形式（``success_times IS NULL OR success_times >= 0``）：
+        原写法 ``coalesce(success_times, 0) >= 0`` 是函数调用，MySQL 无法用
+        ``(status, success_times)`` 索引做范围定位，只能全表扫描（实测 1.99s）。
+        """
         sql = select(func.count(ProxyTab.proxy_id)).where(
             ProxyTab.status == 0,
-            func.coalesce(ProxyTab.success_times, 0) >= ZOMBIE_SUCCESS_TIMES_MAX,
+            or_(
+                ProxyTab.success_times.is_(None),
+                ProxyTab.success_times >= ZOMBIE_SUCCESS_TIMES_MAX,
+            ),
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        return res.scalars().first() or 0
+
+    async def get_unknown_proxy_num(self) -> int:
+        """从未被业务请求使用过的代理数（``success_times`` 为 NULL 或 0）。"""
+        sql = select(func.count(ProxyTab.proxy_id)).where(
+            or_(
+                ProxyTab.success_times.is_(None),
+                ProxyTab.success_times == 0,
+            )
         )
         async with self.async_session() as session:
             res = await session.execute(sql)

@@ -18,6 +18,11 @@ class ProxyTab(Base):
         Index("proxy_id", "proxy_id", unique=True),
         Index("刷新代理索引", "status", "score", "success_times", "update_ts"),
         Index("获取可用代理索引", "status", "score", "update_ts"),
+        # 代理池统计（GetProxyStatus）专用：
+        # add_ts 单列索引 → get_latest_add_ts 的 ORDER BY add_ts DESC LIMIT 1；
+        # (status, success_times) 复合索引 → 「可用 / 从未使用」两个计数的范围扫描
+        Index("ix_proxy_tab_add_ts", "add_ts"),
+        Index("ix_proxy_tab_status_success_times", "status", "success_times"),
         Index(
             "覆盖索引",
             "proxy_id",

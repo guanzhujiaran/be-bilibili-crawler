@@ -30,7 +30,7 @@ from controller.v1.lotttery_database.bili import LotteryData, ScrapyStatus
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
 from controller.v1.ip_info import get_ip_info
 from controller.v1.background_service import BackgroundServiceController
-from controller.common import CommonRouter
+from controller.common import CommonRouter, health
 from controller.v1.mq import mq_controller as MQController
 from controller.v1.mq.rpc_info_controller import router as RpcInfoRouter
 from controller.v1.samsClub import samsClubController
@@ -77,6 +77,8 @@ app.include_router(LotteryStatistic.router)
 app.include_router(get_ip_info.router)
 app.include_router(BackgroundServiceController.router)
 app.include_router(CommonRouter.router)
+# 轻量探活（GET /health）：网关上游探活打这里，不再打根路径产生 404 噪音
+app.include_router(health.router)
 # MQ 消费者与 RPC 信息路由只有爬虫角色挂：
 # faststream 的 RabbitRouter 一旦被 include，FastAPI 就会在启动时连 broker 并按
 # @router.subscriber 开始**消费队列**（入库 / Milvus / 抽奖结果抽取等真实动作）。

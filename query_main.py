@@ -51,6 +51,7 @@ from Utils.推送.PushMe import a_push_error
 from bili_common.exceptions import register_http_exception_handlers
 from bili_common.middlewares import add_error_status_middleware
 from bili_common.models.response import StandardResponse as CommonResponseModel
+from controller.common import health
 from controller.v1.ip_info import get_ip_info
 from controller.v1.lotttery_database.bili import LotteryData
 from controller.v1.lotttery_database.bili.lottery_statistic import LotteryStatistic
@@ -97,6 +98,8 @@ fastapi_cdn_host.patch_docs(app)
 app.include_router(LotteryData.query_router)
 app.include_router(LotteryStatistic.router)
 app.include_router(get_ip_info.router)
+# 轻量探活（GET /health）：网关上游探活打这里，不再打根路径产生 404 噪音
+app.include_router(health.router)
 # 只读取数 RPC 服务端（FastapiApp.rpc.*）：FastAPI 会自动 start / stop 该 broker
 app.include_router(rpc_router)
 myfastapi_logger.info(

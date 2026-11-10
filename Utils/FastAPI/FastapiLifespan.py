@@ -176,9 +176,14 @@ async def probe_database_connections():
 
 
 async def test_port_connectivity(
-    host: str, port: int, service_name: str, timeout: float = 5.0
+    host: str, port: int, service_name: str, timeout: float = 5.0, *, critical: bool = True
 ) -> bool:
-    """测试指定 host 和 port 的连通性"""
+    """测试指定 host 和 port 的连通性。
+
+    ``critical=False`` 表示「可选 / 按环境启用」的依赖（如 V2Ray、本地 IPv6 代理）：
+    探测失败只记 WARNING，避免每次启动刷一堆 ERROR 掩盖真正的故障。
+    """
+    log_fail = myfastapi_logger.error if critical else myfastapi_logger.warning
     try:
         reader, writer = await asyncio.wait_for(
             asyncio.open_connection(host, port),
@@ -189,21 +194,24 @@ async def test_port_connectivity(
         myfastapi_logger.info(f"服务 '{service_name}' ({host}:{port}) 连接成功")
         return True
     except asyncio.TimeoutError:
-        myfastapi_logger.error(f"服务 '{service_name}' ({host}:{port}) 连接超时")
+        log_fail(f"服务 '{service_name}' ({host}:{port}) 连接超时")
         return False
     except ConnectionRefusedError:
-        myfastapi_logger.error(f"服务 '{service_name}' ({host}:{port}) 连接被拒绝")
+        log_fail(f"服务 '{service_name}' ({host}:{port}) 连接被拒绝")
         return False
     except OSError as e:
-        myfastapi_logger.error(f"服务 '{service_name}' ({host}:{port}) 连接失败：{e}")
+        log_fail(f"服务 '{service_name}' ({host}:{port}) 连接失败：{e}")
         return False
     except Exception as e:
-        myfastapi_logger.error(f"服务 '{service_name}' ({host}:{port}) 连接异常：{e}")
+        log_fail(f"服务 '{service_name}' ({host}:{port}) 连接异常：{e}")
         return False
 
 
-async def test_http_endpoint(url: str, service_name: str, timeout: float = 5.0) -> bool:
-    """测试 HTTP 端点的连通性"""
+async def test_http_endpoint(
+    url: str, service_name: str, timeout: float = 5.0, *, critical: bool = True
+) -> bool:
+    """测试 HTTP 端点的连通性（``critical=False`` 时失败只记 WARNING）"""
+    log_fail = myfastapi_logger.error if critical else myfastapi_logger.warning
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url, timeout=timeout)
@@ -212,13 +220,13 @@ async def test_http_endpoint(url: str, service_name: str, timeout: float = 5.0) 
             )
             return True
     except httpx.TimeoutException:
-        myfastapi_logger.error(f"HTTP 服务 '{service_name}' ({url}) 连接超时")
+        log_fail(f"HTTP 服务 '{service_name}' ({url}) 连接超时")
         return False
     except httpx.RequestError as e:
-        myfastapi_logger.error(f"HTTP 服务 '{service_name}' ({url}) 连接失败：{e}")
+        log_fail(f"HTTP 服务 '{service_name}' ({url}) 连接失败：{e}")
         return False
     except Exception as e:
-        myfastapi_logger.error(f"HTTP 服务 '{service_name}' ({url}) 连接异常：{e}")
+        log_fail(f"HTTP 服务 '{service_name}' ({url}) 连接异常：{e}")
         return False
 
 
@@ -243,7 +251,8 @@ async def test_proxy_connectivity(
 
     与普通的 TCP/HTTP 端口探测不同，这里会把请求真正经代理转发到外网，
     并校验返回内容是否为 IPv6 地址，从而确认代理出口正常。
-    仅做功能性展示，不阻断启动（代理偶发不可用不应阻止服务启动）。
+    仅做功能性展示，不阻断启动（代理偶发不可用不应阻止服务启动），
+    因此失败一律记 WARNING：dev / 无 IPv6 出口的机器本来就没有这个代理。
     """
     try:
         async with httpx.AsyncClient(proxy=proxy_url, timeout=timeout) as client:
@@ -254,19 +263,25 @@ async def test_proxy_connectivity(
                 f"✅ 代理 '{service_name}' ({proxy_url}) 正常，出口 IPv6: {body}"
             )
             return True
-        myfastapi_logger.error(
-            f"❌ 代理 '{service_name}' ({proxy_url}) 返回异常: "
+        myfastapi_logger.warning(
+            f"⚠️ 可选依赖：代理 '{service_name}' ({proxy_url}) 返回异常: "
             f"status={response.status_code}, body={body[:80]!r}"
         )
         return False
     except httpx.ProxyError as e:
-        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 连接失败：{e}")
+        myfastapi_logger.warning(
+            f"⚠️ 可选依赖：代理 '{service_name}' ({proxy_url}) 连接失败：{e}"
+        )
         return False
     except httpx.TimeoutException:
-        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 请求超时")
+        myfastapi_logger.warning(
+            f"⚠️ 可选依赖：代理 '{service_name}' ({proxy_url}) 请求超时"
+        )
         return False
     except Exception as e:
-        myfastapi_logger.error(f"❌ 代理 '{service_name}' ({proxy_url}) 检测异常：{e}")
+        myfastapi_logger.warning(
+            f"⚠️ 可选依赖：代理 '{service_name}' ({proxy_url}) 检测异常：{e}"
+        )
         return False
 
 
@@ -276,12 +291,13 @@ async def test_service_ports_and_hosts():
     kind="port" -> TCP 端口探测（test_port_connectivity）；
     kind="http" -> HTTP 端点探测（test_http_endpoint，path 为可选路径）。
 
-    critical=True 的服务若连接失败，将直接终止启动（SystemExit），
-    其它非关键服务仅记录警告，不阻断启动。
+    critical=True 的服务若连接失败，将直接终止启动（SystemExit）；
+    critical=False（可选 / 按环境启用，例如 V2Ray、本地 IPv6 代理）失败只记 WARNING，
+    既不影响启动，也不会在每次启动时刷一屏 ERROR 掩盖真正的故障。
     """
     myfastapi_logger.info("开始测试各服务端口和 host 连通性...")
 
-    failed_services = []
+    failed_optional_services = []
     failed_critical_services = []
 
     # (name, host, port, kind, path, critical)
@@ -290,6 +306,9 @@ async def test_service_ports_and_hosts():
     # 推送 / 告警通过 RabbitMQ（message_exchange / message.push）fire-and-forget 发布，
     # message-service 不在线时消息留在队列里等它上线后消费，crawler 的启动与业务不受影响。
     # 之前把它列为 critical 会导致「本机没跑 message-service 就完全起不来」，dev 下反复重启。
+    #
+    # critical=False 的都是「可选 / 按环境启用」：V2Ray 只在需要代理访问外网时启动，
+    # Unidbg 只给登录相关流程用，dev / 部分生产机器上本来就没有。
     services_to_test = [
         ("MySQL", settings.MYSQL_HOST, int(settings.MYSQL_PORT), "port", "", True),
         ("Redis", settings.REDIS_HOST, int(settings.REDIS_PORT), "port", "", True),
@@ -309,16 +328,15 @@ async def test_service_ports_and_hosts():
 
     for name, host, port, kind, path, critical in services_to_test:
         if kind == "port":
-            ok = await test_port_connectivity(host, port, name)
+            ok = await test_port_connectivity(host, port, name, critical=critical)
             address = f"{host}:{port}"
         else:
             url = f"http://{host}:{port}{path}"
-            ok = await test_http_endpoint(url, name)
+            ok = await test_http_endpoint(url, name, critical=critical)
             address = url
         if not ok:
-            failed_services.append(f"{name} ({address})")
-            if critical:
-                failed_critical_services.append(f"{name} ({address})")
+            target = failed_critical_services if critical else failed_optional_services
+            target.append(f"{name} ({address})")
 
     # 额外：实际通过 3128 IPv6 代理发起请求，验证代理是否真的可用（非关键，仅展示）
     proxy_url = settings.PROXY_SERVER
@@ -327,19 +345,21 @@ async def test_service_ports_and_hosts():
             proxy_url, service_name="IPv6代理(3128)"
         )
         if not proxy_ok:
-            failed_services.append(f"IPv6代理(3128) ({proxy_url})")
+            failed_optional_services.append(f"IPv6代理(3128) ({proxy_url})")
     else:
         myfastapi_logger.warning("未配置 PROXY_SERVER，跳过 3128 IPv6 代理检测")
 
-    if failed_services:
-        # 这里可能包含「非关键服务」（V2Ray / 3128 代理等）探测失败，不构成致命故障，
-        # 只有下面的 failed_critical_services 才是 critical。
-        myfastapi_logger.error("=" * 60)
-        myfastapi_logger.error("以下服务连接失败:")
-        for failed_service in failed_services:
-            myfastapi_logger.error(f"  ❌ {failed_service}")
-        myfastapi_logger.error("=" * 60)
-    else:
+    if failed_optional_services:
+        # 可选依赖：只记 WARNING 并单独成段，不与 critical 故障混在一起
+        myfastapi_logger.warning("=" * 60)
+        myfastapi_logger.warning(
+            "以下可选依赖未就绪（按环境启用，不影响启动与业务）:"
+        )
+        for failed_service in failed_optional_services:
+            myfastapi_logger.warning(f"  ⚠️ {failed_service}")
+        myfastapi_logger.warning("=" * 60)
+
+    if not failed_optional_services and not failed_critical_services:
         myfastapi_logger.info("✅ 所有服务端口和 host 连通性测试通过!")
 
     # 关键服务未启动 -> 直接报错并拒绝启动

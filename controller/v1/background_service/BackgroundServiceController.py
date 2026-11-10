@@ -82,7 +82,10 @@ def background_service_status():
     members = inspect.getmembers(background_service)
     for name, value in members:
         if isinstance(value, GenericCrawlerScheduler):
-            for plugin in value.crawler.plugins:
+            # 代理抓取器（GetProxyMethods）已不再继承 UnlimitedCrawler，
+            # 因此没有 plugins 属性；没有插件（也就没有 StatsPlugin）的服务直接跳过，
+            # 不能因为一个可选属性缺失就让整个接口 500。
+            for plugin in getattr(value.crawler, "plugins", None) or []:
                 if isinstance(plugin, StatsPlugin):
                     ret_list.append(
                         {

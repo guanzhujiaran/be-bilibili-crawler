@@ -9,7 +9,9 @@
 
 可用性由 ``Service/llm_service/health.py`` 的状态机描述：
 
-- 不可恢复错误（鉴权失败 / 模型下线等）→ 该条配置**直接删除**，池里不再有它；
+- 不可恢复错误（鉴权失败 / 模型下线 / 模型不存在等）→ **连续命中 2 次**才删除该条配置；
+  第 1 次只做「停用 10 分钟 + 复验」（见 ``health.PERMANENT_CONFIRM_HITS``），
+  避免网关抖动 / base_url 少写路径这类一次性 404 把好配置永久摘掉；
 - 限流 / 今日额度 / 欠费 / 连续瞬时失败 → 进入冷却，到点自动恢复，本轮不参与尝试。
 
 因此 get_all_free_llms() 可能抛出（均为 RuntimeError 子类，调用方按类型分流）：
@@ -106,10 +108,13 @@ def _earliest_resume_at(llms: list[TrackedChatOpenAI]) -> float | None:
 def _on_slot_state_change(
     llm: TrackedChatOpenAI, previous: LLMState, current: LLMState
 ) -> None:
-    """状态迁移副作用：不可恢复（REMOVED）→ 直接删除该条配置。
+    """状态迁移副作用：不可恢复（REMOVED）→ 删除该条配置。
 
     冷却类状态（COOLING / QUOTA_WAIT / SUSPENDED）不做删除，
     到点由状态机自动恢复；日志已在 ``TrackedChatOpenAI._log_state_change`` 打过。
+
+    注意 REMOVED 现在需要「连续 2 次不可恢复」才会出现（首次只停用复验），
+    因此单次 404 / 401 不会走到这里删配置。
     """
     if current is not LLMState.REMOVED:
         return
@@ -280,12 +285,21 @@ def _remove_slot_from_cache(
         )
         return
     logger.error(
-        "LLM 槽位因不可恢复错误被删除配置：model={} base_url={} 原因={}"
-        "（重启或重新配置 llm_apis 可恢复）",
+        "LLM 槽位连续命中不可恢复错误，已删除该条配置：model={} base_url={} 原因={}"
+        "（只影响运行时内存，重启或重新配置 llm_apis 可恢复）",
         model_name,
         base_url,
         reason,
     )
+    # 按 base_url 维度提示：删的是「模型槽位」，但如果这条 base_url 上的
+    # 所有槽位都被删光了，真正错的很可能是 base_url（域名 / 网关 / 少了 /v1），
+    # 而不是一个个模型同时下线 —— 这种情况逐条删模型是治标不治本。
+    if not any(cfg.base_url == base_url for cfg in settings.llm_apis):
+        logger.error(
+            "LLM 的 base_url 上已没有任何剩余槽位，请优先核对 base_url 是否正确"
+            "（域名 / 反向代理 / 路径前缀，如 /v1）：base_url={}",
+            base_url,
+        )
 
 
 def get_all_free_llms() -> list[TrackedChatOpenAI]:

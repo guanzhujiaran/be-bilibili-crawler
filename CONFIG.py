@@ -22,14 +22,29 @@ class ConcurrencyConfig(BaseModel):
         class ReserveScrapyRobotConfig(CrawlerConfig):
             concurrency_key: str = "reserve"
 
-    部署时改这里，或用环境变量覆盖（嵌套模型用双下划线）：
+    部署时改这里，或用环境变量覆盖（嵌套模型用双下划线，见 Settings 的
+    ``env_nested_delimiter="__"``）：
       CONCURRENCY__RESERVE=2
       CONCURRENCY__SPACE_DYN=6
+      CONCURRENCY__DYN_DETAIL=20
+
+    调参注意：服务启动后所有调度器的**首次运行时间都是「现在」**，
+    即首次部署 / 重启时全部爬虫会同时开跑；把某一项的并发调大前，
+    先确认单核 CPU 与接口 P95 还有余量（dyn_detail 曾设 100 把单核打满）。
     """
 
     # ---- 各爬虫 worker 池并发（一个爬虫一项）----
     crawler_workers: int = 50  # 兜底：爬虫未声明 concurrency_key 时用这个
-    dyn_detail: int = 100  # 动态详情
+    # 动态详情：**默认 20（沿用旧版 DynDetailScrapyConfig.max_sem = 20，生产长期验证过的值）**。
+    # 本次把并发集中到 ConcurrencyConfig 时一度写成 100，后果很明确：生产重启后所有调度器
+    # 「首次运行时间=现在」同时开跑，dyn_detail 一个爬虫就把单核 CPU 打满，
+    # HTTP 接口劣化到 5~25s（数分钟后首批任务消化完才恢复）。
+    # 调优建议：
+    #   - 20~40 是安全区间；超过 40 需要同时看容器 CPU（单核容器尤其危险）与接口 P95；
+    #   - 该爬虫是「gRPC 拉取 + 大 JSON 解析 + MySQL upsert」的混合负载，
+    #     并发上去先打满的是 CPU 而不是带宽，所以不要按「网络 IO 型爬虫」调大；
+    #   - 不要和其它爬虫同时调大：所有调度器共享同一个进程与同一次「首次立即执行」。
+    dyn_detail: int = 20
     rm_following: int = 20  # 取关对象
     reserve: int = 1  # 预约抽奖（串行：接口要求顺序执行）
     topic: int = 1  # 话题抽奖（串行）

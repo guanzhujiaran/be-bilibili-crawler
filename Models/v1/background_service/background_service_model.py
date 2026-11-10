@@ -67,16 +67,26 @@ class BaseScrapyStatusResp(CustomBaseModel):
 
 
 class ProxyStatusResp(CustomBaseModel):
+    """代理池概览（口径全部来自 MySQL ``proxy_tab``；Redis 代理池已整体废弃）。
+
+    ``proxy_unknown_count`` 是「从未被真实业务请求用过」的代理数
+    （``success_times IS NULL OR success_times = 0``），
+    与 ``proxy_usable_count``（``status=0`` 且未被判死）**不是互斥口径**：
+    可用池里同时包含「从未使用」和「用过且成功过」两部分。
+    因此 ``total != black + usable + unknown``，不要按旧口径（Redis zset 成员数）理解。
+    """
+
     proxy_total_count: int = 0
     proxy_black_count: int = 0
-    proxy_unknown_count: int = 0
+    proxy_unknown_count: int = Field(
+        default=0,
+        description="从未被业务请求使用过的代理数（success_times IS NULL OR success_times = 0），"
+        "与 proxy_usable_count 非互斥：可用池里既有从未使用的，也有用过且成功过的",
+    )
     proxy_usable_count: int = 0
-    mysql_sync_redis_ts: int = 0
-    free_proxy_fetch_ts: int = 0
-    sync_ts: int = 0  # 同步到redis的时间
-
-    def is_need_sync(self) -> bool:
-        return not (bool(self.sync_ts) and self.sync_ts > int(time.time()) - 600)
+    free_proxy_fetch_ts: int = Field(
+        default=0, description="最近一次入库代理的 add_ts（代理源最新产出时间，unix 秒）"
+    )
 
 
 TypeScrapyStatus = StatsPlugin | ProgressStatusResp | None
