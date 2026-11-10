@@ -4,19 +4,26 @@
 
 - 池里的 ``TrackedChatOpenAI`` 带限流器与统计埋点，借用它探测会污染统计口径、
   还可能因为限流器排队把「测试」拖成几十秒；
-- 本模块直接 ``httpx`` 打一次最小 completion（``max_tokens=1``），
-  **不写任何状态**：不参与健康状态机、不改统计、不落盘、不影响冷却 / 摘除。
+- 本模块用**裸的** ``ChatOpenAI``（与生产同一套 SDK、同一条请求链路）真实问一句
+  ``1+1=?``，拿到模型回复才算通。相比 ``httpx`` 裸打 ``/chat/completions`` 的最小
+  completion，这样连 SDK 版本兼容性、``base_url`` 拼接、鉴权头、响应解析都会被一起测到；
+- **不写任何状态**：不参与健康状态机、不改统计、不落盘、不影响冷却 / 摘除。
 
 密钥处理：请求里的 ``token`` 为空或含脱敏标记 ``****`` 时，按 ``index`` 回填
 ``settings.llm_apis`` 里的原密钥（管理页永远拿不到明文，这是唯一正确的做法）。
-回填失败（索引越界 / 该实例本来就没有密钥）时不发请求，直接返回失败。
+``settings.llm_apis`` 是**完整人工配置列表**：状态机 REMOVED 只标记实例、
+不再删条目，因此 index 与 ``GET /llm/config`` 的列表始终对齐。
+回填失败（索引越界 / 索引与配置不匹配 / 原密钥本身是脱敏值 / 该实例本来就没有密钥）
+时不发请求，直接返回失败，避免拿错密钥或把脱敏串发给上游。
 """
 
 import time
 
 import httpx
+from langchain_openai import ChatOpenAI
 from loguru import logger
-from pydantic import BaseModel, Field
+from openai import APIStatusError, APITimeoutError
+from pydantic import BaseModel, Field, SecretStr
 
 from CONFIG import LLMApiConfig, settings
 
@@ -25,6 +32,12 @@ _MASK_FLAG = "****"
 
 #: 错误文案截断长度：上游 400/401 的响应体可能很长，避免把整段塞进接口响应
 _ERROR_MAX_CHARS = 200
+
+#: 探测提问：足够简单，只用来确认「SDK 真的把请求发出去并拿到了回复」
+_PROBE_PROMPT = "1+1=?"
+
+#: 模型回复只进日志（不进响应，避免变更对外 schema），日志里截断到这个长度
+_ANSWER_LOG_MAX_CHARS = 100
 
 
 def _scrub(text: str, token: str) -> str:
@@ -36,6 +49,32 @@ def _scrub(text: str, token: str) -> str:
     if token:
         text = text.replace(token, _MASK_FLAG)
     return text[:_ERROR_MAX_CHARS]
+
+
+def _failure_detail(exc: Exception, *, token: str, budget: float) -> tuple[int | None, str]:
+    """把 SDK 抛出的异常归一成 ``(HTTP 状态码, 可读文案)``（文案绝不含密钥）。
+
+    ``ChatOpenAI`` 成功时不暴露底层 HTTP 状态码，所以只有失败侧能取到
+    ``APIStatusError.status_code``；超时单独给一句可执行的提示，别让运维
+    把「模型慢」误判成「配置错」。
+    """
+    status_code = exc.status_code if isinstance(exc, APIStatusError) else None
+    if (
+        isinstance(exc, (APITimeoutError, httpx.TimeoutException))
+        or "timeout" in type(exc).__name__.lower()
+    ):
+        return status_code, f"请求超时（>{budget:.0f}s），该模型可能过慢或不可达"
+    detail = _scrub(str(exc) or type(exc).__name__, token)
+    if status_code is not None:
+        return status_code, f"HTTP {status_code}：{detail}"
+    return status_code, f"请求失败：{detail}"
+
+
+def _reply_text(reply: object) -> str:
+    """把 ``AIMessage.content``（str 或分片列表）压成一行短文本，仅供日志。"""
+    content = getattr(reply, "content", "")
+    text = content if isinstance(content, str) else str(content)
+    return " ".join(text.split())[:_ANSWER_LOG_MAX_CHARS]
 
 
 class LLMApiTestRequest(BaseModel):
@@ -55,10 +94,13 @@ class LLMApiTestRequest(BaseModel):
 class LLMProbeResult(BaseModel):
     """一次探测的结果（诊断用，不含 token）。"""
 
-    ok: bool = Field(description="是否探测成功（HTTP 2xx 且有响应体）")
+    ok: bool = Field(description="是否探测成功（ChatOpenAI 真实调用拿到模型回复）")
     base_url: str = Field(description="被测接口地址")
     model_name: str = Field(description="被测模型名")
-    status_code: int | None = Field(default=None, description="上游 HTTP 状态码；未发出请求时为 null")
+    status_code: int | None = Field(
+        default=None,
+        description="上游 HTTP 状态码；SDK 成功调用拿不到状态码时记为 200，未发出请求时为 null",
+    )
     latency_ms: int = Field(default=0, description="耗时（毫秒）；未发出请求时为 0")
     error: str | None = Field(default=None, description="失败原因（截断，绝不含 token）")
 
@@ -66,18 +108,41 @@ class LLMProbeResult(BaseModel):
 def resolve_probe_config(req: LLMApiTestRequest) -> tuple[LLMApiConfig, str | None]:
     """把请求归一成「可直接发请求的配置」，返回 ``(配置, 失败原因)``。
 
-    失败原因非 None 表示**不应发请求**（未提供密钥 / 索引越界），调用方据此直接返回失败。
+    失败原因非 None 表示**不应发请求**（未提供密钥 / 索引越界 / 索引与配置不匹配 /
+    原密钥是脱敏值），调用方据此直接返回失败。
     """
     base_url = req.base_url.strip()
     model_name = req.model_name.strip()
     token = req.token.strip()
+    resolve_error: str | None = None
     if not token or _MASK_FLAG in token:
-        if req.index is not None and 0 <= req.index < len(settings.llm_apis):
-            token = settings.llm_apis[req.index].token
-        else:
+        if req.index is None:
             token = ""
+        elif not 0 <= req.index < len(settings.llm_apis):
+            token = ""
+            resolve_error = (
+                f"索引越界：当前共 {len(settings.llm_apis)} 条配置，"
+                f"index={req.index}（新实例请填写明文密钥）"
+            )
+        else:
+            current = settings.llm_apis[req.index]
+            # 允许「改了模型名 / 改了地址」后仍沿用本行密钥；两个字段都对不上
+            # 说明前端行序与服务端列表已经错位，此时按 index 取密钥会串到别的实例。
+            matched = (
+                current.base_url == base_url or current.model_name == model_name
+            )
+            if not matched:
+                token = ""
+                resolve_error = "索引与配置不匹配，请刷新页面或重新填写明文密钥"
+            elif _MASK_FLAG in current.token:
+                token = ""
+                resolve_error = "该实例保存的密钥是脱敏值，请重新填写明文密钥"
+            else:
+                token = current.token
     # requests_per_second 只用于实例池限流，探测是单次请求，取默认值即可
     cfg = LLMApiConfig(base_url=base_url, model_name=model_name, token=token)
+    if resolve_error is not None:
+        return cfg, resolve_error
     if not base_url.startswith(("http://", "https://")):
         return cfg, "接口地址必须以 http:// 或 https:// 开头"
     if not model_name:
@@ -90,8 +155,12 @@ def resolve_probe_config(req: LLMApiTestRequest) -> tuple[LLMApiConfig, str | No
 async def probe_llm_api(
     cfg: LLMApiConfig, *, timeout: float | None = None
 ) -> LLMProbeResult:
-    """对一个实例做一次最小 completion 探测（不重试、不写状态）。"""
-    url = cfg.base_url.rstrip("/") + "/chat/completions"
+    """用裸 ``ChatOpenAI`` 真发一次 ``1+1=?``，拿到模型回复即认为该实例可用。
+
+    ``max_retries=0`` 保证「一次探测 = 一次上游请求」；只用裸类、不碰实例池，
+    因此不改统计、不参与健康状态机、不落盘。任何 SDK 异常都归一成
+    ``ok=false`` 的诊断结果，不向接口抛异常。
+    """
     budget = float(timeout if timeout is not None else settings.llm_test_timeout)
     started = time.perf_counter()
 
@@ -99,72 +168,46 @@ async def probe_llm_api(
         return int((time.perf_counter() - started) * 1000)
 
     try:
-        async with httpx.AsyncClient(timeout=budget) as client:
-            resp = await client.post(
-                url,
-                headers={"Authorization": f"Bearer {cfg.token}"},
-                json={
-                    "model": cfg.model_name,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 1,
-                    "stream": False,
-                },
-            )
-    except httpx.TimeoutException:
-        error = f"请求超时（>{budget:.0f}s），该模型可能过慢或不可达"
-        logger.warning("LLM 探测超时：model={} base_url={}", cfg.model_name, cfg.base_url)
+        llm = ChatOpenAI(
+            model=cfg.model_name,
+            base_url=cfg.base_url,
+            api_key=SecretStr(cfg.token),
+            timeout=budget,
+            max_retries=0,
+        )
+        reply = await llm.ainvoke(_PROBE_PROMPT)
+    except Exception as exc:  # noqa: BLE001 - 上游 SDK 异常种类多，诊断接口统一转换
+        status_code, error = _failure_detail(exc, token=cfg.token, budget=budget)
+        logger.warning(
+            "LLM 探测失败：model={} base_url={} status={} 异常={} 原因={}",
+            cfg.model_name,
+            cfg.base_url,
+            status_code,
+            type(exc).__name__,
+            error,
+        )
         return LLMProbeResult(
             ok=False,
             base_url=cfg.base_url,
             model_name=cfg.model_name,
+            status_code=status_code,
             latency_ms=_elapsed_ms(),
             error=error,
         )
-    except httpx.HTTPError as e:
-        # 连接层错误（DNS / 拒绝连接 / TLS 等）：异常信息里不含密钥
-        logger.warning(
-            "LLM 探测失败：model={} base_url={} 原因={!r}",
-            cfg.model_name,
-            cfg.base_url,
-            e,
-        )
-        return LLMProbeResult(
-            ok=False,
-            base_url=cfg.base_url,
-            model_name=cfg.model_name,
-            latency_ms=_elapsed_ms(),
-            error=_scrub(f"请求失败：{e}", cfg.token),
-        )
 
     latency_ms = _elapsed_ms()
-    if resp.status_code >= 400:
-        detail = _scrub((resp.text or "").strip().replace("\n", " "), cfg.token)
-        logger.warning(
-            "LLM 探测返回错误：model={} status={} detail={}",
-            cfg.model_name,
-            resp.status_code,
-            detail,
-        )
-        return LLMProbeResult(
-            ok=False,
-            base_url=cfg.base_url,
-            model_name=cfg.model_name,
-            status_code=resp.status_code,
-            latency_ms=latency_ms,
-            error=f"HTTP {resp.status_code}：{detail}",
-        )
-
     logger.info(
-        "LLM 探测成功：model={} base_url={} 耗时={}ms",
+        "LLM 探测成功：model={} base_url={} 耗时={}ms 回答={}",
         cfg.model_name,
         cfg.base_url,
         latency_ms,
+        _reply_text(reply) or "（空回复）",
     )
     return LLMProbeResult(
         ok=True,
         base_url=cfg.base_url,
         model_name=cfg.model_name,
-        status_code=resp.status_code,
+        status_code=200,
         latency_ms=latency_ms,
     )
 

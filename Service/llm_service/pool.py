@@ -26,6 +26,13 @@
 因此「接口 / 管理页保存的配置」重启后仍然生效。事实来源为「runtime 文件 > .env」。
 **但状态机的自动摘除（REMOVED）刻意不落盘**：那是运行时观测结论，
 保留「上游误报 401 时重启即恢复」的防误删兜底（见 remove_llm_by_fingerprint）。
+
+配置列表与运行状态分离（2026-11-11）：``settings.llm_apis`` 是「人工配置列表」
+（``.env`` / 持久化文件 / 管理页保存的内容），**REMOVED 不再从列表里删条目**，
+只把对应实例标记为终态。否则「内存 1 条、磁盘 9 条」的撕裂会让管理页按 index
+回填密钥时全部错位，保存一次就把脱敏 token 当成真密钥写回文件。
+GET /llm/config 始终返回完整人工列表，状态与原因由 GET /llm/stats 按
+``base_url + model_name`` 合并展示。
 """
 
 import time
@@ -191,28 +198,28 @@ def _get_free_llms() -> list[TrackedChatOpenAI]:
 
 
 def remove_llm_by_fingerprint(fingerprint: str) -> bool:
-    """按槽位指纹删除「配置 + 缓存实例」，返回是否真的删掉了。
+    """把槽位标记为 ``REMOVED`` 终态，返回是否在实例池里找到它。
 
-    与整池重建（``set_llm_apis``）不同：这里**保留其他槽位的实例对象**，
-    因此其他槽位的统计与健康状态（冷却进度等）不会因为删掉一个坏 key 而被清零。
+    **不再从 ``settings.llm_apis`` / 实例缓存里删条目**：人工配置列表是管理页、
+    ``probe.resolve_probe_config`` 的 index 口径与持久化文件的共同事实来源，
+    一旦运行时把它缩短，索引就会整体前移，后续按 index 回填密钥必然串位。
+    保留实例对象还有两个好处：其他槽位的统计 / 冷却进度不会被整池重建清零，
+    GET /llm/stats 也能继续展示被摘除条目的 ``state=removed`` 与原因。
 
-    **刻意只影响运行时内存**：不写 ``.env``，也**不写** ``runtime/llm_apis.json``
-    （与人工保存走的两条路彻底分开）。这样上游误报 401/404 导致误判 ``REMOVED`` 时，
-    重启即可恢复该槽位，不会把好 key 永久钉死。运维要真正删除坏配置，
-    应在列表里删掉后保存一次（人工保存由 :func:`set_llm_apis` 落盘）。
+    实例在状态机迁移到 REMOVED 时 ``available=False`` / ``disabled=True``，
+    ``get_all_free_llms()`` 不会再返回它；这里补一次 ``mark_removed`` 是为了
+    兼容「外部直接调用本函数」（不经过状态机）的场景。
+
+    仍然**只影响运行时内存**：不写 ``.env``，也不写 ``runtime/llm_apis.json``。
+    运维要真正删除坏配置，应在管理页列表里删掉后保存一次。
     """
-    global _free_llm_cache, _free_llm_cache_key
-    # 先确保缓存已按当前配置构建，否则可能只删了配置、留下悬空实例
     cached = _get_free_llms()
-    if not any(llm.slot_fingerprint == fingerprint for llm in cached):
+    target = next(
+        (llm for llm in cached if llm.slot_fingerprint == fingerprint), None
+    )
+    if target is None:
         return False
-    settings.llm_apis = [
-        cfg for cfg in settings.llm_apis if _fingerprint_of(cfg) != fingerprint
-    ]
-    _free_llm_cache = [
-        llm for llm in _free_llm_cache if llm.slot_fingerprint != fingerprint
-    ]
-    _free_llm_cache_key = _config_key()
+    target.stats.health.mark_removed(target.stats.health.reason)
     return True
 
 
@@ -259,12 +266,11 @@ def _map_kwargs_for_openai(kwargs: dict[str, Any]) -> dict[str, Any]:
 def _remove_slot_from_cache(
     fingerprint: str, *, model_name: str, base_url: str, reason: str | None
 ) -> None:
-    """把某个槽位从「配置 + 缓存实例」里摘掉，并记一条删除记录。
+    """把某个槽位标记为 ``REMOVED`` 终态并记一条观测记录。
 
-    只动运行时内存：不写 ``.env``，也**不写** ``runtime/llm_apis.json``
-    （刻意设计，见 :func:`remove_llm_by_fingerprint`）。重启后该槽位会从
-    持久化文件 / 环境变量原样回来，运维可据此确认「一次 401 告警」不是永久损失，
-    也提醒运维去人工删掉真正的坏配置（人工保存才落盘）。
+    只动运行时内存：不写 ``.env``，也**不写** ``runtime/llm_apis.json``；
+    配置条目仍留在 ``settings.llm_apis`` 里（管理页可见、index 不漂移）。
+    重启或在管理页重新保存后该槽位会以 healthy 状态回来。
     """
     removed = remove_llm_by_fingerprint(fingerprint)
     _removed_records.append(
@@ -278,25 +284,27 @@ def _remove_slot_from_cache(
     )
     if not removed:
         logger.warning(
-            "LLM 槽位标记为不可恢复，但配置中已找不到它（可能已被热更新替换）："
+            "LLM 槽位标记为不可恢复，但实例池里已找不到它（可能已被热更新替换）："
             "model={} base_url={}",
             model_name,
             base_url,
         )
         return
     logger.error(
-        "LLM 槽位连续命中不可恢复错误，已删除该条配置：model={} base_url={} 原因={}"
-        "（只影响运行时内存，重启或重新配置 llm_apis 可恢复）",
+        "LLM 槽位连续命中不可恢复错误，已标记为 REMOVED：model={} base_url={} 原因={}"
+        "（配置条目保留，管理页可见；重启或重新保存后恢复）",
         model_name,
         base_url,
         reason,
     )
-    # 按 base_url 维度提示：删的是「模型槽位」，但如果这条 base_url 上的
-    # 所有槽位都被删光了，真正错的很可能是 base_url（域名 / 网关 / 少了 /v1），
-    # 而不是一个个模型同时下线 —— 这种情况逐条删模型是治标不治本。
-    if not any(cfg.base_url == base_url for cfg in settings.llm_apis):
+    # 按 base_url 维度提示：如果这条 base_url 上的所有槽位都被摘掉了，
+    # 真正错的很可能是 base_url（域名 / 网关 / 少了 /v1），而不是多个模型同时下线。
+    if not any(
+        llm.openai_api_base == base_url and llm.available
+        for llm in _get_free_llms()
+    ):
         logger.error(
-            "LLM 的 base_url 上已没有任何剩余槽位，请优先核对 base_url 是否正确"
+            "LLM 的 base_url 上已没有任何可用槽位，请优先核对 base_url 是否正确"
             "（域名 / 反向代理 / 路径前缀，如 /v1）：base_url={}",
             base_url,
         )
@@ -368,24 +376,84 @@ def _mask_token(token: str) -> str:
     return f"{token[:4]}****{token[-4:]}"
 
 
+def _slot_state(
+    cfg: LLMApiConfig, llms: list[TrackedChatOpenAI]
+) -> tuple[str, str | None]:
+    """按槽位指纹找实例的健康状态；找不到（池未构建）时返回 unknown。"""
+    fingerprint = _fingerprint_of(cfg)
+    for llm in llms:
+        if llm.slot_fingerprint == fingerprint:
+            health = llm.stats.health
+            return health.state.value, health.reason
+    return "unknown", None
+
+
 def get_llm_configs() -> list[dict[str, Any]]:
-    """导出当前云端 LLM 配置（token 已脱敏），供内部配置接口读取"""
-    return [
-        {
-            "base_url": cfg.base_url,
-            "model_name": cfg.model_name,
-            "token": _mask_token(cfg.token),
-            "requests_per_second": cfg.requests_per_second,
-        }
-        for cfg in settings.llm_apis
-    ]
+    """导出**完整**人工配置列表（token 已脱敏），供内部配置接口读取。
+
+    条目不会因 REMOVED 被摘掉；额外的 ``state`` / ``reason`` / ``removed``
+    只是把运行状态一并带出来，便于 ``curl /llm/config`` 直接看出哪条被摘除。
+    管理页仍通过 ``GET /llm/stats`` 按 ``base_url + model_name`` 合并展示。
+    """
+    llms = _get_free_llms()
+    configs: list[dict[str, Any]] = []
+    for cfg in settings.llm_apis:
+        state, reason = _slot_state(cfg, llms)
+        configs.append(
+            {
+                "base_url": cfg.base_url,
+                "model_name": cfg.model_name,
+                "token": _mask_token(cfg.token),
+                "requests_per_second": cfg.requests_per_second,
+                "state": state,
+                "reason": reason,
+                "removed": state == LLMState.REMOVED.value,
+            }
+        )
+    return configs
 
 
-def set_llm_apis(
+def _resolve_tokens(
+    apis: list[LLMApiConfig], current: list[LLMApiConfig]
+) -> list[LLMApiConfig]:
+    """按 index 把「空 token / 脱敏 token」回填成**当前生效的明文密钥**。
+
+    管理页永远拿不到明文，保存时只能把读到的脱敏串原样回传（或传空串）；
+    这里按列表索引取回真密钥，与 ``probe.resolve_probe_config`` 同一口径。
+    因为 REMOVED 不再删配置，``current`` 始终是完整人工列表，索引不会漂移。
+
+    硬约束：任何含 ``****`` 的串都不得出现在结果里（新行给脱敏值直接报错）。
+    ``save_persisted`` 还有一道同样的闸门，避免别的上游绕过本函数。
+    """
+    resolved: list[LLMApiConfig] = []
+    for index, cfg in enumerate(apis):
+        token = cfg.token
+        original = current[index].token if index < len(current) else ""
+        usable_original = bool(original) and not config_store.is_masked_token(original)
+        if config_store.is_masked_token(token):
+            if not usable_original:
+                raise ValueError(
+                    f"llm_apis 配置非法：第 {index} 项 token 是脱敏值且无可用原密钥，"
+                    "请填写明文密钥"
+                )
+            token = original
+        elif not token and usable_original:
+            # 管理页传空串 = 沿用原密钥；新行无原密钥时保留空串（免鉴权上游）
+            token = original
+        if config_store.is_masked_token(token):
+            raise ValueError(
+                f"llm_apis 配置非法：第 {index} 项 token 含脱敏标记，拒绝写入"
+            )
+        resolved.append(cfg.model_copy(update={"token": token}))
+    return resolved
+
+
+async def set_llm_apis(
     apis: list[LLMApiConfig], *, persist: bool = True
 ) -> list[dict[str, Any]]:
     """在线替换云端 LLM 配置并立即生效，同时**持久化**到本地文件（无需重启服务）。
 
+    - 空 / 脱敏 token 按 index 回填当前明文密钥（:func:`_resolve_tokens`）；
     - 修改运行时内存中的 ``settings.llm_apis``，并重建实例池（不等待下一次调用）；
     - 实例池构建成功后，把整份列表写入 ``runtime/llm_apis.json``
       （见 :mod:`Service.llm_service.config_store`），因此重启后配置仍然生效；
@@ -393,6 +461,9 @@ def set_llm_apis(
     - 任一步失败都回滚 ``settings.llm_apis`` 与实例池缓存到旧值并抛出异常，
       避免出现「内存已改、文件未改」的撕裂状态；
     - 校验：每个配置项必须同时提供 base_url 与 model_name。
+
+    **async**：只有文件 IO 走 ``asyncio.to_thread``，内存态（settings / 实例池）
+    始终在事件循环里改，避免多线程同时改全局缓存。
 
     ``persist=False`` 仅供「删除持久化文件后热切回 ``.env``」使用
     （:func:`restore_llm_apis_from_env`），否则切回动作会立刻把配置又写回去。
@@ -406,17 +477,21 @@ def set_llm_apis(
         raise ValueError(
             f"llm_apis 配置非法：第 {', '.join(invalid)} 项缺少 base_url 或 model_name"
         )
+    # 回填与硬校验必须在改内存之前完成，失败时 settings 保持原样
+    resolved = _resolve_tokens(apis, list(settings.llm_apis))
+    if any(config_store.is_masked_token(cfg.token) for cfg in resolved):
+        raise ValueError("llm_apis 配置非法：拒绝把脱敏 token 写入运行配置")
 
     global _free_llm_cache, _free_llm_cache_key
     old_apis = settings.llm_apis
     old_cache, old_key = _free_llm_cache, _free_llm_cache_key
-    settings.llm_apis = list(apis)
+    settings.llm_apis = resolved
     try:
         _free_llm_cache = _build_free_llms()
         _free_llm_cache_key = _config_key()
         if persist:
             # 落盘放在建池成功之后：非法配置进不来，写失败则整体回滚
-            config_store.save_persisted(settings.llm_apis)
+            await config_store.save_persisted_async(settings.llm_apis)
             config_store.mark_source("file")
     except Exception:
         # 回滚，保证「改一半失败」不会污染当前运行配置
@@ -426,14 +501,14 @@ def set_llm_apis(
     return get_llm_configs()
 
 
-def restore_llm_apis_from_env() -> list[dict[str, Any]]:
+async def restore_llm_apis_from_env() -> list[dict[str, Any]]:
     """删除持久化文件并热切回 ``.env`` 配置，返回切换后的脱敏列表。
 
     对应内部接口 ``DELETE /llm/config/override``：运维想「撤销所有人工保存」时用。
     文件删除后再切配置（``persist=False``），否则会立刻把 ``.env`` 的列表又写回文件。
     """
-    config_store.delete_persisted()
-    configs = set_llm_apis(config_store.env_apis(), persist=False)
+    await config_store.delete_persisted_async()
+    configs = await set_llm_apis(config_store.env_apis(), persist=False)
     config_store.mark_source("env")
     logger.warning("云端 LLM 配置已切回环境变量（{} 条，持久化文件已删除）", len(configs))
     return configs
@@ -452,20 +527,20 @@ def get_llm_config(index: int) -> dict[str, Any]:
     return get_llm_configs()[index]
 
 
-def create_llm_api(cfg: LLMApiConfig) -> list[dict[str, Any]]:
+async def create_llm_api(cfg: LLMApiConfig) -> list[dict[str, Any]]:
     """新增一条云端 LLM 配置（追加到列表末尾），返回更新后的完整配置列表"""
-    return set_llm_apis([*settings.llm_apis, cfg])
+    return await set_llm_apis([*settings.llm_apis, cfg])
 
 
-def update_llm_api(index: int, cfg: LLMApiConfig) -> list[dict[str, Any]]:
+async def update_llm_api(index: int, cfg: LLMApiConfig) -> list[dict[str, Any]]:
     """整体更新指定索引的单条配置，返回更新后的完整配置列表"""
     _validate_index(index)
     apis = list(settings.llm_apis)
     apis[index] = cfg
-    return set_llm_apis(apis)
+    return await set_llm_apis(apis)
 
 
-def patch_llm_api(index: int, patch: LLMApiConfigPatch) -> list[dict[str, Any]]:
+async def patch_llm_api(index: int, patch: LLMApiConfigPatch) -> list[dict[str, Any]]:
     """部分更新指定索引的单条配置（未传字段保持原值），返回更新后的完整配置列表"""
     _validate_index(index)
     apis = list(settings.llm_apis)
@@ -474,15 +549,15 @@ def patch_llm_api(index: int, patch: LLMApiConfigPatch) -> list[dict[str, Any]]:
         {k: v for k, v in patch.model_dump(exclude_unset=True).items() if v is not None}
     )
     apis[index] = LLMApiConfig(**merged)
-    return set_llm_apis(apis)
+    return await set_llm_apis(apis)
 
 
-def delete_llm_api(index: int) -> list[dict[str, Any]]:
+async def delete_llm_api(index: int) -> list[dict[str, Any]]:
     """删除指定索引的单条配置，返回剩余配置列表（空列表表示已清空全部）"""
     _validate_index(index)
     apis = list(settings.llm_apis)
     del apis[index]
-    return set_llm_apis(apis)
+    return await set_llm_apis(apis)
 
 
 if __name__ == "__main__":

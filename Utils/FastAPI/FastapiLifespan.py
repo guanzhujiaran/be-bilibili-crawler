@@ -31,7 +31,8 @@ async def life_span(app: FastAPI):
     # ---- 云端 LLM 配置来源：runtime/llm_apis.json 优先，缺失 / 损坏回退 .env ----
     # 只覆盖 settings.llm_apis（不建实例池、不联网）；文件不存在时保持 .env 原样。
     # 来源会打一行日志（LLM 配置来源: file/env），便于运维确认当前生效的是哪份。
-    config_store.apply_to_settings()
+    # 文件 IO（含脱敏 token 自愈写回）放线程池，启动阶段不阻塞事件循环
+    await config_store.apply_to_settings_async()
 
     if settings.is_api_only:
         # 「只提供接口、不爬取」角色（SERVICE_ROLE=api，本地开发用）：

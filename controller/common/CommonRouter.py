@@ -87,9 +87,19 @@ _LLM_CONFIG_DESC = (
 
 
 def _run_llm_config_op(op):
-    """统一把服务层的 IndexError/ValueError 转成 404/400 响应"""
+    """统一把服务层的 IndexError/ValueError 转成 404/400 响应（纯内存读路径）"""
     try:
         return op()
+    except IndexError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+async def _run_llm_config_write_op(op):
+    """写路径：``set_llm_apis`` 已是 async（文件 IO 走线程池），必须 await。"""
+    try:
+        return await op()
     except IndexError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -110,11 +120,11 @@ async def api_list_llm_config():
     RouterPaths.LLM_CONFIG_TEST,
     name=RouterNames.TEST_LLM_CONFIG,
     response_model=dict,
-    description=f"{_LLM_CONFIG_DESC} 对单条配置做一次最小 completion 探测（管理端「测试」按钮）。"
+    description=f"{_LLM_CONFIG_DESC} 用裸 ChatOpenAI 真实问一句 1+1=? 探测单条配置（管理端「测试」按钮）。"
     "token 为空或脱敏时按 index 沿用原密钥；探测不参与健康状态机、不改统计、不落盘。",
 )
 async def api_test_llm_config(req: LLMApiTestRequest = Body(...)):
-    """一次性诊断：能连上并返回 2xx 即成功，失败返回状态码 + 错误摘要（不含 token）。"""
+    """一次性诊断：拿到模型回复即成功，失败返回状态码 + 错误摘要（不含 token）。"""
     cfg, invalid = resolve_probe_config(req)
     if invalid is not None:
         # 未提供密钥 / 地址非法等：直接判定失败，不发请求（避免白打一次上游）
@@ -139,8 +149,8 @@ async def api_delete_llm_config_override():
 
     ``configs`` 里的 token 同样脱敏；``source`` 固定为 ``env``（表示已切回环境变量）。
     """
-    # 同步调用：全部是内存 + 单次文件删除，无 IO 阻塞；避免线程外改全局实例池缓存
-    configs = restore_llm_apis_from_env()
+    # 文件删除在线程池里做；settings / 实例池缓存仍只在事件循环里改
+    configs = await _run_llm_config_write_op(restore_llm_apis_from_env)
     return {"source": "env", "configs": configs}
 
 
@@ -163,7 +173,7 @@ async def api_get_llm_config(
     description=f"{_LLM_CONFIG_DESC} 新增一条配置（追加到列表末尾）。",
 )
 async def api_create_llm_config(cfg: LLMApiConfig = Body(...)):
-    return _run_llm_config_op(lambda: create_llm_api(cfg))
+    return await _run_llm_config_write_op(lambda: create_llm_api(cfg))
 
 
 @router.put(
@@ -173,7 +183,7 @@ async def api_create_llm_config(cfg: LLMApiConfig = Body(...)):
     description=f"{_LLM_CONFIG_DESC} 整体替换全部配置（传空列表 [] 表示清空）。",
 )
 async def api_replace_llm_config(apis: list[LLMApiConfig] = Body(...)):
-    return _run_llm_config_op(lambda: set_llm_apis(apis))
+    return await _run_llm_config_write_op(lambda: set_llm_apis(apis))
 
 
 @router.put(
@@ -186,7 +196,7 @@ async def api_update_llm_config(
     index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
     cfg: LLMApiConfig = Body(...),
 ):
-    return _run_llm_config_op(lambda: update_llm_api(index, cfg))
+    return await _run_llm_config_write_op(lambda: update_llm_api(index, cfg))
 
 
 @router.patch(
@@ -199,7 +209,7 @@ async def api_patch_llm_config(
     index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
     patch: LLMApiConfigPatch = Body(...),
 ):
-    return _run_llm_config_op(lambda: patch_llm_api(index, patch))
+    return await _run_llm_config_write_op(lambda: patch_llm_api(index, patch))
 
 
 @router.delete(
@@ -211,7 +221,7 @@ async def api_patch_llm_config(
 async def api_delete_llm_config(
     index: int = Path(..., ge=0, description="配置索引（从 0 开始）"),
 ):
-    return _run_llm_config_op(lambda: delete_llm_api(index))
+    return await _run_llm_config_write_op(lambda: delete_llm_api(index))
 
 
 # endregion

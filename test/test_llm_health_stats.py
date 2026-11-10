@@ -24,6 +24,7 @@ from langchain_core.output_parsers.openai_tools import PydanticToolsParser
 
 from Service.llm_service.health import (
     MAX_CONSECUTIVE_FAILURES,
+    PERMANENT_CONFIRM_HITS,
     LLMFailureKind,
     LLMState,
     classify_llm_failure,
@@ -195,7 +196,13 @@ def test_output_invalid_cools_down_but_never_removes_config():
 
 
 def test_permanent_removes_slot():
+    """不可恢复错误需连续命中 PERMANENT_CONFIRM_HITS 次；首次只停用复验。"""
     stats = LLMUsageStats()
+    for _ in range(PERMANENT_CONFIRM_HITS - 1):
+        stats.record_failure(_FakeError("gone", status_code=410))
+        stats.health._resume_at = 0.0  # 跳过复验等待，模拟「冷却结束后又失败」
+    assert stats.state is not LLMState.REMOVED
+
     stats.record_failure(_FakeError("gone", status_code=410))
     assert stats.state is LLMState.REMOVED
     assert stats.disabled is True

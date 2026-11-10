@@ -17,6 +17,7 @@
 """
 
 from typing import TypeVar, Generic
+from dataclasses import dataclass
 
 from langchain_openai import ChatOpenAI
 import asyncio
@@ -47,11 +48,55 @@ _TResult = TypeVar("_TResult", bound=PrizeExtractResult | OfficialPrizeExtractRe
 _t2s_converter = opencc.OpenCC("t2s.json")
 
 # 全部 LLM 均失败时的等比退避重试参数
-# 等待时间按等比数列（公比 _RETRY_DELAY_FACTOR）递增，到 _RETRY_MAX_DELAY 后维持上限，
-# 持续重试直至某一次 LLM 调用成功为止，不再“放弃并跳过保存”。
+# 等待时间按等比数列（公比 _RETRY_DELAY_FACTOR）递增，到 _RETRY_MAX_DELAY 后维持上限。
+# **不再无限重试**：单次提取最多 _MAX_RETRY_ROUNDS 轮，超过后把异常交给 MQ 消费侧
+# 交还队列，避免 N 个消费者在死配置上各自 while True 空转、把事件循环打满。
 _RETRY_BASE_DELAY = 10  # 首次重试等待（秒）
 _RETRY_DELAY_FACTOR = 2  # 等比数列公比
 _RETRY_MAX_DELAY = 600  # 重试等待上限（秒）
+_MAX_RETRY_ROUNDS = 5  # 单次提取内「全部实例失败」的最大轮数
+
+# 同一进程内允许同时进入「取实例 / 等冷却 / 调 LLM」主循环的协程数上限。
+# MQ 侧有 3 个消费者 × channel 级 prefetch（几十条在途），若全部同时抢 LLM，
+# 冷却到点会一起醒来、一起刷日志、一起打上游；这里按进程收敛并发。
+_MAX_CONCURRENT_EXTRACTIONS = 16
+# 全局状态类日志 / 告警的最小间隔（秒），按进程节流，避免「每秒多条刷屏」。
+_GLOBAL_STATE_LOG_INTERVAL = 30.0
+_DISABLED_PUSH_INTERVAL = 300.0
+
+_extract_semaphore: asyncio.Semaphore | None = None
+_extract_semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+
+def _get_extract_semaphore() -> asyncio.Semaphore:
+    """按事件循环惰性建 Semaphore（测试 / 多 loop 下不会串用）。"""
+    global _extract_semaphore, _extract_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if _extract_semaphore is None or _extract_semaphore_loop is not loop:
+        _extract_semaphore = asyncio.Semaphore(_MAX_CONCURRENT_EXTRACTIONS)
+        _extract_semaphore_loop = loop
+    return _extract_semaphore
+
+
+@dataclass
+class _LogThrottle:
+    """进程级日志 / 推送节流器（多个消费者共享同一实例）。"""
+
+    interval: float
+    last_at: float = 0.0
+
+    def allow(self) -> bool:
+        now = time.monotonic()
+        if now - self.last_at < self.interval:
+            return False
+        self.last_at = now
+        return True
+
+
+_cooling_log_throttle = _LogThrottle(_GLOBAL_STATE_LOG_INTERVAL)
+_all_failed_log_throttle = _LogThrottle(_GLOBAL_STATE_LOG_INTERVAL)
+_disabled_push_throttle = _LogThrottle(_DISABLED_PUSH_INTERVAL)
+_no_config_push_throttle = _LogThrottle(_DISABLED_PUSH_INTERVAL)
 
 
 class PrizeExtractResp(BaseModel, Generic[T]):
@@ -184,36 +229,37 @@ def _build_model_from_scalar_bool(value: bool, result_model: type[_TResult]):
         return None
 
 
-def _repair_structured_output(
-    exc: BaseException, result_model: type[_TResult]
-) -> _TResult | None:
-    """尽力把模型返回的非标准输出修复成 result_model 实例；无法修复返回 None。
+def _strip_llm_wrappers(raw: str) -> str:
+    """解析前剥离 thinking 模型的思考块与 Markdown 代码围栏。
 
-    仅处理 ValidationError，且只处理作用在模型根上的校验错误（loc 为空），
-    因为这类错误才携带「模型原始返回」本身。
+    部分免费上游即使传了 ``enable_thinking=False``，仍返回
+    ``<think>…</think>\\n```json\\n{…}\\n``` `` 这类文本；直接 ``json.loads``
+    会抛 ``JSONDecodeError``（不是 ``ValidationError``），一条消息会串行试完
+    所有 LLM 再退避重试，吞吐因此塌陷。这里统一在解析**之前**做文本清洗：
+    先去掉完整/截断的 think 块，再取代码围栏内的内容。
     """
-    if not isinstance(exc, ValidationError):
-        return None
-    errors = exc.errors()
-    if not errors or errors[0].get("loc"):
-        return None
-    raw = errors[0].get("input")
-
-    # 形态 2：模型直接把单布尔字段的结果返回成 true/false
-    if isinstance(raw, bool):
-        return _build_model_from_scalar_bool(raw, result_model)
-    if not isinstance(raw, str):
-        return None
-
-    # 形态 3：剥离思考块
     text = _THINK_BLOCK_RE.sub(" ", raw)
+    # 只剩 closing tag 的截断形态：开头整段思考内容丢弃
     if "</think" in text.lower():
         text = _OPEN_THINK_RE.sub(" ", text)
-
-    # 形态 1：剥离代码围栏
     fenced = _CODE_FENCE_RE.search(text)
     if fenced:
         text = fenced.group(1)
+    return text.strip()
+
+
+def _parse_llm_result_text(
+    raw: str, result_model: type[_TResult]
+) -> _TResult | None:
+    """把模型返回文本「先清洗、再 json 解析、再按 pydantic 校验」。
+
+    兼容四种形态：围栏/思考块包裹的 JSON 对象、混排文本里的第一个 JSON 对象、
+    裸布尔（含 ``**false**`` 等强调形态）、单布尔字段模型的结果。
+    无法解析返回 None，由调用方换下一个 LLM。
+    """
+    text = _strip_llm_wrappers(raw)
+    if not text:
+        return None
 
     for candidate in (text, _extract_json_object(text)):
         if not candidate:
@@ -225,13 +271,17 @@ def _repair_structured_output(
         if isinstance(payload, bool):
             return _build_model_from_scalar_bool(payload, result_model)
         if isinstance(payload, dict):
+            # 防止把无关的 JSON（如 ``{}`` / ``{"error": ...}``）当成
+            # 「全字段默认值」结果悄悄写库；至少要命中一个目标模型字段。
+            if not any(key in result_model.model_fields for key in payload):
+                continue
             try:
                 return result_model.model_validate(payload)
             except ValidationError:
                 continue
 
-    # 形态 2 的变体：模型以强调/独立成句的方式给出布尔（如 **false**）。
-    # 这里刻意不做「全文扫描 true/false」的宽松兜底：自然语言/代码里出现的
+    # 裸布尔的变体：模型以强调/独立成句的方式给出（如 **false**）。
+    # 刻意不做「全文扫描 true/false」的宽松兜底：自然语言/代码里的
     # true/false 未必是判定结论，宽松匹配可能悄悄写入错误结论。
     for pattern in (_EMPH_BOOL_RE, _STRICT_BOOL_RE):
         bool_match = pattern.search(text)
@@ -240,6 +290,64 @@ def _repair_structured_output(
                 bool_match.group(1).lower() == "true", result_model
             )
     return None
+
+
+def _raw_text_candidates(
+    raw_msg: object, parsing_error: BaseException | None
+) -> list[str]:
+    """从 langchain 的 ``raw`` 返回里收集可能携带 JSON 的文本片段。
+
+    ``include_raw=True`` 时解析失败返回 ``{raw, parsed=None, parsing_error}``：
+    JSON 可能在 ``AIMessage.content``（str / 多模态块）、``additional_kwargs``
+    里未解析的 tool_calls 参数、或解析异常的文本里。
+    """
+    candidates: list[str] = []
+    content = getattr(raw_msg, "content", None)
+    if isinstance(content, str):
+        candidates.append(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, str):
+                candidates.append(block)
+            elif isinstance(block, dict):
+                block_text = block.get("text")
+                if isinstance(block_text, str):
+                    candidates.append(block_text)
+    additional_kwargs = getattr(raw_msg, "additional_kwargs", None)
+    if isinstance(additional_kwargs, dict):
+        for tool_call in additional_kwargs.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function") or {}
+            args = function.get("arguments") if isinstance(function, dict) else None
+            if isinstance(args, str):
+                candidates.append(args)
+    if parsing_error is not None:
+        candidates.append(str(parsing_error))
+    return [candidate for candidate in candidates if candidate and candidate.strip()]
+
+
+def _repair_structured_output(
+    exc: BaseException, result_model: type[_TResult]
+) -> _TResult | None:
+    """尽力把模型返回的非标准输出修复成 result_model 实例；无法修复返回 None。
+
+    仅处理 ValidationError，且只处理作用在模型根上的校验错误（loc 为空），
+    因为这类错误才携带「模型原始返回」本身；解析逻辑与解析前置清洗共用。
+    """
+    if not isinstance(exc, ValidationError):
+        return None
+    errors = exc.errors()
+    if not errors or errors[0].get("loc"):
+        return None
+    raw = errors[0].get("input")
+
+    # 模型直接把单布尔字段的结果返回成 true/false
+    if isinstance(raw, bool):
+        return _build_model_from_scalar_bool(raw, result_model)
+    if not isinstance(raw, str):
+        return None
+    return _parse_llm_result_text(raw, result_model)
 
 
 # ================================================================
@@ -256,7 +364,10 @@ async def _push_no_llm_configured_error(exc: Exception) -> None:
 
     单轮失败、部分不可用、以及冷却期（cooling / quota_wait / suspended）
     **一律不推送**，避免对「会自己好」的情况刷告警。
+    另外按进程节流：N 个消费者同时撞上「没配置」时只推一次，避免告警风暴。
     """
+    if not _no_config_push_throttle.allow():
+        return
     try:
         await a_push_error(
             subject="云端LLM未配置（抽奖判断已中断）",
@@ -353,7 +464,10 @@ async def _push_all_llms_disabled_error(exc: Exception) -> None:
     这是「全都不能用」的不可恢复终态：不可恢复错误（鉴权失败 / 模型下线 / 模型不存在）
     会让该条配置被**直接删除**，本次不会再重试，只能在补回 llm_apis 配置后恢复，
     因此单独告警。与之相对，冷却中的槽位会自己好，**不推送**。
+    按进程节流：所有消费者同时撞上「全部 REMOVED」时只推一次，避免告警风暴。
     """
+    if not _disabled_push_throttle.allow():
+        return
     try:
         await a_push_error(
             subject="云端LLM全部不可用（抽奖判断已中断）",
@@ -419,12 +533,23 @@ async def _do_extract(
             consume_time=time.time() - start_ts,
             result=result_model(),
         )
-    # 全部 LLM 均失败时采用等比退避持续重试：等待时间按等比数列递增，
-    # 到 _RETRY_MAX_DELAY 后维持上限，直至某一次调用成功为止，不“放弃并跳过保存”。
-    # （示例序列：10s → 20s → 40s → ... → 300s → 300s → ...）
+    # 全部 LLM 均失败时采用等比退避重试：等待时间按等比数列递增，
+    # 到 _RETRY_MAX_DELAY 后维持上限；最多 _MAX_RETRY_ROUNDS 轮，
+    # 超过后抛错把消息交还队列（不“放弃并跳过保存”，也不无限空转）。
+    # （示例序列：10s → 20s → 40s → ... → 300s）
     last_err: Exception | None = None
     retry_delay = _RETRY_BASE_DELAY
+    retry_round = 0
     while True:
+        if retry_round >= _MAX_RETRY_ROUNDS:
+            # 不再无限重试：让 MQ 消费侧释放锁并把消息交还队列，
+            # 由下一个消费者以新预算重新开始（ack/nack 不丢消息语义不变）。
+            raise AllLLMsCoolingError(
+                f"连续 {retry_round} 轮未取得可用 LLM 或提取失败，"
+                f"交还消息稍后重试（最近错误：{type(last_err).__name__}: {last_err}）",
+                resume_at=None,
+            )
+        retry_round += 1
         if chat_openai_client:
             # 调用方显式指定了客户端：只用它，不再遍历其他实例。
             # 它不可用时按状态处理，让上层换一个 / 等冷却结束：
@@ -449,14 +574,17 @@ async def _do_extract(
                 if max_wait is not None and wait > max_wait:
                     # 需要的等待超过本轮预算：不在这里把预算睡掉，
                     # 抛出交给上层（MQ 消费者会释放锁并把消息交还队列重投）
-                    logger.warning(
-                        f"全部云端 LLM 均在冷却中，需等待 {wait:.0f}s "
-                        f"超出本轮剩余预算 {max_wait:.0f}s，交还消息稍后重试：{e}"
-                    )
+                    if _cooling_log_throttle.allow():
+                        logger.warning(
+                            f"全部云端 LLM 均在冷却中，需等待 {wait:.0f}s "
+                            f"超出本轮剩余预算 {max_wait:.0f}s，交还消息稍后重试：{e}"
+                        )
                     raise
-                logger.warning(
-                    f"全部云端 LLM 均在冷却中，{wait:.0f}s 后（最近自动恢复时间）继续重试：{e}"
-                )
+                if _cooling_log_throttle.allow():
+                    logger.warning(
+                        f"全部云端 LLM 均在冷却中，{wait:.0f}s 后"
+                        f"（最近自动恢复时间）继续重试：{e}"
+                    )
                 await asyncio.sleep(wait)
                 continue
             except RuntimeError as e:
@@ -471,18 +599,62 @@ async def _do_extract(
             )
             try:
                 msg_content = system_prompt or _build_system_prompt(dyn_publish_time)
-                structured_llm = llm.with_structured_output(result_model)
+                # include_raw=True：解析失败时仍能拿到模型原始文本，由
+                # _parse_llm_result_text 先剥离 <think> / ```json 围栏再解析。
+                # 否则 thinking 模型的一次格式问题会串行试完全部 LLM，
+                # 再进入等比退避，整条队列的吞吐被拖垮。
+                structured_llm = llm.with_structured_output(
+                    result_model, include_raw=True
+                )
                 messages = [
                     {"role": "system", "content": msg_content},
                     {"role": "user", "content": text},
                 ]
-                result = await structured_llm.ainvoke(
+                llm_resp = await structured_llm.ainvoke(
                     messages,
                     extra_body={
                         "chat_template_kwargs": {"enable_thinking": False},
                         "thinking": {"type": "disabled"},
                     },
                 )
+                parsed = (
+                    llm_resp.get("parsed") if isinstance(llm_resp, dict) else llm_resp
+                )
+                if isinstance(parsed, result_model):
+                    result = parsed
+                else:
+                    raw_msg = (
+                        llm_resp.get("raw") if isinstance(llm_resp, dict) else None
+                    )
+                    parsing_error = (
+                        llm_resp.get("parsing_error")
+                        if isinstance(llm_resp, dict)
+                        else None
+                    )
+                    repaired: _TResult | None = None
+                    for candidate in _raw_text_candidates(raw_msg, parsing_error):
+                        repaired = _parse_llm_result_text(candidate, result_model)
+                        if repaired is not None:
+                            break
+                    if repaired is None:
+                        if isinstance(parsing_error, BaseException):
+                            raise parsing_error
+                        raise ValueError(
+                            f"LLM 返回无法解析为 {result_model.__name__}: {llm_resp!r}"
+                        )
+                    # 模型其实有返回、只是格式不合规：统计层若按失败记过则回滚，
+                    # 避免 consecutive_failures 只增不减把槽位推进冷却。
+                    recovered = (
+                        tracked_llm.stats.record_recovered()
+                        if tracked_llm is not None
+                        else False
+                    )
+                    logger.warning(
+                        f"免费 LLM [{idx + 1}/{len(all_llms)}] 输出含思考块/代码围栏，"
+                        f"剥离后已解析采用"
+                        f"{'（该次失败已回滚为成功）' if recovered else ''}: {repaired}"
+                    )
+                    result = repaired
                 logger.info(
                     f"免费 LLM [{idx + 1}/{len(all_llms)}] 提取抽奖信息结果: {result}"
                 )
@@ -531,11 +703,13 @@ async def _do_extract(
         # 只有「全都不能用了」（全部删除 / 未配置）才推送（见计划书第 10 节）。
         if chat_openai_client is not None:
             await _await_slot_available(chat_openai_client, max_wait)
-        logger.warning(
-            f"本轮 {len(all_llms)} 个免费 LLM 均失败了，"
-            f"{retry_delay}s 后重试（等比退避，上限 {_RETRY_MAX_DELAY}s），"
-            f"最近错误：{type(last_err).__name__}: {last_err}"
-        )
+        if _all_failed_log_throttle.allow():
+            logger.warning(
+                f"本轮 {len(all_llms)} 个免费 LLM 均失败了，"
+                f"{retry_delay}s 后重试（等比退避，上限 {_RETRY_MAX_DELAY}s，"
+                f"最多 {_MAX_RETRY_ROUNDS} 轮），"
+                f"最近错误：{type(last_err).__name__}: {last_err}"
+            )
         await asyncio.sleep(retry_delay)
         retry_delay = min(retry_delay * _RETRY_DELAY_FACTOR, _RETRY_MAX_DELAY)
 
@@ -565,13 +739,15 @@ async def extract_prize_info_for_biliopusdb(
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
     不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
-    return await _do_extract(
-        dyn_content=dyn_content,
-        dyn_publish_time=dyn_publish_time,
-        chat_openai_client=chat_openai_client,
-        result_model=PrizeExtractResult,
-        max_wait=max_wait,
-    )
+    # 全局并发闸：冷却等待也圈在里面，避免 N 个在途消息同时醒来抢 LLM / 刷日志
+    async with _get_extract_semaphore():
+        return await _do_extract(
+            dyn_content=dyn_content,
+            dyn_publish_time=dyn_publish_time,
+            chat_openai_client=chat_openai_client,
+            result_model=PrizeExtractResult,
+            max_wait=max_wait,
+        )
 
 
 async def extract_prize_info_for_lotdata(
@@ -591,14 +767,16 @@ async def extract_prize_info_for_lotdata(
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
     不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
-    return await _do_extract(
-        dyn_content=dyn_content,
-        dyn_publish_time=None,  # 官方抽奖不传发布时间
-        chat_openai_client=chat_openai_client,
-        result_model=OfficialPrizeExtractResult,
-        system_prompt=_OFFICIAL_SYSTEM_PROMPT,
-        max_wait=max_wait,
-    )
+    # 与普通抽奖共用同一把进程级并发闸（两条 MQ 队列一起限流）
+    async with _get_extract_semaphore():
+        return await _do_extract(
+            dyn_content=dyn_content,
+            dyn_publish_time=None,  # 官方抽奖不传发布时间
+            chat_openai_client=chat_openai_client,
+            result_model=OfficialPrizeExtractResult,
+            system_prompt=_OFFICIAL_SYSTEM_PROMPT,
+            max_wait=max_wait,
+        )
 
 
 if __name__ == "__main__":

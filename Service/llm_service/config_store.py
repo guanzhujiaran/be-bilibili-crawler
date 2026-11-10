@@ -23,6 +23,7 @@
 写入用 ``mkstemp`` + ``os.replace`` 原子整体覆盖，读者永远看到旧的或新的完整文件。
 """
 
+import asyncio
 import json
 import os
 import tempfile
@@ -40,6 +41,67 @@ _FILE_NAME = "llm_apis.json"
 #: 文件结构版本；读到不认识的值一律当「文件不可用」处理（回退 ``.env``），
 #: 保证降级部署不会拿新格式乱跑。
 _FILE_VERSION = 1
+
+#: token 脱敏标记。任何含它的串都**不是**密钥，禁止写入 ``settings.llm_apis``
+#: 或持久化文件（写进去会导致后续所有请求 401 → 状态机 REMOVED）。
+MASK_FLAG = "****"
+
+
+def is_masked_token(token: str) -> bool:
+    """判断是否脱敏串（``_mask_token`` 生成的串一定含 ``****``）。"""
+    return MASK_FLAG in token
+
+
+def recover_masked_tokens(
+    items: list[LLMApiConfig],
+) -> tuple[list[LLMApiConfig], int, int]:
+    """把持久化文件里被写坏的脱敏 token 恢复成明文密钥。
+
+    恢复口径（从严到宽，都是同一份 ``.env`` 明文快照）：
+    1. ``(base_url, model_name)`` 完全命中；
+    2. 同一 ``base_url`` 命中（模型名被运维改过，但密钥通常按厂商共用一个）；
+    3. 同一索引且 base_url 未变。
+    都找不到时把 token 置空（保留条目、保留列表长度，绝不把脱敏串带回运行配置，
+    也绝不把脱敏串再写回文件）。
+
+    返回 ``(清洗后的列表, 已恢复条数, 置空条数)``；日志只打模型名与数量，
+    不打 token。
+    """
+    plain_env = [cfg for cfg in _env_apis if not is_masked_token(cfg.token)]
+    by_key = {(cfg.base_url, cfg.model_name): cfg.token for cfg in plain_env}
+    by_url = {}
+    for cfg in plain_env:
+        # 同一厂商通常共用一个 key；保留快照里第一个，避免被后面的覆盖
+        by_url.setdefault(cfg.base_url, cfg.token)
+    cleaned: list[LLMApiConfig] = []
+    recovered = 0
+    cleared = 0
+    for index, cfg in enumerate(items):
+        if not is_masked_token(cfg.token):
+            cleaned.append(cfg)
+            continue
+        original = by_key.get((cfg.base_url, cfg.model_name)) or by_url.get(
+            cfg.base_url
+        )
+        if original is None and index < len(_env_apis):
+            candidate = _env_apis[index]
+            if candidate.base_url == cfg.base_url and not is_masked_token(
+                candidate.token
+            ):
+                original = candidate.token
+        if original is None:
+            cleared += 1
+            logger.warning(
+                "LLM 配置文件第 {} 条（model={}）的 token 是脱敏值且 .env 无对应密钥，"
+                "已置空，请在管理页重新填写",
+                index,
+                cfg.model_name,
+            )
+            cleaned.append(cfg.model_copy(update={"token": ""}))
+        else:
+            recovered += 1
+            cleaned.append(cfg.model_copy(update={"token": original}))
+    return cleaned, recovered, cleared
 
 
 class LLMApiConfigFile(BaseModel):
@@ -84,10 +146,15 @@ def current_source() -> str:
     return _source
 
 
-def load_persisted() -> LLMApiConfigFile | None:
+def load_persisted(*, repair: bool = True) -> LLMApiConfigFile | None:
     """读取并校验持久化文件；缺失 / 损坏 / 版本不符时返回 None（并打 warning）。
 
     warning 里**只**出现路径与错误，绝不回显 token。
+
+    自愈（``repair=True``）：历史版本把管理端回传的脱敏 token 当真密钥落了盘，
+    这类文件读进来会立刻让所有实例 401。这里把脱敏 token 从 ``.env`` 快照
+    按「同名配置 / 同索引」恢复，并把清洗后的列表原子写回文件，保证
+    「文件里永远没有 ``****``」；写回失败也不影响本次启动（内存已清洗）。
     """
     path = config_file_path()
     if not path.exists():
@@ -111,6 +178,24 @@ def load_persisted() -> LLMApiConfigFile | None:
             path,
         )
         return None
+
+    cleaned, recovered, cleared = recover_masked_tokens(parsed.items)
+    if not (recovered or cleared):
+        return parsed
+    logger.warning(
+        "LLM 配置文件含脱敏 token，已自愈：恢复 {} 条、置空 {} 条（共 {} 条，路径 {}）",
+        recovered,
+        cleared,
+        len(cleaned),
+        path,
+    )
+    parsed = parsed.model_copy(update={"items": cleaned})
+    if repair:
+        try:
+            # 原子写 + 0600 由 save_persisted 保证；失败只降级为「内存已清洗」
+            save_persisted(cleaned)
+        except Exception as e:  # noqa: BLE001 —— 自愈失败不能阻塞启动
+            logger.warning("LLM 配置文件自愈写回失败（内存已清洗）：{!r}", e)
     return parsed
 
 
@@ -119,7 +204,15 @@ def save_persisted(apis: list[LLMApiConfig]) -> Path:
 
     先写同目录临时文件再 ``os.replace``：读者永远看到旧的或新的完整 JSON，
     不会读到半截内容。失败时清理临时文件并抛出（由调用方回滚内存）。
+
+    **硬校验**：任何含 ``****`` 的 token 一律拒绝落盘 —— 这是最后一道闸门，
+    即使上游（接口 / 管理页 / 脚本）漏了校验也不会把脱敏串写成「密钥」。
     """
+    masked = [i for i, cfg in enumerate(apis) if is_masked_token(cfg.token)]
+    if masked:
+        raise ValueError(
+            f"拒绝落盘：第 {', '.join(str(i) for i in masked)} 条配置的 token 是脱敏值"
+        )
     path = config_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = LLMApiConfigFile(
@@ -154,7 +247,7 @@ def delete_persisted() -> bool:
     return True
 
 
-def apply_to_settings() -> str:
+def apply_to_settings(*, repair: bool = True) -> str:
     """启动阶段应用持久化配置，返回生效来源（``file`` / ``env``）。
 
     - ``.env`` 快照在本模块 import 时已抓好（见 ``_env_apis``），这里只做应用；
@@ -164,7 +257,7 @@ def apply_to_settings() -> str:
       启动阶段不做无谓的预热与噪音日志。
     """
     global _source
-    parsed = load_persisted()
+    parsed = load_persisted(repair=repair)
     if parsed is None:
         _source = "env"
         logger.info("LLM 配置来源: env（{} 条）", len(settings.llm_apis))
@@ -187,14 +280,53 @@ def mark_source(source: str) -> None:
     _source = source
 
 
+# region 非阻塞文件 IO
+# 上面四个函数是同步实现（启动阶段、脚本、单测直接调用），全部走本地小文件读写；
+# 但 async 路由 / MQ 消费在事件循环里跑，磁盘抖动时一次 open/write/replace 就足以
+# 让整条事件循环卡住（表现为 /health 偶发超时）。这里用 asyncio.to_thread 把
+# **真正的同步 IO** 挪到线程池，内存态的 settings / 实例池仍只在事件循环里修改。
+async def load_persisted_async(*, repair: bool = True) -> LLMApiConfigFile | None:
+    """``load_persisted`` 的非阻塞版本（供 async 调用点 await）。"""
+    return await asyncio.to_thread(load_persisted, repair=repair)
+
+
+async def save_persisted_async(apis: list[LLMApiConfig]) -> Path:
+    """``save_persisted`` 的非阻塞版本（供 async 调用点 await）。"""
+    return await asyncio.to_thread(save_persisted, apis)
+
+
+async def delete_persisted_async() -> bool:
+    """``delete_persisted`` 的非阻塞版本（供 async 调用点 await）。"""
+    return await asyncio.to_thread(delete_persisted)
+
+
+async def apply_to_settings_async(*, repair: bool = True) -> str:
+    """``apply_to_settings`` 的非阻塞版本（lifespan 里 await，不阻塞启动）。
+
+    启动阶段还没有并发请求，整段（含自愈写回）放进线程池是安全的。
+    只读查询角色应传 ``repair=False``：它不该写共享配置文件，自愈由 crawler 负责。
+    """
+    return await asyncio.to_thread(apply_to_settings, repair=repair)
+
+
+# endregion
+
+
 __all__ = [
     "LLMApiConfigFile",
+    "MASK_FLAG",
     "apply_to_settings",
+    "apply_to_settings_async",
     "config_file_path",
     "current_source",
     "delete_persisted",
+    "delete_persisted_async",
     "env_apis",
+    "is_masked_token",
     "load_persisted",
+    "load_persisted_async",
     "mark_source",
+    "recover_masked_tokens",
     "save_persisted",
+    "save_persisted_async",
 ]

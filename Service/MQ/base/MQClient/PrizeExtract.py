@@ -24,14 +24,19 @@
   预算耗尽时在**释放完锁之后**主动 ``nack(requeue=True)`` 交还队列，
   由下一个消费者以新预算重新开始。重投的幂等性由去重锁 + 写库 upsert 保证。
 - 具体落库目标由消息体里的自定义参数类 PrizeExtractParams.target_db 决定。
+- **并发消费**：每条队列在 ``mq_controller`` 的 1 个 subscriber 之外，由
+  ``register_parallel_consumers`` 补齐到 ``settings.mq_prize_extract_consumers`` 个
+  competing consumers（分散投递，``global_qos=True`` 下共用 channel 级 prefetch），
+  并由在途提取闸限制同时打到大模型的请求数。两者都不改变上面任何一条 ack/nack 语义。
 """
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 
 from bili_common.core.backoff import equal_jitter, expo_wait, run_with_backoff
 from bili_common.models import StrEnumAutoDoc
-from faststream.rabbit.fastapi import RabbitMessage
+from faststream.rabbit.fastapi import RabbitMessage, RabbitRouter
 
 from CONFIG import CONFIG, settings
 from Models.MQ.PrizeExtractMQModel import (
@@ -55,6 +60,7 @@ from Service.MQ.base.MQClient.base import (
     BaseFastStreamMQ,
     prize_extract_biliopus_mq_prop,
     prize_extract_dyndetail_mq_prop,
+    router as mq_router,
 )
 from Service.MQ.base.MQClient.consume_backoff import build_consume_backoff_config
 from Service.MQ.base.MQClient.consume_budget import (
@@ -108,6 +114,34 @@ prize_extract_redis = PrizeExtractRedisManager()
 # 在途的「资源释放」任务强引用集合：release 动作被 shield 托管为独立任务后，
 # 不能依赖局部变量保活（asyncio 对任务只持弱引用），否则可能被 GC 掉导致锁泄漏。
 _pending_release_tasks: set[asyncio.Task] = set()
+
+#: 单进程内同时在途的「大模型提取 + 写库」数量上限（在途请求闸）。
+#: 提高 prefetch / 消费者数后用它在消费侧兜底，避免一次把大量请求打到上游；
+#: 它只限制「调用 LLM」这一段，不影响抢锁、等待、ack/nack 与消息确认预算。
+_EXTRACT_MAX_CONCURRENCY = max(1, settings.mq_prize_extract_concurrency)
+_extract_gate: asyncio.Semaphore | None = None
+_extract_gate_loop: asyncio.AbstractEventLoop | None = None
+
+#: 外层 while True「本轮失败 → 开新一轮」之间的等比退避（秒）。
+#: run_with_backoff 遇到「LLM 槽位不可用」会立刻 giveup，若不睡这一下，
+#: 外层循环会变成毫秒级空转：日志风暴 + 事件循环饥饿 + 探测接口偶发超时。
+_CONSUME_ROUND_BASE_DELAY = 5.0
+_CONSUME_ROUND_MAX_DELAY = 60.0
+_CONSUME_ROUND_LOG_INTERVAL = 30.0
+_last_round_failure_log_at: float = 0.0
+
+
+def _get_extract_gate() -> asyncio.Semaphore:
+    """按事件循环惰性创建 Semaphore（测试 / 多 loop 下复用不会串 loop）。
+
+    ``mq_prize_extract_concurrency`` 在导入时定型；运行期改配置需重启生效。
+    """
+    global _extract_gate, _extract_gate_loop
+    loop = asyncio.get_running_loop()
+    if _extract_gate is None or _extract_gate_loop is not loop:
+        _extract_gate = asyncio.Semaphore(_EXTRACT_MAX_CONCURRENCY)
+        _extract_gate_loop = loop
+    return _extract_gate
 
 
 async def _release_resources(lock_key: str) -> None:
@@ -255,8 +289,13 @@ async def _consume_once(
         # 3) 调用大模型提取并写库（内部逐个尝试当前可用的 LLM 实例）。
         #    失败不立即 ack/nack：先在进程内按「指数等待 + 抖动」重试（见
         #    bili_common.core.backoff / consume_backoff），一轮耗尽后由外层继续下一轮。
+        #    闸只圈住真正打 LLM 的这一段，退避等待不占名额，消息确认语义不变。
+        async def _extract_once():
+            async with _get_extract_gate():
+                return await _do_extract_and_store(params, budget)
+
         result = await run_with_backoff(
-            lambda: _do_extract_and_store(params, budget),
+            _extract_once,
             config=build_consume_backoff_config(
                 module_name=module_name,
                 params=params,
@@ -327,6 +366,8 @@ async def process_prize_extract(
         queue_name=module_name,
         label=_lock_key(params),
     )
+    global _last_round_failure_log_at
+    round_delay = _CONSUME_ROUND_BASE_DELAY
     while True:
         # 每轮开始先看预算：不足则不再开始新一轮（避免干到一半被 broker 掐断）
         if budget.expired():
@@ -342,11 +383,18 @@ async def process_prize_extract(
             await _requeue_for_budget(budget, msg, f"{type(e).__name__}: {e}")
             return None
         except Exception as e:
-            MQ_logger.warning(
-                f"【{module_name}】{_lock_key(params)} 本轮处理失败，"
-                f"消息保持未确认并继续下一轮：{type(e).__name__}: {e}；"
-                f"{budget.describe()}"
-            )
+            now = time.monotonic()
+            if now - _last_round_failure_log_at >= _CONSUME_ROUND_LOG_INTERVAL:
+                _last_round_failure_log_at = now
+                MQ_logger.warning(
+                    f"【{module_name}】{_lock_key(params)} 本轮处理失败，"
+                    f"消息保持未确认并继续下一轮：{type(e).__name__}: {e}；"
+                    f"{budget.describe()}"
+                )
+        # 不 sleep 会变成毫秒级空转（尤其「全部槽位冷却 / REMOVED」时
+        # run_with_backoff 立刻 giveup）；按预算截断，等下一轮再抢槽位。
+        await asyncio.sleep(min(round_delay, max(0.0, budget.remaining())))
+        round_delay = min(round_delay * 2, _CONSUME_ROUND_MAX_DELAY)
 
 
 # endregion
@@ -371,9 +419,72 @@ class PrizeExtractConsumer(BaseFastStreamMQ):
 prize_extract_biliopus = PrizeExtractConsumer(prize_extract_biliopus_mq_prop)
 prize_extract_dyndetail = PrizeExtractConsumer(prize_extract_dyndetail_mq_prop)
 
+_parallel_registered_routers: set[int] = set()
+
+
+def _make_parallel_handler(
+    consumer: PrizeExtractConsumer, index: int
+) -> Callable[[PrizeExtractParams, RabbitMessage], Awaitable[None]]:
+    """构造带唯一函数名、签名只包含 body/msg 的并行 subscriber handler。
+
+    ``consumer`` 通过闭包捕获而不是放进参数：FastStream 会把 handler 的参数
+    当作依赖注入项解析，多一个带默认值的参数容易被当成待注入依赖。
+    """
+    queue_name = consumer.mq_props.queue_name
+
+    async def _handle(body: PrizeExtractParams, msg: RabbitMessage) -> None:
+        await consumer.consume(body, msg)
+
+    _handle.__name__ = f"handle_{queue_name}_parallel_{index}"
+    return _handle
+
+
+def register_parallel_consumers(
+    router: RabbitRouter, total_consumers: int | None = None
+) -> int:
+    """在两条提取队列上补齐并行消费者（competing consumers），返回新增 handler 数。
+
+    ``mq_controller`` 已经为每条队列注册了 1 个 subscriber；这里补到
+    ``total_consumers`` 个，把投递分散到多个 consumer tag。
+    注意 ``global_qos=True``：同一队列的并行消费者共用 channel 级 prefetch 额度，
+    在途未确认上限仍是 ``prefetch``（由 ``base.py`` 抬高），
+    这层注册用于消除「单消费者串行回调」的排队，而不是叠加在途额度。
+
+    同一个 router 只注册一次（导入时自动调用，也允许测试用独立 router 显式调用）。
+    注册的是同一队列的竞争消费者，一条消息只会被一个 handler 拿到；
+    ``consume → process_prize_extract`` 的 ack/nack / 预算 / 去重锁逻辑完全不变。
+    """
+    total = max(
+        1,
+        total_consumers
+        if total_consumers is not None
+        else settings.mq_prize_extract_consumers,
+    )
+    extra = total - 1
+    router_key = id(router)
+    if extra <= 0 or router_key in _parallel_registered_routers:
+        return 0
+    for consumer in (prize_extract_biliopus, prize_extract_dyndetail):
+        for index in range(extra):
+            router.subscriber(**consumer.sub_params)(
+                _make_parallel_handler(consumer, index)
+            )
+    _parallel_registered_routers.add(router_key)
+    MQ_logger.info(
+        f"抽奖提取队列并行消费者已注册：每条队列{total}个"
+        f"（含 mq_controller 的 1 个）；channel 级在途上限 = prefetch"
+    )
+    return extra * 2
+
+
+# crawler / faststream_app / dev_env_main 都通过 MQController.router 挂载消费者；
+# 模块导入时补齐并行 subscriber（query 角色不 include 该 router，不受影响）。
+register_parallel_consumers(mq_router)
+
 __all__ = [
     "prize_extract_biliopus",
     "prize_extract_dyndetail",
     "PrizeExtractConsumer",
     "process_prize_extract",
+    "register_parallel_consumers",
 ]

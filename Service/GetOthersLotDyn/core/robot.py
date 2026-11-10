@@ -1,12 +1,16 @@
 import asyncio
 import time
+from datetime import datetime
 from typing import Any, Set, AsyncGenerator
 from pydantic import ConfigDict
 
 from log.base_log import get_others_lot_logger as get_others_lot_log
 from Models.get_other_lot_dyn.dyn_robot_model import RobotScrapyInfo
 from Models.base.custom_pydantic import CustomBaseModelHashable
-from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
+from Service.GetOthersLotDyn.core.bili_dynamic_item import (
+    BiliDynamicItem,
+    BiliDynamicItemJudgeLotteryResult,
+)
 from Service.GetOthersLotDyn.core.user_pool_service import lot_user_pool_service
 from Service.GetOthersLotDyn.fetcher.space_dynamic_fetcher import BiliSpaceUserItem
 from CONFIG import settings
@@ -44,9 +48,16 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
     Config = GetOthersLotDynRobotConfig
 
+    # 未完成轮次允许复用的最长时长（秒）：超过则强制收尾并新开一轮，
+    # 避免僵死轮次被跨进程复用数天、把历史动态全挂在同一轮上。
+    _ROUND_REUSE_MAX_AGE = 6 * 3600
+
     def __init__(self):
         self.isPreviousRoundFinished = False  # 上一轮抽奖是否结束
         self.nowRound: TLotmaininfo = TLotmaininfo()
+        # 本次 run 实际写入并经 addDynInfo 投递 MQ 的 dynId；每轮开头清空。
+        # 轮次收尾只等这些动态，不再按「整轮」查库。
+        self._run_dyn_ids: set[int] = set()
         self.username = ""
         self.nonLotteryWords = ["分享视频", "分享动态"]
         self.SpareTime = (
@@ -102,34 +113,85 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
             obj: BiliDynamicItem = params.obj  # ty:ignore[invalid-assignment]
             self.dyn_succ_counter.running_params.add(self.__hash__())
             try:
-                await obj.judge_lottery(lotRound_id=self.nowRound.lotRound_id)
+                judge_result = await obj.judge_lottery(
+                    lotRound_id=self.nowRound.lotRound_id
+                )
+                self._collect_run_dyn_ids(judge_result)
             finally:
                 self.dyn_succ_counter.running_params.discard(self.__hash__())
             self.dyn_succ_counter.succ_count += 1
         return WorkerStatus.complete
 
+    def _collect_run_dyn_ids(
+        self, judge_result: BiliDynamicItemJudgeLotteryResult
+    ) -> None:
+        """收集本次 run 实际写入（并已投递 MQ）的动态 id。
+
+        ``addDynInfo`` 只在 ``dynContent`` 非空时发布 ``pub_prize_extract_from_dyn``，
+        因此失效动态（空内容）不会进等待集合。原动态 / UGC 附加动态同样会写库发 MQ，
+        一并由 ``judge_lottery`` 的结果对象带回来。
+        """
+        for dyn in (
+            judge_result.cur_dynamic,
+            judge_result.orig_dynamic,
+            judge_result.attached_card,
+        ):
+            if dyn is None or not dyn.dynId or not dyn.dynContent:
+                continue
+            try:
+                self._run_dyn_ids.add(int(dyn.dynId))
+            except (TypeError, ValueError):
+                get_others_lot_log.warning(
+                    f"本轮动态 id 非法，跳过等待 extra_info: {dyn.dynId!r}"
+                )
+
     # endregion
 
     async def __init(self):
+        def _new_round(round_id: int) -> TLotmaininfo:
+            return TLotmaininfo(
+                lotRound_id=round_id,
+                allNum=0,
+                lotNum=0,
+                uselessNum=0,
+                isRoundFinished=False,
+            )
+
+        def _is_stale_unfinished_round(round_info: TLotmaininfo) -> bool:
+            """未完成轮次是否已经陈旧到不该再复用。
+
+            用 ``created_at`` 而不是 ``updated_at``：每次 ``init_round`` 的
+            ``addLotMainInfo`` 都会刷新 ``updated_at``，僵死轮次看起来永远「刚更新过」。
+            """
+            created_at = round_info.created_at
+            if created_at is None:
+                return False
+            try:
+                age = (datetime.now() - created_at).total_seconds()
+            except TypeError:
+                return False
+            return age > self._ROUND_REUSE_MAX_AGE
+
         async def init_round():
+            self.isPreviousRoundFinished = False
             latest_round = await SqlHelper.getLatestRound()
             if not latest_round:
-                latest_round = TLotmaininfo(
-                    lotRound_id=1,
-                    allNum=0,
-                    lotNum=0,
-                    uselessNum=0,
-                    isRoundFinished=False,
-                )
+                latest_round = _new_round(1)
                 self.isPreviousRoundFinished = True
             elif latest_round.isRoundFinished:
-                latest_round = TLotmaininfo(
-                    lotRound_id=latest_round.lotRound_id + 1,
-                    allNum=0,
-                    lotNum=0,
-                    uselessNum=0,
-                    isRoundFinished=False,
+                latest_round = _new_round(latest_round.lotRound_id + 1)
+                self.isPreviousRoundFinished = True
+            elif _is_stale_unfinished_round(latest_round):
+                # 僵死轮次（跨进程复用数天 / 上一轮进程被杀）：先强制收尾再新开一轮，
+                # 避免历史动态继续被 merge 到同一个轮次 id 上。
+                old_round_id = latest_round.lotRound_id
+                latest_round.isRoundFinished = 1
+                await SqlHelper.addLotMainInfo(latest_round)
+                get_others_lot_log.warning(
+                    f"轮次{old_round_id}未完成且创建时间已超过"
+                    f"{self._ROUND_REUSE_MAX_AGE}s，强制收尾并新开轮次{old_round_id + 1}"
                 )
+                latest_round = _new_round(old_round_id + 1)
                 self.isPreviousRoundFinished = True
             self.nowRound = latest_round
             get_others_lot_log.info(
@@ -215,6 +277,13 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         get_others_lot_log.info("机器人初始化完成")
 
     async def main(self):
+        # 全局单例跨轮次复用：清空上一轮残留，否则旧 BiliSpaceUserItem 的
+        # dynamic_infos / pub_lot_users 会混进本轮待判定集合与等待集合。
+        self._run_dyn_ids = set()
+        self.bili_space_user_items_set.clear()
+        self.bili_dynamic_items_set.clear()
+        self.goto_check_dynamic_item_set.clear()
+        self.scrapy_info = RobotScrapyInfo()
         await self.__init()
         # ---- 第一阶段：获取抽奖号的空间动态 ----
         self._phase = 1
@@ -280,9 +349,13 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self._set_concurrency(settings.concurrency.judge_dyn)
         await self.run(init_params=None)
         self.dyn_succ_counter.is_running = False
-        await self._after_scrapy()
-        self.nowRound.isRoundFinished = 1
-        await SqlHelper.addLotMainInfo(self.nowRound)
+        try:
+            await self._after_scrapy()
+        finally:
+            # 收尾等待异常 / 被调度器取消时也要关闭轮次：否则下一轮（甚至跨进程）
+            # 会一直复用这个未完成轮次，历史动态持续挂在上面。
+            self.nowRound.isRoundFinished = 1
+            await SqlHelper.addLotMainInfo(self.nowRound)
         # 用户池管理（剔除低产出用户 + 从评论区补充参与者）与总结推送。
         # 必须放在调度入口里执行：此前只在 HTTP 触发的 get_new_dyn() 中调用，
         # 定时任务走本方法时用户列表从不更新，池子长期停留在默认名单。
@@ -334,10 +407,17 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
     async def _after_scrapy(self):
         # 先补偿上一轮没等到 extra_info 的动态
         await self._retry_pending_extra_refs()
-        all_dyn_this_round = await SqlHelper.getAllLotDynInfoByRoundNum(
-            self.nowRound.lotRound_id
-        )
+        # 只等本次 run 实际写入并投递 MQ 的 dynId，不再按整轮查库：
+        # 僵死轮次上会挂着大量历史动态（其中一部分永远等不到 extra_info），
+        # 整轮等待会被它们拖到总超时，把本轮新抓的动态全部推进待补偿列表。
+        run_dyn_ids = sorted(self._run_dyn_ids)
+        all_dyn_this_round = await SqlHelper.getDynInfoByIds(run_dyn_ids)
         self.nowRound.allNum = len(all_dyn_this_round)
+        get_others_lot_log.info(
+            f"轮次{self.nowRound.lotRound_id}收尾：本次 run 产生/更新"
+            f"{len(run_dyn_ids)}条动态（库内命中{len(all_dyn_this_round)}条），"
+            f"仅等待这些 dynId 的 extra_info"
+        )
 
         if not all_dyn_this_round:
             self.nowRound.lotNum = 0

@@ -137,9 +137,16 @@ bili_voucher_prop = MQPropBase(
 
 # 入库队列的消费者预取上限：这两条队列在「等槽位 / 等配置」期间保持消息未确认，
 # 必须限制在途未确认消息数（否则 broker 会把整条积压全推成未确认消息）。
-# 取 2 倍槽位数（下限 8）：保证在途消息数不少于槽位数，槽位不会空转；
-# 该值在导入时按当时的 llm_apis 计算（槽位数是个位数，够用）。
-_PRIZE_EXTRACT_PREFETCH = max(8, len(settings.llm_apis) * 2)
+#
+# aiormq 为每条投递的消息创建独立 task，因此「在途未确认数 = prefetch」才是实际并行度。
+# 生产 llm_apis 由 runtime/llm_apis.json 在 lifespan 才加载，本值在 import 时计算时
+# settings.llm_apis 往往还是空的 —— 旧的 max(8, 0*2)=8 会把单队列吞吐死死卡在
+# 8 条在途（约 1.7 条/s），抓一轮产生的新动态根本提取不完。
+# 这里给一个足够覆盖全部 LLM 槽位的下限，并按已配置槽位数放宽。
+# 注意 global_qos=True：同一队列的多个并行消费者共用该 channel 的 prefetch 额度，
+# 在途未确认上限是「channel 级 prefetch」，抬 prefetch 才是吞吐的实际旋钮；
+# 多消费者只是把投递分散到多个 consumer tag，避免单个回调排队。
+_PRIZE_EXTRACT_PREFETCH = max(32, len(settings.llm_apis) * 4)
 
 prize_extract_biliopus_mq_prop = MQPropBase(
     queue_name=QueueName.PrizeExtractBiliOpusMQ,

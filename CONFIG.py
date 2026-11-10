@@ -453,7 +453,7 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
 
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []
-    # 管理端「测试」按钮的探测超时（秒）：单次最小 completion，不重试。
+    # 管理端「测试」按钮的探测超时（秒）：裸 ChatOpenAI 真实问一句 1+1=?，不重试。
     # 偏大是因为部分推理模型首个 token 很慢（实测 deepseek-v4.1-flash 需 1~3 分钟）：
     # 45s 能覆盖多数 chat 模型，超时会如实返回「请求超时」而不误判为配置错误。
     llm_test_timeout: float = 45.0
@@ -529,6 +529,15 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     mq_consume_ack_timeout: float = 1800.0
     # 留给「释放锁 + nack + 日志」的收尾余量（秒），实际预算 = ack_timeout - ack_reserve
     mq_consume_ack_reserve: float = 60.0
+
+    # ===== 抽奖提取队列的并发消费 =====
+    # 每条队列在本进程内的 subscriber 数：mq_controller 已注册 1 个，其余由
+    # PrizeExtract.register_parallel_consumers 补齐，作为 competing consumers
+    # 分散投递（global_qos=True 下共用 channel 级 prefetch 额度）。1 表示维持单消费者。
+    mq_prize_extract_consumers: int = 3
+    # 单进程内同时调用大模型提取的上限（在途 LLM 请求闸）；
+    # 提高 prefetch / 消费者数后用它兜底，避免一次把大量请求打到上游。
+    mq_prize_extract_concurrency: int = 32
 
     @property
     def is_query_only(self) -> bool:

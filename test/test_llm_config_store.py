@@ -13,9 +13,11 @@
     uv run python -m pytest test/test_llm_config_store.py -v
 """
 
+import asyncio
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -93,11 +95,12 @@ def test_save_overwrites_whole_list(store_env):
 # ================================================================
 
 
-def test_token_masked_in_api_view_and_logs(store_env):
+@pytest.mark.asyncio
+async def test_token_masked_in_api_view_and_logs(store_env):
     messages: list[str] = []
     sink_id = logger.add(lambda m: messages.append(str(m)), level="DEBUG")
     try:
-        pool.set_llm_apis([_cfg("model-a")])
+        await pool.set_llm_apis([_cfg("model-a")])
     finally:
         logger.remove(sink_id)
 
@@ -176,7 +179,8 @@ def test_delete_persisted(store_env):
 # ================================================================
 
 
-def test_set_llm_apis_rolls_back_when_persist_fails(store_env, monkeypatch):
+@pytest.mark.asyncio
+async def test_set_llm_apis_rolls_back_when_persist_fails(store_env, monkeypatch):
     old_names = [c.model_name for c in settings.llm_apis]
     old_cache, old_key = pool._free_llm_cache, pool._free_llm_cache_key
 
@@ -185,7 +189,7 @@ def test_set_llm_apis_rolls_back_when_persist_fails(store_env, monkeypatch):
 
     monkeypatch.setattr(config_store, "save_persisted", _boom)
     with pytest.raises(OSError):
-        pool.set_llm_apis([_cfg("new-model")])
+        await pool.set_llm_apis([_cfg("new-model")])
 
     # 内存与实例池缓存都回到旧值，不留「内存已改、文件未改」的撕裂状态
     assert [c.model_name for c in settings.llm_apis] == old_names
@@ -194,40 +198,199 @@ def test_set_llm_apis_rolls_back_when_persist_fails(store_env, monkeypatch):
     assert not (store_env / "llm_apis.json").exists()
 
 
-def test_set_llm_apis_persists_on_success(store_env):
-    pool.set_llm_apis([_cfg("model-a"), _cfg("model-b", rps=2.0)])
+@pytest.mark.asyncio
+async def test_set_llm_apis_persists_on_success(store_env):
+    await pool.set_llm_apis([_cfg("model-a"), _cfg("model-b", rps=2.0)])
     parsed = config_store.load_persisted()
     assert parsed is not None
     assert [item.model_name for item in parsed.items] == ["model-a", "model-b"]
     assert config_store.current_source() == "file"
 
 
-def test_invalid_config_rejected_before_persist(store_env):
+@pytest.mark.asyncio
+async def test_invalid_config_rejected_before_persist(store_env):
     with pytest.raises(ValueError):
-        pool.set_llm_apis([LLMApiConfig(base_url="", model_name="x")])
+        await pool.set_llm_apis([LLMApiConfig(base_url="", model_name="x")])
     assert not (store_env / "llm_apis.json").exists()
 
 
 # ================================================================
-# 6. 自动摘除不落盘
+# 6. 自动摘除不落盘、不删配置（管理页 GET 仍是完整列表）
 # ================================================================
 
 
-def test_auto_removal_does_not_touch_file(store_env):
+@pytest.mark.asyncio
+async def test_auto_removal_keeps_full_config_list(store_env):
     cfg = _cfg("doomed-model")
-    pool.set_llm_apis([cfg, _cfg("healthy-model")])
+    await pool.set_llm_apis([cfg, _cfg("healthy-model")])
     path = store_env / "llm_apis.json"
     before = path.read_text(encoding="utf-8")
 
     fingerprint = slot_fingerprint(cfg.base_url, cfg.model_name, cfg.token)
     assert pool.remove_llm_by_fingerprint(fingerprint) is True
 
-    # 内存里删掉了（配置 + 缓存），但文件**原样不动**
-    assert [c.model_name for c in settings.llm_apis] == ["healthy-model"]
+    # 配置条目与文件都**原样保留**：index 不漂移，管理页按 index 回填密钥才不会串位
+    assert [c.model_name for c in settings.llm_apis] == [
+        "doomed-model",
+        "healthy-model",
+    ]
     assert path.read_text(encoding="utf-8") == before
-    # 重启（重新读文件）后该槽位回来 —— 防误删兜底
+    # GET /llm/config 返回完整列表，被摘除的条目带 removed 状态 + 原因
+    configs = pool.get_llm_configs()
+    assert len(configs) == 2
+    assert configs[0]["state"] == "removed"
+    assert configs[0]["removed"] is True
+    assert configs[1]["state"] == "healthy"
+    # GET /llm/stats 也保留该实例，管理页可展示状态/原因
+    states = {row["model"]: row["state"] for row in pool.get_llm_stats()}
+    assert states == {"doomed-model": "removed", "healthy-model": "healthy"}
+    # 重启 / 重新保存后槽位回到 healthy —— 防误删兜底
     assert config_store.apply_to_settings() == "file"
     assert "doomed-model" in [c.model_name for c in settings.llm_apis]
+
+
+# ================================================================
+# 6.5 脱敏 token 绝不写回（本次故障根因的回归用例）
+# ================================================================
+
+
+@pytest.mark.asyncio
+async def test_masked_token_save_keeps_original_key(store_env):
+    """管理页原样回传脱敏 token：必须按 index 沿用原明文密钥，且文件里没有 **** 。"""
+    original_a = "sk-real-key-a-0001"
+    original_b = "sk-real-key-b-0002"
+    await pool.set_llm_apis(
+        [
+            _cfg("model-a", token=original_a),
+            _cfg("model-b", token=original_b),
+        ]
+    )
+    # 只改限流、token 原样回传脱敏值（甚至空串）
+    await pool.set_llm_apis(
+        [
+            _cfg("model-a", token="sk-r****0001", rps=1.0),
+            _cfg("model-b", token="", rps=2.0),
+        ]
+    )
+
+    raw = json.loads((store_env / "llm_apis.json").read_text(encoding="utf-8"))
+    tokens = [item["token"] for item in raw["items"]]
+    assert tokens == [original_a, original_b]
+    assert not any(config_store.MASK_FLAG in t for t in tokens)
+    assert [c.token for c in settings.llm_apis] == [original_a, original_b]
+    assert [c.requests_per_second for c in settings.llm_apis] == [1.0, 2.0]
+
+
+@pytest.mark.asyncio
+async def test_masked_token_for_new_row_is_rejected(store_env):
+    await pool.set_llm_apis([_cfg("model-a")])
+    with pytest.raises(ValueError, match="脱敏值"):
+        await pool.set_llm_apis(
+            [_cfg("model-a", token=""), _cfg("new-model", token="abcd****wxyz")]
+        )
+    # 失败不能污染内存 / 磁盘
+    assert [c.model_name for c in settings.llm_apis] == ["model-a"]
+    raw = json.loads((store_env / "llm_apis.json").read_text(encoding="utf-8"))
+    assert len(raw["items"]) == 1
+
+
+def test_save_persisted_rejects_masked_token(store_env):
+    with pytest.raises(ValueError, match="拒绝落盘"):
+        config_store.save_persisted([_cfg("model-a", token="abcd****wxyz")])
+    assert not (store_env / "llm_apis.json").exists()
+
+
+def test_poisoned_file_self_heals_from_env(store_env, monkeypatch):
+    """历史脏文件里 8 条脱敏 token：从 .env 快照恢复并原子写回，文件里不再有 **** 。"""
+    env_snapshot = [
+        _cfg("env-model-a", token="plain-key-a-0001"),
+        _cfg("env-model-b", token="plain-key-b-0002"),
+    ]
+    (store_env / "llm_apis.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "updated_at": 1,
+                "items": [
+                    {
+                        "base_url": "https://integrate.api.nvidia.com/v1",
+                        "model_name": "env-model-a",
+                        "token": "plai****0001",
+                        "requests_per_second": 0.5,
+                    },
+                    {
+                        "base_url": "https://integrate.api.nvidia.com/v1",
+                        "model_name": "env-model-b",
+                        "token": "****",
+                        "requests_per_second": 0.5,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # 模拟 import 时抓到的 .env 明文快照
+    monkeypatch.setattr(config_store, "_env_apis", list(env_snapshot))
+
+    parsed = config_store.load_persisted()
+
+    assert parsed is not None
+    assert [item.token for item in parsed.items] == [
+        "plain-key-a-0001",
+        "plain-key-b-0002",
+    ]
+    raw = json.loads((store_env / "llm_apis.json").read_text(encoding="utf-8"))
+    assert sum(config_store.MASK_FLAG in x["token"] for x in raw["items"]) == 0
+
+
+# ================================================================
+# 6.6 文件 IO 不阻塞 asyncio 事件循环
+# ================================================================
+
+
+@pytest.mark.asyncio
+async def test_async_save_does_not_block_event_loop(store_env, monkeypatch):
+    """把「慢磁盘」注入到同步落盘函数，事件循环仍必须能继续调度其它协程。"""
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _slow_save(_apis):
+        entered.set()
+        release.wait(timeout=3)
+        return config_store.config_file_path()
+
+    monkeypatch.setattr(config_store, "save_persisted", _slow_save)
+    ticks = 0
+    stop = asyncio.Event()
+
+    async def _ticker():
+        nonlocal ticks
+        while not stop.is_set():
+            ticks += 1
+            await asyncio.sleep(0.005)
+
+    ticker = asyncio.create_task(_ticker())
+    try:
+        pending = asyncio.create_task(
+            config_store.save_persisted_async([_cfg("model-a")])
+        )
+        assert await asyncio.to_thread(entered.wait, 1.0)
+        await asyncio.sleep(0.05)
+        assert ticks > 0, "同步文件 IO 阻塞了事件循环"
+        release.set()
+        assert await pending == store_env / "llm_apis.json"
+    finally:
+        stop.set()
+        release.set()
+        await ticker
+
+
+@pytest.mark.asyncio
+async def test_apply_to_settings_async_returns_source(store_env):
+    config_store.save_persisted([_cfg("file-model")])
+    assert await config_store.apply_to_settings_async() == "file"
+    assert await config_store.delete_persisted_async() is True
+    assert await config_store.load_persisted_async() is None
 
 
 # ================================================================
@@ -235,12 +398,13 @@ def test_auto_removal_does_not_touch_file(store_env):
 # ================================================================
 
 
-def test_restore_from_env_after_override(store_env):
+@pytest.mark.asyncio
+async def test_restore_from_env_after_override(store_env):
     env_names = [c.model_name for c in settings.llm_apis]
-    pool.set_llm_apis([_cfg("file-model")])
+    await pool.set_llm_apis([_cfg("file-model")])
     assert [c.model_name for c in settings.llm_apis] == ["file-model"]
 
-    configs = pool.restore_llm_apis_from_env()
+    configs = await pool.restore_llm_apis_from_env()
 
     assert [c["model_name"] for c in configs] == env_names
     assert [c.model_name for c in settings.llm_apis] == env_names

@@ -482,6 +482,16 @@ class LLMHealth(BaseModel):
             return None
         return max(0.0, self._resume_at - (now if now is not None else time.time()))
 
+    def mark_removed(self, reason: str | None = None) -> LLMState:
+        """把槽位直接置为 ``REMOVED`` 终态（**不触发**状态迁移回调）。
+
+        供实例池在「外部已判定不可恢复」时对齐实例状态：与 ``record_failure``
+        不同，它不会再走一次 ``_notify_state_change``，避免回调递归。
+        配置本身仍留在人工配置列表里（观测可见），只是不再参与调用。
+        """
+        self._set_state(LLMState.REMOVED, reason=reason, resume_at=None)
+        return self._state
+
     def record_success(self) -> LLMState:
         """一次成功调用：清空故障计数并回到 ``HEALTHY``（``REMOVED`` 除外，它是终态）"""
         self._failure_kind = None
