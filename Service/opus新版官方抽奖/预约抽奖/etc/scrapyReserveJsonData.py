@@ -417,9 +417,10 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         async with self.dynamic_ts_lock:
             self.dynamic_timestamp = DynamicTimestampInfo()
         await self.run(self.reserve_worker_model.params)
-        self.reserve_worker_model = (
-            self.stats_plugin.end_params
-        )  # 加上这个才是最终的ids，否则ids并不会改变
+        # 加上这个才是最终的ids，否则ids并不会改变
+        # 注意：stats_plugin.end_params 是接口用的可序列化摘要（params 已被投影），
+        # 这里要读原始 WorkerModel 的 params，必须用 end_worker_model。
+        self.reserve_worker_model = self.stats_plugin.end_worker_model
         self.totoal_count = self.stats_plugin.succ_count
         self.none_num = (
             self.null_stop_plugin.sequential_null_count
@@ -435,8 +436,8 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         reserve_lot_logger.info(
             f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
             f"{self.dynamic_timestamp.get_time_str_until_now()}\n"
-            f"最终成功的ids：http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_success_params}\n"
-            f"最终ids: http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_params}\n"
+            f"最终成功的ids：http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_success_worker_model}\n"
+            f"最终ids: http://api.bilibili.com/x/activity/up/reserve/relation/info?ids={self.stats_plugin.end_worker_model}\n"
         )
         reserve_lot_logger.info(
             f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"

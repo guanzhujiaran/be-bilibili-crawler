@@ -1,10 +1,15 @@
 from bili_common.models import StrEnumAutoDoc
-from pydantic import Field, PrivateAttr, computed_field
+from pydantic import BaseModel, Field, JsonValue, PrivateAttr, computed_field
+import dataclasses
 import datetime
+import enum
 import inspect
+import numbers
 import time
+from collections.abc import Mapping
 from typing import Any
 import numpy as np
+from Models.base.custom_pydantic import CustomBaseModel
 from Service.BaseCrawler.base.core import ParamsType, BaseCrawler
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
@@ -17,6 +22,142 @@ class CrawlerHealthStatus(StrEnumAutoDoc):
     NORMAL = "normal"  # 正常运行
     STUCK = "stuck"  # 爬虫卡住
     STOPPED = "stopped"  # 已停止
+
+
+# region WorkerModel 的可序列化摘要
+# 接口（AllStat / GetSingleScrapyStatus）会把 StatsPlugin 整体交给 pydantic 序列化。
+# WorkerModel.params 是各爬虫自定义的参数模型，可能直接持有 SQLAlchemy 实体 / 领域对象
+# （如 GetOthersLotDyn 的 RobotTaskParams.obj -> BiliSpaceUserItem -> TLotuserinfo），
+# 直接透传会抛 `PydanticSerializationError: Unable to serialize unknown type`。
+# 因此对外只暴露下面的摘要模型：字段白名单 + 值白名单投影，禁止把任意对象放进响应。
+_MAX_SUMMARY_DEPTH = 2  # 最大递归层级，超过后只保留类型名
+_MAX_SUMMARY_FIELDS = 30  # 单个对象最多保留的字段数
+_MAX_SUMMARY_ITEMS = 10  # 集合 / 映射最多保留的元素数
+_MAX_SUMMARY_STR_LEN = 200  # 单个字符串最大长度
+
+
+def _type_label(value: Any) -> str:
+    """无法安全序列化的值的替身：只保留类型名"""
+    value_type = type(value)
+    return f"<{value_type.__module__}.{value_type.__qualname__}>"
+
+
+def _object_items(value: Any) -> list[tuple[str, Any]]:
+    """取对象的一层「字段名 -> 值」，跳过私有属性（如 SQLAlchemy 的 _sa_instance_state）"""
+    if isinstance(value, BaseModel):
+        items: list[tuple[str, Any]] = [
+            (name, getattr(value, name, None)) for name in type(value).model_fields
+        ]
+        items.extend((str(key), item) for key, item in (value.model_extra or {}).items())
+        return items
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return [
+            (field.name, getattr(value, field.name, None))
+            for field in dataclasses.fields(value)
+            if not field.name.startswith("_")
+        ]
+    return [
+        (str(name), item)
+        for name, item in vars(value).items()
+        if not str(name).startswith("_")
+    ]
+
+
+def to_json_safe(value: Any, depth: int = 0) -> JsonValue:
+    """把任意对象投影成「只含基础类型」的 JSON 安全值。
+
+    白名单策略：只放行 None / bool / int / float / str / 枚举 / 时间 / Mapping /
+    list·tuple·set / pydantic 模型与 dataclass 的字段；其余对象（SQLAlchemy 实体、
+    协程、连接池等）一律降级成类型名字符串，并且始终受深度与数量上限约束，
+    避免把大对象（如整轮动态集合）灌进接口响应。
+    """
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, enum.Enum):
+        return to_json_safe(value.value, depth)
+    if isinstance(value, str):
+        if len(value) <= _MAX_SUMMARY_STR_LEN:
+            return value
+        return f"{value[:_MAX_SUMMARY_STR_LEN]}..."
+    if isinstance(value, numbers.Integral):
+        return int(value)
+    if isinstance(value, numbers.Real):
+        return float(value)
+    if isinstance(value, datetime.datetime):
+        # 接口约定：时间字段统一为秒级 int
+        return int(value.timestamp())
+    if isinstance(value, datetime.date):
+        return value.isoformat()
+    if isinstance(value, datetime.timedelta):
+        return int(value.total_seconds())
+    if depth >= _MAX_SUMMARY_DEPTH:
+        return _type_label(value)
+    if isinstance(value, Mapping):
+        return {
+            str(key): to_json_safe(item, depth + 1)
+            for key, item in list(value.items())[:_MAX_SUMMARY_ITEMS]
+        }
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [
+            to_json_safe(item, depth + 1) for item in list(value)[:_MAX_SUMMARY_ITEMS]
+        ]
+    try:
+        items = _object_items(value)
+    except Exception:
+        return _type_label(value)
+    if not items:
+        return _type_label(value)
+    return {
+        name: to_json_safe(item, depth + 1)
+        for name, item in items[:_MAX_SUMMARY_FIELDS]
+    }
+
+
+def _timestamp_seconds(value: datetime.datetime | int | float | None) -> int:
+    """统一成秒级 int 时间戳"""
+    if value is None:
+        return 0
+    if isinstance(value, datetime.datetime):
+        return int(value.timestamp())
+    return int(value)
+
+
+class WorkerSummaryModel(CustomBaseModel):
+    """WorkerModel 的可序列化摘要（对外接口只暴露这个，不透传 WorkerModel 本身）"""
+
+    seqId: int = Field(default=0, description="任务序号（自增）从0开始")
+    fetchStatus: int = Field(
+        default=WorkerStatus.pending.value, description="任务状态码"
+    )
+    fetchStatusStr: str = Field(default="", description="任务状态名")
+    retry_count: int = Field(default=0, description="重试次数")
+    created_at: int = Field(default=0, description="创建时间（unix 秒）")
+    updated_at: int = Field(default=0, description="更新时间（unix 秒）")
+    params: JsonValue = Field(
+        default=None,
+        description="任务参数的安全投影（仅基础类型；ORM 实体等降级为类型名）",
+    )
+
+    @classmethod
+    def from_worker_model(
+        cls, worker_model: WorkerModel | None
+    ) -> "WorkerSummaryModel | None":
+        """把 WorkerModel 投影为摘要；入参为 None 时返回 None"""
+        if worker_model is None:
+            return None
+        status = worker_model.fetchStatus
+        return cls(
+            seqId=worker_model.seqId,
+            fetchStatus=int(status),
+            fetchStatusStr=getattr(status, "name", str(status)),
+            retry_count=worker_model.retry_count,
+            created_at=_timestamp_seconds(worker_model.created_at),
+            updated_at=_timestamp_seconds(worker_model.updated_at),
+            params=to_json_safe(worker_model.params),
+        )
+
+
+# endregion
 
 
 class StatsPlugin(CrawlerPlugin[ParamsType]):
@@ -188,24 +329,42 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
                 )
         await super().on_run_end(end_param)
 
+    # --- 原始 WorkerModel 访问（不参与序列化，仅供业务侧内部读取 params）---
+    # computed_field 只输出 WorkerSummaryModel 摘要，这里补上与 PrivateAttr 一一对应的
+    # 原始对象访问器，避免业务侧为了拿 params 而把对象塞回响应。
+    @property
+    def init_worker_model(self) -> WorkerModel | None:
+        """最开始的任务原始对象（不透出到接口）"""
+        return self._init_params
+
+    @property
+    def end_worker_model(self) -> WorkerModel | None:
+        """最后一个任务的原始对象（不透出到接口）"""
+        return self._end_params
+
+    @property
+    def end_success_worker_model(self) -> WorkerModel | None:
+        """最后成功处理的任务原始对象（不透出到接口）"""
+        return self._end_success_params
+
     # --- Public properties to access statistics ---
     @computed_field
     @property
-    def init_params(self) -> WorkerModel | None:
-        """最开始的参数"""
-        return self._init_params
+    def init_params(self) -> WorkerSummaryModel | None:
+        """最开始的参数（可序列化摘要）"""
+        return WorkerSummaryModel.from_worker_model(self._init_params)
 
     @computed_field
     @property
-    def end_params(self) -> WorkerModel | None:
-        """最后一个任务（WorkerModel，含参数与最终状态）"""
-        return self._end_params
+    def end_params(self) -> WorkerSummaryModel | None:
+        """最后一个任务（含参数与最终状态的摘要）"""
+        return WorkerSummaryModel.from_worker_model(self._end_params)
 
     @computed_field
     @property
-    def end_success_params(self) -> WorkerModel | None:
-        """最后成功处理的参数"""
-        return self._end_success_params
+    def end_success_params(self) -> WorkerSummaryModel | None:
+        """最后成功处理的参数（可序列化摘要）"""
+        return WorkerSummaryModel.from_worker_model(self._end_success_params)
 
     @computed_field
     @property
@@ -308,8 +467,16 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
 
     @computed_field
     @property
-    def running_params_set(self) -> set[WorkerModel]:
-        return self._running_params_set
+    def running_params_set(self) -> list[WorkerSummaryModel]:
+        """运行中任务的参数摘要列表（按 seqId 排序，保证输出稳定）"""
+        summaries: list[WorkerSummaryModel] = []
+        for worker_model in sorted(
+            self._running_params_set, key=lambda model: model.seqId
+        ):
+            summary = WorkerSummaryModel.from_worker_model(worker_model)
+            if summary is not None:
+                summaries.append(summary)
+        return summaries
 
     @computed_field
     @property
@@ -332,12 +499,18 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             return CrawlerHealthStatus.STOPPED
 
         # 有运行中的参数时，检查参数的更新时间
-        if self.running_params_set:
+        # 注意：这里必须读 PrivateAttr 里的原始 WorkerModel（updated_at 是 datetime），
+        # 不能用 running_params_set 那个 computed_field 的摘要（时间已转成秒级 int）。
+        if self._running_params_set:
             current_time = datetime.datetime.now()
             one_day_ago = current_time - datetime.timedelta(days=1)
 
             if next(
-                (wm for wm in self.running_params_set if wm.updated_at < one_day_ago),
+                (
+                    wm
+                    for wm in self._running_params_set
+                    if wm.updated_at < one_day_ago
+                ),
                 None,
             ):
                 return CrawlerHealthStatus.STUCK
