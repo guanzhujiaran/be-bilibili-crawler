@@ -355,12 +355,22 @@ def get_all_free_llms() -> list[TrackedChatOpenAI]:
     )
 
 
+def normalize_base_url(base_url: str | None) -> str:
+    """归一化接口地址：去空白 + 去尾斜杠。
+
+    管理页把「同一地址 + 同一密钥下的多个模型」合并成一张卡片，分组键就是
+    ``base_url + 脱敏 token``。``…/v1`` 与 ``…/v1/`` 若被当成两个源，同一张卡片
+    会被拆成两个，所以配置接口与统计接口**都**按这里归一化后再返回。
+    """
+    return (base_url or "").strip().rstrip("/")
+
+
 def get_llm_stats() -> list[dict[str, Any]]:
     """导出当前所有 LLM 实例的统计快照（便于日志 / 监控 / 接口直接返回）"""
     return [
         {
             "model": llm.model_name,
-            "base_url": llm.openai_api_base,
+            "base_url": normalize_base_url(llm.openai_api_base),
             **llm.stats.model_dump(),
         }
         for llm in _get_free_llms()
@@ -401,7 +411,8 @@ def get_llm_configs() -> list[dict[str, Any]]:
         state, reason = _slot_state(cfg, llms)
         configs.append(
             {
-                "base_url": cfg.base_url,
+                # 与 get_llm_stats 同一口径，管理页据此把同源多模型合并成一张卡片
+                "base_url": normalize_base_url(cfg.base_url),
                 "model_name": cfg.model_name,
                 "token": _mask_token(cfg.token),
                 "requests_per_second": cfg.requests_per_second,

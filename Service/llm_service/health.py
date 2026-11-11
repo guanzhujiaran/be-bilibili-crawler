@@ -64,8 +64,10 @@ SUSPENDED_BASE_SECONDS = 3600.0
 SUSPENDED_MAX_SECONDS = 86400.0
 #: 秒：每日额度次日恢复后的随机抖动，避免所有机器整点一起冲上去
 QUOTA_RESET_JITTER_SECONDS = 60.0
-#: 失败原因文案的长度上限（避免把整段响应体写进内存与接口响应）
-REASON_MAX_LENGTH = 300
+#: 失败原因文案的长度上限（避免把整段响应体写进内存与接口响应）。
+#: 上游把「账号未验证 / 需要充值 / 需要同意条款」写在 4xx 的 JSON message 里，
+#: 300 字符常常刚好截在关键句之前，放宽到 4000。
+REASON_MAX_LENGTH = 4000
 
 
 class LLMFailureKind(StrEnumAutoDoc):

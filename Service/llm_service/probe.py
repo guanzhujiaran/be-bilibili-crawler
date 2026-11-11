@@ -30,8 +30,10 @@ from CONFIG import LLMApiConfig, settings
 #: 脱敏标记：``_mask_token`` 生成的串一定含它（见 pool.py）
 _MASK_FLAG = "****"
 
-#: 错误文案截断长度：上游 400/401 的响应体可能很长，避免把整段塞进接口响应
-_ERROR_MAX_CHARS = 200
+#: 错误文案截断长度：上游 4xx/5xx 的响应体常是完整 JSON（含 message / faq 链接），
+#: 200 字符会把「为什么被拒」的关键那句切掉；放到 2000 既能看全一条 JSON 错误，
+#: 也不至于把整页 HTML 塞进接口响应与日志。
+_ERROR_MAX_CHARS = 2000
 
 #: 探测提问：足够简单，只用来确认「SDK 真的把请求发出去并拿到了回复」
 _PROBE_PROMPT = "1+1=?"
@@ -132,7 +134,11 @@ def resolve_api_token(
     current = settings.llm_apis[index]
     # 允许「改了模型名 / 改了地址」后仍沿用本行密钥；两个字段都对不上
     # 说明前端行序与服务端列表已经错位，此时按 index 取密钥会串到别的实例。
-    matched = current.base_url == base_url.strip() or current.model_name == model_name.strip()
+    # base_url 按去尾斜杠比较：`GET /llm/config` 返回的是归一化值，
+    # 而 settings 里可能还留着 `…/v1/`，精确比较会把同一条配置判成「不匹配」。
+    matched = current.base_url.rstrip("/") == base_url.strip().rstrip(
+        "/"
+    ) or current.model_name == model_name.strip()
     if not matched:
         return "", "索引与配置不匹配，请刷新页面或重新填写明文密钥"
     if _MASK_FLAG in current.token:

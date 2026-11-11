@@ -24,8 +24,10 @@ from Service.llm_service.probe import resolve_api_token
 #: 脱敏标记：``_mask_token`` 生成的串一定含它（见 pool.py）
 _MASK_FLAG = "****"
 
-#: 错误文案截断长度：上游 4xx 的响应体可能很长，避免把整段塞进接口响应
-_ERROR_MAX_CHARS = 200
+#: 错误文案截断长度：上游 4xx 的响应体常是完整 JSON（含 message / faq 链接），
+#: 200 字符会把关键那句切掉；放到 2000 既能看全一条 JSON 错误，
+#: 也不至于把整页 HTML 塞进接口响应与日志。
+_ERROR_MAX_CHARS = 2000
 
 
 def _scrub(text: str, token: str) -> str:
