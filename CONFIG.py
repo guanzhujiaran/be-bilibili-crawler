@@ -594,8 +594,12 @@ settings = Settings()
 class ModelName(StrEnumAutoDoc):
     """模型名称枚举，集中管理所有使用的 LLM / 嵌入模型名"""
 
+    #: llama.cpp 的 models.ini section 名（embedding 预设），走 `CONFIG.llama_url`
     TEXT_EMBEDDING_MULTILINGUAL_E5_BASE = "text-embedding-multilingual-e5-base"
-    QWEN3_5_0_8_Q4_K_M_GGUF = "Qwen3.5-0.8B-SpectralQuant-Q4_K_M"
+    #: llama.cpp 的 models.ini section 名（对话模型，unsloth/Qwen3.5-0.8B-GGUF Q4_K_M）；
+    #: 上游换了 GGUF 仓库后 section 名从 `Qwen3.5-0.8B-SpectralQuant-Q4_K_M` 改为现值，
+    #: 必须与 `docker_vol/llama/models.ini` 完全一致，否则 `/v1/models` 里找不到该模型
+    QWEN3_5_0_8_Q4_K_M_GGUF = "Qwen3.5-0.8B-Q4_K_M"
 
 
 class PlaywrightUserDir(StrEnumAutoDoc):
