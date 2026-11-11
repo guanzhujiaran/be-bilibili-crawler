@@ -20,6 +20,12 @@ from Service.llm_service import (
     set_llm_apis,
     update_llm_api,
 )
+from Service.llm_service.models import (
+    LLMApiModelsRequest,
+    LLMApiModelsResult,
+    list_llm_models,
+    resolve_models_config,
+)
 from Service.llm_service.probe import (
     LLMApiTestRequest,
     LLMProbeResult,
@@ -135,6 +141,27 @@ async def api_test_llm_config(req: LLMApiTestRequest = Body(...)):
             error=invalid,
         ).model_dump()
     return (await probe_llm_api(cfg)).model_dump()
+
+
+@router.post(
+    RouterPaths.LLM_MODELS,
+    name=RouterNames.GET_LLM_MODELS,
+    response_model=dict,
+    description=f"{_LLM_CONFIG_DESC} 拉取上游 `GET {{base_url}}/models` 的模型列表"
+    "（管理端「获取模型列表」按钮）：token 为空或脱敏时按 index 沿用原密钥；"
+    "查询不参与健康状态机、不改统计、不落盘。",
+)
+async def api_list_llm_models(req: LLMApiModelsRequest = Body(...)):
+    """一次性查询：成功返回模型 id 列表，失败返回状态码 + 错误摘要（不含 token）。"""
+    cfg, invalid = resolve_models_config(req)
+    if invalid is not None:
+        # 未提供密钥 / 地址非法等：直接判定失败，不发请求（避免白打一次上游）
+        return LLMApiModelsResult(
+            ok=False,
+            base_url=cfg.base_url,
+            error=invalid,
+        ).model_dump()
+    return (await list_llm_models(cfg)).model_dump()
 
 
 @router.delete(

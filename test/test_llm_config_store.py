@@ -282,6 +282,43 @@ async def test_masked_token_save_keeps_original_key(store_env):
 
 
 @pytest.mark.asyncio
+async def test_empty_token_falls_back_to_same_source_key(store_env):
+    """同一地址「一个密钥展开多个模型」：行序变化后空 token 仍能沿用同源密钥。
+
+    管理页一张卡片可一次勾选多个模型，保存时展开成多条（后续行的 index 整体后移），
+    此时按 index 取密钥会把别的实例的密钥串过来；实现按 base_url 兜底。
+    """
+    original_a = "sk-real-key-a-0001"
+    original_b = "sk-real-key-b-0002"
+    await pool.set_llm_apis(
+        [
+            _cfg("model-a", token=original_a),
+            LLMApiConfig(
+                base_url="https://other.example.com/v1",
+                model_name="model-x",
+                token=original_b,
+            ),
+        ]
+    )
+    # model-a 展开成两条（新增 model-a2，token 留空），后面的 model-x 顺移到 index 2
+    await pool.set_llm_apis(
+        [
+            _cfg("model-a", token=""),
+            _cfg("model-a2", token=""),
+            LLMApiConfig(
+                base_url="https://other.example.com/v1",
+                model_name="model-x",
+                token="",
+            ),
+        ]
+    )
+
+    assert [c.token for c in settings.llm_apis] == [original_a, original_a, original_b]
+    raw = json.loads((store_env / "llm_apis.json").read_text(encoding="utf-8"))
+    assert [item["token"] for item in raw["items"]] == [original_a, original_a, original_b]
+
+
+@pytest.mark.asyncio
 async def test_masked_token_for_new_row_is_rejected(store_env):
     await pool.set_llm_apis([_cfg("model-a")])
     with pytest.raises(ValueError, match="脱敏值"):

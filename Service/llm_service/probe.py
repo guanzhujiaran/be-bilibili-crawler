@@ -105,6 +105,41 @@ class LLMProbeResult(BaseModel):
     error: str | None = Field(default=None, description="失败原因（截断，绝不含 token）")
 
 
+def resolve_api_token(
+    *, index: int | None, base_url: str, model_name: str, token: str
+) -> tuple[str, str | None]:
+    """把请求里的 ``token`` 归一成可用于发请求的明文，返回 ``(token, 失败原因)``。
+
+    失败原因非 None 表示**不应发请求**（索引越界 / 索引与配置不匹配 / 原密钥是脱敏值），
+    调用方据此直接返回失败。``token`` 传明文时原样返回，不做任何校验。
+
+    管理页永远拿不到明文，所以「留空 / 回传脱敏值」都必须按 ``index`` 回填
+    ``settings.llm_apis`` 里的原密钥（探测与模型列表共用这一口径）。
+    ``settings.llm_apis`` 是完整人工配置列表：状态机 REMOVED 只标记实例、不删条目，
+    因此 index 与 ``GET /llm/config`` 的列表始终对齐。
+    """
+    token = token.strip()
+    if token and _MASK_FLAG not in token:
+        return token, None
+    if index is None:
+        return "", None
+    if not 0 <= index < len(settings.llm_apis):
+        return (
+            "",
+            f"索引越界：当前共 {len(settings.llm_apis)} 条配置，"
+            f"index={index}（新实例请填写明文密钥）",
+        )
+    current = settings.llm_apis[index]
+    # 允许「改了模型名 / 改了地址」后仍沿用本行密钥；两个字段都对不上
+    # 说明前端行序与服务端列表已经错位，此时按 index 取密钥会串到别的实例。
+    matched = current.base_url == base_url.strip() or current.model_name == model_name.strip()
+    if not matched:
+        return "", "索引与配置不匹配，请刷新页面或重新填写明文密钥"
+    if _MASK_FLAG in current.token:
+        return "", "该实例保存的密钥是脱敏值，请重新填写明文密钥"
+    return current.token, None
+
+
 def resolve_probe_config(req: LLMApiTestRequest) -> tuple[LLMApiConfig, str | None]:
     """把请求归一成「可直接发请求的配置」，返回 ``(配置, 失败原因)``。
 
@@ -113,32 +148,12 @@ def resolve_probe_config(req: LLMApiTestRequest) -> tuple[LLMApiConfig, str | No
     """
     base_url = req.base_url.strip()
     model_name = req.model_name.strip()
-    token = req.token.strip()
-    resolve_error: str | None = None
-    if not token or _MASK_FLAG in token:
-        if req.index is None:
-            token = ""
-        elif not 0 <= req.index < len(settings.llm_apis):
-            token = ""
-            resolve_error = (
-                f"索引越界：当前共 {len(settings.llm_apis)} 条配置，"
-                f"index={req.index}（新实例请填写明文密钥）"
-            )
-        else:
-            current = settings.llm_apis[req.index]
-            # 允许「改了模型名 / 改了地址」后仍沿用本行密钥；两个字段都对不上
-            # 说明前端行序与服务端列表已经错位，此时按 index 取密钥会串到别的实例。
-            matched = (
-                current.base_url == base_url or current.model_name == model_name
-            )
-            if not matched:
-                token = ""
-                resolve_error = "索引与配置不匹配，请刷新页面或重新填写明文密钥"
-            elif _MASK_FLAG in current.token:
-                token = ""
-                resolve_error = "该实例保存的密钥是脱敏值，请重新填写明文密钥"
-            else:
-                token = current.token
+    token, resolve_error = resolve_api_token(
+        index=req.index,
+        base_url=base_url,
+        model_name=model_name,
+        token=req.token,
+    )
     # requests_per_second 只用于实例池限流，探测是单次请求，取默认值即可
     cfg = LLMApiConfig(base_url=base_url, model_name=model_name, token=token)
     if resolve_error is not None:

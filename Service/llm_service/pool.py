@@ -413,13 +413,45 @@ def get_llm_configs() -> list[dict[str, Any]]:
     return configs
 
 
+def _usable_token(cfg: LLMApiConfig) -> str:
+    """取一条配置里「可以沿用的明文密钥」；脱敏值 / 空值一律视为没有。"""
+    token = cfg.token
+    if not token or config_store.is_masked_token(token):
+        return ""
+    return token
+
+
+def _original_token(current: list[LLMApiConfig], index: int, base_url: str) -> str:
+    """取该条配置可沿用的明文密钥：**同索引优先，其次按 base_url 找同源实例**。
+
+    同索引必须 base_url 也对得上才用：管理页一张卡片可能一次勾选多个模型，
+    保存时会展开成多条（行序整体后移），此时 index 位置已经是别的实例，
+    无条件按 index 取会把 A 服务商的密钥发给 B 服务商。按 base_url 兜底后，
+    「同一地址下增删模型」都能正确沿用密钥。
+
+    找不到返回空串（新实例自带明文，或免鉴权上游）。
+    ``base_url`` 只比较去尾斜杠后的值，避免 `…/v1` 与 `…/v1/` 被判成两个源。
+    """
+    normalized = base_url.rstrip("/")
+    if index < len(current) and current[index].base_url.rstrip("/") == normalized:
+        token = _usable_token(current[index])
+        if token:
+            return token
+    for cfg in current:
+        if cfg.base_url.rstrip("/") == normalized:
+            token = _usable_token(cfg)
+            if token:
+                return token
+    return ""
+
+
 def _resolve_tokens(
     apis: list[LLMApiConfig], current: list[LLMApiConfig]
 ) -> list[LLMApiConfig]:
-    """按 index 把「空 token / 脱敏 token」回填成**当前生效的明文密钥**。
+    """把「空 token / 脱敏 token」回填成**当前生效的明文密钥**。
 
     管理页永远拿不到明文，保存时只能把读到的脱敏串原样回传（或传空串）；
-    这里按列表索引取回真密钥，与 ``probe.resolve_probe_config`` 同一口径。
+    这里按 :func:`_original_token` 取回真密钥，与 ``probe.resolve_api_token`` 同一口径。
     因为 REMOVED 不再删配置，``current`` 始终是完整人工列表，索引不会漂移。
 
     硬约束：任何含 ``****`` 的串都不得出现在结果里（新行给脱敏值直接报错）。
@@ -428,18 +460,25 @@ def _resolve_tokens(
     resolved: list[LLMApiConfig] = []
     for index, cfg in enumerate(apis):
         token = cfg.token
-        original = current[index].token if index < len(current) else ""
-        usable_original = bool(original) and not config_store.is_masked_token(original)
         if config_store.is_masked_token(token):
-            if not usable_original:
+            # 脱敏值只承认「同索引 + 同地址」的回填：跨实例猜密钥是明确禁止的，
+            # 接口禁止把 **** 写进配置，这里必须报错而不是「找个同源的顶上」。
+            slot = current[index] if index < len(current) else None
+            same_source = (
+                slot is not None
+                and slot.base_url.rstrip("/") == cfg.base_url.rstrip("/")
+            )
+            original = _usable_token(slot) if same_source and slot is not None else ""
+            if not original:
                 raise ValueError(
                     f"llm_apis 配置非法：第 {index} 项 token 是脱敏值且无可用原密钥，"
                     "请填写明文密钥"
                 )
             token = original
-        elif not token and usable_original:
-            # 管理页传空串 = 沿用原密钥；新行无原密钥时保留空串（免鉴权上游）
-            token = original
+        elif not token:
+            # 管理页传空串 = 沿用原密钥（同索引优先，其次按地址找同源实例）；
+            # 新行无原密钥时保留空串（免鉴权上游）
+            token = _original_token(current, index, cfg.base_url)
         if config_store.is_masked_token(token):
             raise ValueError(
                 f"llm_apis 配置非法：第 {index} 项 token 含脱敏标记，拒绝写入"

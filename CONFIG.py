@@ -457,6 +457,9 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     # 偏大是因为部分推理模型首个 token 很慢（实测 deepseek-v4.1-flash 需 1~3 分钟）：
     # 45s 能覆盖多数 chat 模型，超时会如实返回「请求超时」而不误判为配置错误。
     llm_test_timeout: float = 45.0
+    # 管理端「获取模型列表」拉上游 `GET {base_url}/models` 的超时（秒）。
+    # 该接口只返回元数据、不跑推理，通常 1~3 秒内返回，20s 足够并避免页面长时间转圈。
+    llm_models_timeout: float = 20.0
 
     sqlalchemy_logging: bool = False
     # 冷数据归档（导出 csv.gz + 可选删库）的统一落盘根目录。

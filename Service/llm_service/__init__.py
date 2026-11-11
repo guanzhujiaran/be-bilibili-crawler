@@ -6,6 +6,8 @@
 - tracked_llm.py  带调用统计的 ChatOpenAI 子类（TrackedChatOpenAI / LLMUsageStats）+ 槽位指纹
 - config_store.py 配置持久化（runtime/llm_apis.json，人工保存的列表重启后仍生效）
 - pool.py         实例池：构建、缓存、轮询（get_all_free_llms / get_llm_stats）+ 每实例 rate limiter
+- probe.py        管理端连通性探测：裸 ChatOpenAI 真实问一句 1+1=?（不写状态、不走池）
+- models.py       管理端「获取模型列表」：打上游 GET {base_url}/models（不写状态、不走池）
 
 请求节流完全交给 langchain 的 InMemoryRateLimiter（每个实例一个，见 pool.py），
 不再有任何进程内锁或 Redis 槽位租约。
@@ -24,6 +26,12 @@ from .health import (
     describe_failure,
 )
 from .tracked_llm import LLMUsageStats, TrackedChatOpenAI
+from .models import (
+    LLMApiModelsRequest,
+    LLMApiModelsResult,
+    list_llm_models,
+    resolve_models_config,
+)
 from .pool import (
     AllLLMsCoolingError,
     AllLLMsDisabledError,
@@ -51,6 +59,10 @@ __all__ = [
     "LLMState",
     "LLMUsageStats",
     "TrackedChatOpenAI",
+    "LLMApiModelsRequest",
+    "LLMApiModelsResult",
+    "list_llm_models",
+    "resolve_models_config",
     "AllLLMsCoolingError",
     "AllLLMsDisabledError",
     "RemovedLLMRecord",
