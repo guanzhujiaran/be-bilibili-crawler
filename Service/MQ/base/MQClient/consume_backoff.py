@@ -43,6 +43,7 @@ from faststream.rabbit.fastapi import RabbitMessage
 from CONFIG import settings
 from Service.llm_service.pool import AllLLMsCoolingError, AllLLMsDisabledError
 from log.base_log import MQ_logger
+from Utils.通用.Tool import format_duration
 from Utils.推送.PushMe import a_push_error
 
 #: 「重试耗尽」错误回调：接收回退上下文（含最后一次异常、重试次数、耗时）
@@ -109,7 +110,7 @@ async def default_error_callback(
     error_msg = format_consume_error(module_name, exc, params)
     # opt(exception=...)：显式带上最后一次异常，保证日志里能看到完整堆栈
     MQ_logger.opt(exception=exc).error(
-        f"【{module_name}】本轮重试 {ctx.attempt} 次后仍失败（耗时 {ctx.elapsed:.1f}s），"
+        f"【{module_name}】本轮重试 {ctx.attempt} 次后仍失败（耗时 {format_duration(ctx.elapsed)}），"
         f"重新入队等待下一轮：\n{error_msg}"
     )
     # subject 固定 → 标题稳定（[f][服务@地址] MQ消费失败），
@@ -151,8 +152,8 @@ def build_consume_backoff_config(
 
     async def _on_backoff(ctx: BackoffContext) -> None:
         MQ_logger.warning(
-            f"【{module_name}】处理失败，等待 {ctx.wait:.1f}s 后重试"
-            f"（第 {ctx.attempt} 次失败，已耗时 {ctx.elapsed:.1f}s）："
+            f"【{module_name}】处理失败，等待 {format_duration(ctx.wait)} 后重试"
+            f"（第 {ctx.attempt} 次失败，已耗时 {format_duration(ctx.elapsed)}）："
             f"{type(ctx.exception).__name__}: {ctx.exception}"
         )
 

@@ -24,6 +24,7 @@ from Service.GetOthersLotDyn.Sql.models import TLotuserinfo, TLotuserspaceresp
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_space_dynamic_req_with_proxy
 from Utils.通用.Common import asyncio_gather
+from Utils.通用.Tool import format_duration
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
@@ -247,7 +248,7 @@ class BiliSpaceUserItem:
                         )
                         break
                 get_others_lot_log.info(
-                    f"获取用户uid={self.uid}空间动态成功，耗时{time.time() - start_ts:.2f}秒，获取到{len(dyreq_dict.get('data', {}).get('items', []))}条动态"
+                    f"获取用户uid={self.uid}空间动态成功，耗时{format_duration(time.time() - start_ts)}，获取到{len(dyreq_dict.get('data', {}).get('items', []))}条动态"
                 )
                 resp_dyn_ids = await self.__add_space_card_to_db(dyreq_dict)
                 if not first_dynamic_id and resp_dyn_ids:

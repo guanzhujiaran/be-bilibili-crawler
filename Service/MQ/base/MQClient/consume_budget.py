@@ -31,6 +31,8 @@ import random
 import time
 from dataclasses import dataclass
 
+from Utils.通用.Tool import format_duration
+
 #: 秒：主动交还消息前的随机抖动上限（避免同一批消息在同一刻集体重投形成热点）
 CONSUME_REQUEUE_JITTER = 5.0
 
@@ -97,7 +99,7 @@ class ConsumeBudget:
         """一行可读的预算状态，用于日志"""
         return (
             f"队列={self.queue_name} 消息={self.label} "
-            f"已耗时={self.elapsed():.0f}s 剩余={self.remaining():.0f}s"
+            f"已耗时={format_duration(self.elapsed())} 剩余={format_duration(self.remaining())}"
         )
 
     async def sleep_within(self, wait: float) -> None:

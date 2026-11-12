@@ -9,6 +9,7 @@ from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import ParamsType, WorkerStatus
 from Utils.通用.Common import GLOBAL_SCHEDULER
+from Utils.通用.Tool import format_duration
 from Utils.推送 import push_switch
 from Utils.推送.PushMe import (
     PushSubject,
@@ -207,7 +208,7 @@ class BaseScheduler:
                 "状态：执行完成\n"
                 f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
                 f"结束时间：{datetime.now():%Y-%m-%d %H:%M:%S}\n"
-                f"耗时：{time.time() - start_ts:.0f}秒",
+                f"耗时：{format_duration(time.time() - start_ts)}",
             )
         except asyncio.CancelledError:
             self.logger.warning(
@@ -218,7 +219,7 @@ class BaseScheduler:
                 "end",
                 "状态：执行被终止（检测到上一次任务仍在运行，已杀旧开新）\n"
                 f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
-                f"耗时：{time.time() - start_ts:.0f}秒",
+                f"耗时：{format_duration(time.time() - start_ts)}",
             )
             raise
         except Exception as e:
@@ -230,7 +231,7 @@ class BaseScheduler:
                 "end",
                 "状态：执行失败\n"
                 f"开始时间：{datetime.fromtimestamp(start_ts):%Y-%m-%d %H:%M:%S}\n"
-                f"耗时：{time.time() - start_ts:.0f}秒\n"
+                f"耗时：{format_duration(time.time() - start_ts)}\n"
                 f"错误详情：{e}",
             )
             # 结束开关已推送「执行失败」时不再重复发一条「运行异常」；

@@ -10,7 +10,7 @@ import datetime
 import json
 import time
 from typing import Any, AsyncGenerator
-from CONFIG import CONFIG
+from CONFIG import CONFIG, settings
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import DynDetailScrapyConfig
@@ -229,7 +229,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                     await bili_reserve_sqlhelper.add_reserve_info_by_resp_dict(
                                         req1_dict, 1
                                     )  # 添加预约json到数据库
-                                lot_data = lot_notice_res.get("data")
+                                # get_lot_notice 契约：拿不到抽奖信息时 data 为 {}（不会返回 None），
+                                # 这里再兜一层 or {}，避免上游改动后这里直接 AttributeError
+                                lot_data = lot_notice_res.get("data") or {}
                                 lot_id = lot_data.get("lottery_id")
                         else:
                             self.log.error(
@@ -554,11 +556,22 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
 
     async def main(self):
         try:
-            latest_rid = int(await self.Sqlhelper.get_latest_rid())
+            raw_latest_rid = await self.Sqlhelper.get_latest_rid()
+            # 空库（或表还没初始化）时 get_latest_rid 返回 None：这里没有增量断点可用，
+            # 绝不能回退到默认起始 rid 做全量补爬（几十万 rid 的重活），直接跳过本次任务。
+            if raw_latest_rid is None:
+                self.log.warning(
+                    "dyndetail.bilidyndetail 无数据（空库或尚未初始化），跳过本次动态详情爬取"
+                )
+                return
+            latest_rid = int(raw_latest_rid)
             task_list = []
-            if not latest_rid or int(latest_rid) < 339283794:
-                self.log.debug("未获取到最后一个rid或太小，启用默认值！")
-                latest_rid = 339283794
+            if latest_rid < settings.DYN_DETAIL_START_RID:
+                self.log.info(
+                    f"最后 rid 过小（{latest_rid} < {settings.DYN_DETAIL_START_RID}），"
+                    "启用默认起始 rid 并补缺动态！"
+                )
+                latest_rid = settings.DYN_DETAIL_START_RID
                 self.log.info("开始重新获取失败的动态！")
                 task1 = asyncio.create_task(
                     self.get_discontious_dynamics_by_single_detail()
@@ -580,7 +593,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             # 由 DYN_DETAIL_DATABASE_CLEANER 定时任务统一产出 csv.gz
             # （见 scripts/database/clean_backup_outdated_dynamic/cleaner.py）。
         except Exception as e:
-            self.log.error(f"爬取动态任务出错：{e}")
+            # 必须带堆栈：之前只打 e 的字符串，排查时只能靠猜行号
+            self.log.exception(f"爬取动态任务出错：{e}")
             await a_push_error(
                 subject="运行异常",
                 content=f"爬取动态任务出错：{e}",

@@ -22,6 +22,7 @@ from Service.GetOthersLotDyn.Sql.sql_helper import (
 )
 from Service.opus新版官方抽奖.Model.BaseLotModel import ProgressCounter
 from Utils.通用.Common import sem_gen
+from Utils.通用.Tool import format_duration
 from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
@@ -459,7 +460,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
                 if not pending:
                     get_others_lot_log.info(
-                        f"MQ 消费者处理完成，全部 {len(common_dyn_ids)} 条已入库，耗时 {elapsed:.0f}s"
+                        f"MQ 消费者处理完成，全部 {len(common_dyn_ids)} 条已入库，耗时 {format_duration(elapsed)}"
                     )
                     break
 

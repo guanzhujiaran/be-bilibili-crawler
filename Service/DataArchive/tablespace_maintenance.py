@@ -37,6 +37,7 @@ from Models.database_archive.tablespace_maintenance_models import (
     TablespaceMaintenanceResult,
 )
 from Service.DataArchive.targets import BaseColdArchiveTarget, build_default_targets
+from Utils.通用.Tool import format_duration
 
 _BYTES_PER_GB = 1024**3
 # DDL 等 MDL 的上限（秒）：宁可失败等下一次，也不要长时间把业务查询挡在表后面
@@ -217,7 +218,7 @@ class TablespaceMaintenance:
             await session.execute(text(sql))
             await session.commit()
         elapsed = time.perf_counter() - started_at
-        self.log.info(f"[{target.table_name}] {sql} 耗时 {elapsed:.1f}s")
+        self.log.info(f"[{target.table_name}] {sql} 耗时 {format_duration(elapsed)}")
 
         stat = await self._query_stat(target)
         if stat is None:

@@ -13,7 +13,7 @@ from Models.base.custom_pydantic import CustomBaseModel
 from Service.BaseCrawler.base.core import ParamsType, BaseCrawler
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
-from Utils.通用.Tool import ts_2_DateTime
+from Utils.通用.Tool import format_duration, ts_2_DateTime
 
 
 class CrawlerHealthStatus(StrEnumAutoDoc):
@@ -299,7 +299,7 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             f"  爬虫名称: {self.crawler.crawler_name}\n"
             f"  开始时间: {self.start_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  结束时间: {self.last_update_time_str:%Y-%m-%d %H:%M:%S}\n"
-            f"  总运行时长: {self.total_run_duration:.2f} 秒\n"
+            f"  总运行时长: {format_duration(self.total_run_duration)}\n"
             f"  尝试次数(含重试): {self._processed_items_count}\n"
             f"  成功次数(含空数据): {self._succ_count}\n"
             f"  有效数据数: {self.valid_count}\n"

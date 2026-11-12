@@ -33,6 +33,18 @@ from Utils.代理.redisProxyRequest.RedisRequestProxy import request_with_proxy_
 from Utils.加密.wbi加密 import gen_dm_args, get_wbi_params
 from Utils.GrpcUtils.response.check_resp import check_reserve_relation_info
 
+# ===== get_lot_notice 的响应码约定 =====
+# -9999：代理服务器自己的响应（不是 B 站响应），保持原样直接返回，不当作业务错误
+LOT_NOTICE_CODE_PROXY_RESPONSE = -9999
+# -22：B 站返回「服务系统超时」。实测抽奖已结束 / 上游瞬时抖动都会返回它，
+# 属于可重试的瞬时错误：不能刷 ERROR、不能推「运行异常」，也不能 100s 一轮无限死等。
+LOT_NOTICE_CODE_TIMEOUT = -22
+# -22 的有限次退避（秒）：依次等待 5s / 15s / 45s 后重试，共 3 次；
+# 仍失败则返回 data={}，由调用方按「没拿到抽奖信息」跳过。
+LOT_NOTICE_TIMEOUT_BACKOFF: tuple[float, ...] = (5.0, 15.0, 45.0)
+# 退避等待的随机抖动比例（0~20%），避免多个任务在同一刻齐步重试
+LOT_NOTICE_TIMEOUT_JITTER_RATIO = 0.2
+
 
 def get_latest_version_builds() -> list[LatestVersionBuild]:
     url = "https://app.bilibili.com/x/v2/version"
@@ -136,6 +148,7 @@ async def get_lot_notice(
     :param request_conf:
     :return:
     """
+    timeout_retry_count = 0  # 本次调用已因 -22 重试的次数
     while 1:
         url = URL_LOTTERY_NOTICE
         params = {
@@ -169,8 +182,30 @@ async def get_lot_notice(
             cookie_data=cookie_data,
         )
         if resp.get("code") != 0:
-            if resp.get("code") == -9999:
+            if resp.get("code") == LOT_NOTICE_CODE_PROXY_RESPONSE:
                 return resp  # 只允许code为-9999的或者是0的响应返回！其余的都是有可能代理服务器的响应而非b站自己的响应
+            if resp.get("code") == LOT_NOTICE_CODE_TIMEOUT:
+                # -22「服务系统超时」：按可重试的瞬时错误处理（不刷 ERROR、不推「运行异常」），
+                # 有限次退避重试后返回 data={}，调用方按「没拿到抽奖信息」跳过即可。
+                if timeout_retry_count < len(LOT_NOTICE_TIMEOUT_BACKOFF):
+                    wait = LOT_NOTICE_TIMEOUT_BACKOFF[timeout_retry_count] * (
+                        1 + random.uniform(0, LOT_NOTICE_TIMEOUT_JITTER_RATIO)
+                    )
+                    timeout_retry_count += 1
+                    bapi_log.warning(
+                        f"get_lot_notice 上游返回-22（服务系统超时），"
+                        f"第{timeout_retry_count}/{len(LOT_NOTICE_TIMEOUT_BACKOFF)}次重试，"
+                        f"等待{wait:.1f}s：\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}"
+                    )
+                    await asyncio.sleep(wait)
+                    continue
+                bapi_log.warning(
+                    f"get_lot_notice 上游连续{timeout_retry_count + 1}次返回-22（服务系统超时），"
+                    f"放弃本轮并返回空 data（按未取到抽奖信息跳过）："
+                    f"\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}"
+                )
+                # 契约：-22 一定返回 dict 且 data 一定是 dict，调用方无需判 None
+                return {**resp, "data": resp.get("data") or {}}
             bapi_log.error(
                 f"get_lot_notice响应代码错误:\t{resp}\t{params}\torigin_dynamic_id:{origin_dynamic_id}"
             )

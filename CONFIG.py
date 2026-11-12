@@ -451,6 +451,12 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     CRAWLER_PUSH_START: str = ""
     CRAWLER_PUSH_END: str = ""
 
+    # ===== 动态详情增量爬取（见 Service/GrpcModule/GrpcSrc/getDynDetail.py）=====
+    # 库里的断点 rid 小于该值时的「兜底起始 rid」，从这条往后继续补。
+    # 注意：它只用于「断点过小」的兜底，**不用于空库**——空库说明 dyndetail.bilidyndetail
+    # 还没初始化，从几十万 rid 前开始补是重活且没意义，此时直接跳过本轮（打 WARNING）。
+    DYN_DETAIL_START_RID: int = 339283794
+
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）
     llm_apis: list[LLMApiConfig] = []
     # 管理端「测试」按钮的探测超时（秒）：裸 ChatOpenAI 真实问一句 1+1=?，不重试。
