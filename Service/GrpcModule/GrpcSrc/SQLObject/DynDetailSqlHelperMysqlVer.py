@@ -5,6 +5,7 @@ import datetime
 import json
 import time
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Literal, List, Sequence, Union, Optional
 import numpy as np
 from sqlalchemy import (
@@ -46,6 +47,20 @@ from Service.GrpcModule.GrpcSrc.SQLObject.models import (
 )
 from dao.base.sqlHelperBase import SqlHelperBase
 from dao.biliLotteryStatisticSqlHelper import lottery_data_statistic_sql_helper
+
+
+@dataclass(frozen=True)
+class DynDetailBreakpoint:
+    """动态详情表的增量断点。
+
+    Attributes:
+        rid: 下一轮应当从这里开始爬（最新连续 rid 段的最大值 + 1）。
+        latest_dynamic_ts: 库里最近一条真实动态的发布时间（秒级），
+            用于判断断点是否已经落后太多（落后太多时补中间历史不现实）。
+    """
+
+    rid: int
+    latest_dynamic_ts: int | None
 
 
 class SQLHelper(SqlHelperBase):
@@ -287,8 +302,14 @@ class SQLHelper(SqlHelperBase):
             )
             return detail_result.scalars().first()
 
-    @log_sql_retry_wrapper()
     async def get_latest_rid(self) -> int | None:
+        """库里的增量断点 rid；空库返回 None。"""
+        breakpoint = await self.get_latest_rid_breakpoint()
+        return breakpoint.rid if breakpoint else None
+
+    @log_sql_retry_wrapper()
+    async def get_latest_rid_breakpoint(self) -> DynDetailBreakpoint | None:
+        """取增量断点 + 最近一条真实动态的发布时间；空库返回 None。"""
         batch_size = 1000
         async with self.async_session() as session:
             # 查询指定数量的rid，按降序排列
@@ -317,7 +338,70 @@ class SQLHelper(SqlHelperBase):
             else:
                 max_consecutive_id = rids[-1]
 
-            return max_consecutive_id + 1  # +1 是最大的一个，不加一是第二大的
+            # 动态 id 随发布时间单调递增，用 dynamic_id_int 倒序取到的就是「最近一条真实
+            # 动态」；dynamic_id = -1 的记录表示动态已被删除，不能作为时间参考。
+            latest_time_res = await session.execute(
+                select(Bilidyndetail.dynamic_created_time)
+                .where(
+                    and_(
+                        Bilidyndetail.dynamic_id_int > 0,
+                        Bilidyndetail.dynamic_created_time.isnot(None),
+                    )
+                )
+                .order_by(Bilidyndetail.dynamic_id_int.desc())
+                .limit(1)
+            )
+            raw_latest_time = latest_time_res.scalar()
+            latest_dynamic_ts = None
+            if raw_latest_time:
+                try:
+                    latest_dynamic_ts = int(
+                        time.mktime(
+                            time.strptime(raw_latest_time, "%Y-%m-%d %H:%M:%S")
+                        )
+                    )
+                except (TypeError, ValueError):
+                    # 时间格式异常（历史导入 / 人工改库）时退化为「无时间参考」，
+                    # 交给调用方走锚点重定位，不能让整个断点查询失败
+                    self.log.warning(
+                        f"bilidyndetail.dynamic_created_time 格式异常：{raw_latest_time!r}"
+                    )
+
+            # +1 是最大的一个，不加一是第二大的
+            return DynDetailBreakpoint(
+                rid=int(max_consecutive_id) + 1,
+                latest_dynamic_ts=latest_dynamic_ts,
+            )
+
+    @log_sql_retry_wrapper()
+    async def get_earliest_lot_dynamic_ids_since(
+        self, *, since_ts: int, limit: int = 3
+    ) -> list[int]:
+        """取 since_ts 之后**最早**发布的抽奖动态 id（按发布时间升序）。
+
+        官方抽奖（business_type=1）与充电抽奖（business_type=12）的 business_id 就是
+        动态 id；预约抽奖（10）存的是预约 sid，不能用来反查动态，必须排除。
+
+        返回窗口内最早而不是最新：调用方要用它把整个保留窗口（冷归档 keep_days）
+        的动态从窗口起点重新灌一遍，用最新动态当锚点只会回补最近几天。
+        """
+        async with self.async_session() as session:
+            stmt = (
+                select(Lotdata.business_id)
+                .where(
+                    and_(
+                        Lotdata.business_type.in_((1, 12)),
+                        Lotdata.business_id.isnot(None),
+                        # 动态 id 是 18~19 位，预约 sid 只有 6~7 位，用长度下界排除
+                        Lotdata.business_id > 10**10,
+                        Lotdata.ts >= since_ts,
+                    )
+                )
+                .order_by(Lotdata.ts.asc())
+                .limit(limit)
+            )
+            result = await session.execute(stmt)
+            return [int(row[0]) for row in result if row[0] is not None]
 
     @log_sql_retry_wrapper()
     async def query_dynData_by_key_word(

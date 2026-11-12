@@ -453,8 +453,15 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
 
     # ===== 动态详情增量爬取（见 Service/GrpcModule/GrpcSrc/getDynDetail.py）=====
     # 库里的断点 rid 小于该值时的「兜底起始 rid」，从这条往后继续补。
-    # 注意：它只用于「断点过小」的兜底，**不用于空库**——空库说明 dyndetail.bilidyndetail
-    # 还没初始化，从几十万 rid 前开始补是重活且没意义，此时直接跳过本轮（打 WARNING）。
+    # 注意：它只用于「断点过小」的兜底，不用于「空库 / 断点过旧」——那两种情况下
+    # 从几十万 rid 前开始补是重活且没意义，会改用抽奖动态反查 rid 重新定位。
+    # 重定位的回补窗口（天），默认 0 = 跟随 COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL（180 天）：
+    # - 库里本来只保留这么多天的热数据（更早的整月已被冷归档删库），
+    #   所以「清空」等价于「最近 keep_days 天全丢」，回补整个窗口即可；
+    # - 回补起点取「窗口内**最早**一条抽奖动态」反查的 rid，而不是最新动态的 rid，
+    #   否则只会补最近几天，窗口内其余月份仍然缺失；
+    # - 想只补近期（如 30 天）时单独调小，不会顺带改变归档删库窗口。
+    DYN_DETAIL_BACKFILL_DAYS: int = 0
     DYN_DETAIL_START_RID: int = 339283794
 
     # 外部 LLM API 列表（按顺序优先使用，全部失败后回退到本地 lmstuidio）

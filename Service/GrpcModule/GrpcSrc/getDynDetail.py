@@ -25,6 +25,7 @@ from Service.opus新版官方抽奖.Model.BaseLotModel import BaseSuccCounter, B
 from Service.opus新版官方抽奖.预约抽奖.db.sqlHelper import bili_reserve_sqlhelper
 from Utils.通用.Common import sem_gen, asyncio_gather
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
+from Utils.通用.Tool import format_duration
 from Utils.推送.PushMe import a_push_error
 
 
@@ -554,17 +555,107 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             task_list.append(task)
         await asyncio_gather(*task_list, log=self.log)
 
+    @property
+    def _backfill_days(self) -> int:
+        """空库 / 断点过旧时的回补窗口（天）：默认跟随冷归档保留窗口。
+
+        库里本来只保留这么多天的热数据，被清空后回补这一窗口即可；
+        `DYN_DETAIL_BACKFILL_DAYS` 可单独调小，不影响 `COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL`
+        （后者还负责归档删库，不能为了回补范围去改它）。
+        """
+        return (
+            settings.DYN_DETAIL_BACKFILL_DAYS
+            or settings.COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL
+        )
+
+    async def _resolve_anchor_rid(self) -> int | None:
+        """用「回补窗口起点」那条抽奖动态反查 rid，作为断点失效时的起始位置。
+
+        回补窗口 = 冷归档保留窗口（`COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL`）：库里本来只保留
+        这么多天的热数据，被清空后就等于这一窗口全丢，必须从窗口起点重新灌一遍。
+        因此锚点取窗口内**最早**一条抽奖动态，而不是最新一条（最新只能补最近几天）。
+
+        `lotdata` 与动态详情在同一个库，且官方 / 充电抽奖的 business_id 就是动态 id，
+        通过 gRPC 取该动态详情即可拿到 `extend.businessId`（即 rid）。
+        """
+        since_ts = int(time.time()) - self._backfill_days * 86400
+        # 只试最近几条：一次 gRPC 可能要重试多个代理，条数太多会明显拖慢任务启动
+        dynamic_ids = await self.Sqlhelper.get_earliest_lot_dynamic_ids_since(
+            since_ts=since_ts, limit=3
+        )
+        for dynamic_id in dynamic_ids:
+            try:
+                resp = await self.BiliGrpc.grpc_get_dynamic_detail_by_dynamic_id(
+                    dynamic_id=dynamic_id
+                )
+            except Exception as e:
+                self.log.warning(f"锚点动态 {dynamic_id} 反查 rid 失败：{e!r}")
+                continue
+            item = resp.get("item") if isinstance(resp, dict) else None
+            if not item:
+                self.log.warning(f"锚点动态 {dynamic_id} 无详情（可能已删除），尝试下一条")
+                continue
+            rid = (item.get("extend") or {}).get("businessId")
+            try:
+                return int(rid)
+            except (TypeError, ValueError):
+                self.log.warning(
+                    f"锚点动态 {dynamic_id} 的 extend.businessId 非法：{rid!r}"
+                )
+                continue
+        return None
+
+    async def _resolve_latest_rid(self) -> int | None:
+        """确定本轮动态详情爬取的起始 rid。
+
+        - 库里的断点还在保留窗口（`COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL`）内：直接沿用，
+          保证增量不断档；
+        - 空库 / 断点早于保留窗口：说明本地库被清过或服务长期没跑。库里本来只保留
+          最近 keep_days 天的热数据（更早的已冷归档删库），因此等价于「这一窗口全丢」，
+          从回补窗口起点那条抽奖动态反查 rid，把整窗口重新灌一遍；
+        - 连锚点动态也拿不到（lotdata 也空 / 窗口内没有官方充电动态）：发告警并跳过
+          本轮，提示先去同步数据，而不是静默什么都不做。
+        """
+        now = int(time.time())
+        keep_days = self._backfill_days
+        breakpoint = await self.Sqlhelper.get_latest_rid_breakpoint()
+        if breakpoint is not None and breakpoint.latest_dynamic_ts is not None:
+            lag = now - breakpoint.latest_dynamic_ts
+            if lag <= keep_days * 86400:
+                return breakpoint.rid
+            reason = (
+                f"断点过旧：最新动态为 {self._timeshift(breakpoint.latest_dynamic_ts)}"
+                f"（落后 {format_duration(lag)}，已超出 {keep_days} 天保留窗口）"
+            )
+        elif breakpoint is None:
+            reason = "dyndetail.bilidyndetail 为空（空库或尚未初始化）"
+        else:
+            # 表里只有 dynamic_id = -1（动态已删除）的记录，没有可用时间参考
+            reason = "dyndetail.bilidyndetail 只有无效记录（无可用发布时间）"
+
+        anchor_rid = await self._resolve_anchor_rid()
+        if anchor_rid is not None:
+            self.log.warning(
+                f"{reason}，改用保留窗口（最近 {keep_days} 天）起点那条抽奖动态反查到的 "
+                f"rid={anchor_rid} 重新回补；早于窗口的历史不再尝试"
+            )
+            return anchor_rid
+
+        message = (
+            f"{reason}，且未能从保留窗口（最近 {keep_days} 天）内的抽奖动态反查到可用锚点"
+            "（lotdata 无该窗口数据，或 gRPC 取详情失败），跳过本次动态详情爬取。"
+            "请先从生产同步 dyndetail 数据"
+            "（scripts/database/sync_lottery_from_prod），或确认抽奖 / 代理链路是否正常"
+        )
+        self.log.error(message)
+        await a_push_error(subject="运行异常", content=f"GET_DYN：{message}")
+        return None
+
     async def main(self):
         try:
-            raw_latest_rid = await self.Sqlhelper.get_latest_rid()
-            # 空库（或表还没初始化）时 get_latest_rid 返回 None：这里没有增量断点可用，
-            # 绝不能回退到默认起始 rid 做全量补爬（几十万 rid 的重活），直接跳过本次任务。
-            if raw_latest_rid is None:
-                self.log.warning(
-                    "dyndetail.bilidyndetail 无数据（空库或尚未初始化），跳过本次动态详情爬取"
-                )
+            latest_rid = await self._resolve_latest_rid()
+            if latest_rid is None:
                 return
-            latest_rid = int(raw_latest_rid)
             task_list = []
             if latest_rid < settings.DYN_DETAIL_START_RID:
                 self.log.info(
