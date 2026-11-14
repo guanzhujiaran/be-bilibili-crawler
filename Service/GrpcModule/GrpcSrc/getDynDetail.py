@@ -27,6 +27,11 @@ from Utils.通用.Common import sem_gen, asyncio_gather
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.通用.Tool import format_duration
 from Utils.推送.PushMe import a_push_error
+from bili_common.core.log_mask import (
+    format_full_response,
+    full_response_log_enabled,
+    response_brief,
+)
 
 
 class StopCounter(BaseStopCounter):
@@ -147,13 +152,17 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             # 安全检查：确保extend字段存在
             extend = dynData.get("extend")
             if not extend:
-                self.log.warning(f"动态数据缺少extend字段：{dynData}")
+                self.log.warning(
+                    f"动态数据缺少extend字段：{response_brief(dynData)}"
+                )
                 return None, None, None, None
 
             temp_rid = extend.get("businessId")
             dynamic_id = extend.get("dynIdStr")
             if not dynamic_id:
-                self.log.warning(f"动态缺少dynIdStr字段：{dynData}")
+                self.log.warning(
+                    f"动态缺少dynIdStr字段：{response_brief(dynData)}"
+                )
                 return None, None, None, None
 
             try:
@@ -320,10 +329,21 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                 )
             return temp_rid, lot_id, dynamic_id, dynamic_created_time
         except Exception as e:
-            self.log.exception(f"{dynData}\n解析动态详情出错：{e}")
+            # 顺序很重要：先打异常（真正的原因），摘要另起一行放 debug。
+            # 历史写法把整个 dynData 拼在异常前面，几十 KB 的正文会把「解析动态详情出错：xxx」
+            # 挤到日志末尾，看起来像「解析报错但真实原因是取不到 cookie」这种误判。
+            self.log.exception(f"解析动态详情出错：{e}")
+            self.log.debug(
+                f"解析动态详情出错（dynData 摘要）：{response_brief(dynData)}"
+            )
+            if full_response_log_enabled():
+                self.log.debug(f"解析动态详情出错（完整 dynData）：{format_full_response(dynData)}")
             await a_push_error(
                 subject="运行异常",
-                content=f"解析动态详情出错：{e}\n{dynData}\n{e}",
+                content=(
+                    f"解析动态详情出错：{type(e).__name__}: {e}\n"
+                    f"响应摘要：{response_brief(dynData)}"
+                ),
             )
             return 0, 0, 0, self._timeshift(0)
 

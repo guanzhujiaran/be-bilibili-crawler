@@ -20,6 +20,11 @@ from Service.GrpcModule.Grpc.Bapi.BiliApi import (
 )
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
+from bili_common.core.log_mask import (
+    format_full_response,
+    full_response_log_enabled,
+    response_brief,
+)
 
 _is_use_available_proxy = True
 
@@ -107,9 +112,20 @@ class BiliDynamicItem:
                 return await self.__solve_dynamic_item_detail(new_req)
             return result
         except Exception as e:
+            # ERROR 只留「异常 + code/message/关键 id」；完整响应属于排查细节，
+            # 放在 debug（且受 LOG_FULL_RESPONSE 控制），否则一条 ERROR 就是几十 KB，
+            # 真正的原因反而被埋在正文后面。
             get_others_lot_log.exception(
-                f"解析动态详情失败，dynamic_id={self.dynamic_id}，动态链接=https://t.bilibili.com/{self.dynamic_id}\nerror={e}\nresp={dynamic_detail_resp}"
+                f"解析动态详情失败：dynamic_id={self.dynamic_id} "
+                f"链接=https://t.bilibili.com/{self.dynamic_id} "
+                f"err={type(e).__name__}: {e} "
+                f"resp={response_brief(dynamic_detail_resp)}"
             )
+            if full_response_log_enabled():
+                get_others_lot_log.debug(
+                    f"解析动态详情失败完整响应（dynamic_id={self.dynamic_id}）："
+                    f"{format_full_response(dynamic_detail_resp)}"
+                )
             code = dynamic_detail_resp.get("code")
             if code == -412:
                 get_others_lot_log.info("触发B站412风控，等待10秒后重试")

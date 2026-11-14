@@ -6,7 +6,10 @@
 - **复用**：设备（buvid / 指纹 / UA / region 缓存）落 Redis，下次优先取出来接着用，
   而不是每次都造一台新设备；
 - **上限**：池子最多保留 ``max_devices`` 台，超出时按 LRU（最久未使用）淘汰；
-- **剔除**：服务端返回 -352 / -412 之类的异常时，把该设备从池里删掉，不再复用。
+- **剔除**：服务端返回 -352 / -412 之类的异常时**按「出口前缀 + 设备」维度冷却**：
+  同一个坏出口前缀命中多次只说明前缀坏了（前缀冷却由代理健康状态负责），
+  只有「多个不同前缀都对该设备报 -352」才把设备整台剔除，
+  避免一个坏网段把设备池逐台清空。
 
 存储结构（Redis db 取 ``CONFIG.database.commStorageRedis``）：
 
@@ -21,10 +24,12 @@ import time
 from CONFIG import CONFIG
 from log.base_log import BiliGrpcApi_logger
 from Utils.GrpcUtils.metadata.device_env import DeviceEnv, new_device_env
-from Utils.redisTool.RedisManager import RedisManagerBase
+from Utils.redisTool.RedisManager import RedisManagerBase, redis_client_factory
 
 DEVICE_KEY_PREFIX = "bili:device:"
 DEVICE_LRU_KEY = "bili:devices:lru"
+#: 每个设备命中过 -352 的**出口前缀集合**（set，带 TTL）
+DEVICE_RISK_PREFIX_KEY = "bili:device:risk_prefixes:"
 # 池子上限：超过就按 LRU 淘汰最久未使用的设备
 DEFAULT_MAX_DEVICES = 500
 
@@ -79,6 +84,57 @@ class DevicePool(RedisManagerBase):
 
     async def size(self) -> int:
         return int(await self._zcard(DEVICE_LRU_KEY) or 0)
+
+    # 风控记账（按「出口前缀 + 设备」）---------------------------------
+    @staticmethod
+    def _risk_key(buvid: str) -> str:
+        return f"{DEVICE_RISK_PREFIX_KEY}{buvid}"
+
+    async def note_prefix_risk(
+        self,
+        device: DeviceEnv | str,
+        prefix: str | None,
+        *,
+        max_prefixes: int = 3,
+        ttl: int = 6 * 3600,
+    ) -> bool:
+        """记录一次「该设备从这个出口前缀收到 -352」，返回是否把设备整台剔除。
+
+        - 同一前缀重复命中**只算一次**（坏的是前缀，不是设备；前缀冷却由
+          ``ProxyHealth`` 负责，这里再按次数剔除设备等于重复惩罚）；
+        - 不同前缀累计达到 ``max_prefixes`` 才认为设备本身不可用 → 从池里删掉；
+        - 返回 ``True`` 表示已剔除，``False`` 表示只是记录（设备继续留在池里）。
+        """
+        buvid = device.buvid if isinstance(device, DeviceEnv) else device
+        if not buvid:
+            return False
+        key = self._risk_key(buvid)
+        if not prefix:
+            # 拿不到前缀（无代理直连）时退回旧行为：设备维度直接剔除
+            await self.drop(buvid)
+            return True
+        try:
+            await self._sadd(key, prefix)
+            async with redis_client_factory(pool=self.pool) as r:
+                await r.expire(key, max(60, int(ttl)))
+                hit_prefixes = int(await r.scard(key) or 0)
+        except Exception as e:  # noqa: BLE001 —— 记账失败不影响主流程
+            BiliGrpcApi_logger.warning(
+                f"记录设备 {buvid} 的 -352 前缀失败：{type(e).__name__} {e}"
+            )
+            return False
+        if hit_prefixes < max(1, max_prefixes):
+            BiliGrpcApi_logger.debug(
+                f"设备 {buvid} 在出口前缀 {prefix} 触发-352（累计不同前缀 "
+                f"{hit_prefixes}/{max_prefixes}），仅冷却该前缀，设备保留"
+            )
+            return False
+        await self.drop(buvid)
+        BiliGrpcApi_logger.warning(
+            f"设备 {buvid} 已在 {hit_prefixes} 个不同出口前缀触发-352，"
+            f"判定设备本身不可用，已从设备池剔除"
+        )
+        return True
 
     # 池子维护 -----------------------------------------------------------
     async def trim(self) -> int:

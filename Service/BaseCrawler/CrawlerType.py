@@ -2,6 +2,7 @@ from typing import Any, AsyncGenerator, Generic, List, ClassVar, TypeVar
 from abc import abstractmethod
 import asyncio
 import random
+import time
 from types import EllipsisType
 from CONFIG import CONFIG
 from log.base_log import myfastapi_logger
@@ -869,23 +870,32 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         #    worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务；
         # 2. 延迟重入队：任务还在 sleep，尚未 put 回队列，join() 看不到它。
         # 因此 join 返回后要同时确认「队列为空」且「没有挂起的延迟重入队任务」。
+        #
+        # 关键修复（2026-11 线上「启动后 HTTP 无响应 / CPU 100%」）：
+        # ``queue.join()`` 在 ``_unfinished_tasks == 0`` 时**立即返回且不 await**。
+        # 旧写法在「队列非空但 unfinished=0」（重排竞态窗口）那一条分支里只有 log.debug，
+        # 整个 while 体一次 await 都没有 → 忙等把事件循环（含 uvicorn）彻底饿死 4.5 分钟。
+        # 现在保证**每一轮循环都至少 await 一次**，并对日志做节流。
+        last_wait_log_ts = 0.0
         while True:
-            await queue.join()
             if queue.empty() and not self._pending_requeues:
                 break
-            if not queue.empty():
-                self.log.debug(
-                    self.format_log(
-                        f"join 后仍有 {queue.qsize()} 个任务，继续等待（重排竞态）。"
-                    )
-                )
+            unfinished = getattr(queue, "_unfinished_tasks", 0)
+            if unfinished > 0:
+                # 真正有未完成任务：join 会挂起等待，不消耗 CPU
+                await queue.join()
             else:
+                # 队列非空但 unfinished=0（重排竞态）：必须让出事件循环
+                await asyncio.sleep(0.05)
+            if time.monotonic() - last_wait_log_ts >= 5:
+                last_wait_log_ts = time.monotonic()
                 self.log.debug(
                     self.format_log(
-                        f"还有 {len(self._pending_requeues)} 个任务在延迟重入队，继续等待。"
+                        f"收尾等待中：队列 {queue.qsize()} 个，"
+                        f"延迟重入队 {len(self._pending_requeues)} 个，"
+                        f"未完成计数 {unfinished}。"
                     )
                 )
-                await asyncio.sleep(0.1)
 
         # 收尾：停掉背压监控
         if self._backpressure_task is not None:

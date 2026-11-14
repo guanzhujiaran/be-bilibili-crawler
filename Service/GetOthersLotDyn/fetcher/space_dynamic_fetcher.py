@@ -30,6 +30,11 @@ from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.通用.CommMethods import methods
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
+from bili_common.core.log_mask import (
+    format_full_response,
+    full_response_log_enabled,
+    response_brief,
+)
 
 BAPI = methods()
 
@@ -287,11 +292,19 @@ class BiliSpaceUserItem:
                 cur_offset = int(offset_str if offset_str else "0")
             else:
                 get_others_lot_log.error(
-                    f"获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}"
+                    f"获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，"
+                    f"offset={cur_offset} resp={response_brief(dyreq_dict)}"
                 )
+                if full_response_log_enabled():
+                    get_others_lot_log.debug(
+                        f"uid={self.uid} 空间动态完整响应：{format_full_response(dyreq_dict)}"
+                    )
                 await a_push_error(
                     subject="运行异常",
-                    content=f"GetOthersLotDyn\n获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，offset={cur_offset}\nresp={dyreq_dict}",
+                    content=(
+                        f"GetOthersLotDyn\n获取用户uid={self.uid}空间动态失败：响应中缺少offset字段，"
+                        f"offset={cur_offset}\n响应摘要：{response_brief(dyreq_dict)}"
+                    ),
                 )
                 break
             self.offset = cur_offset
@@ -311,8 +324,13 @@ class BiliSpaceUserItem:
             self.lot_user_info = lot_user_info
             if len(time_list) == 0:
                 get_others_lot_log.error(
-                    f"空间动态响应中未提取到任何发布时间戳，uid={self.uid}，停止获取\nresp={json.dumps(dyreq_dict, ensure_ascii=False)}"
+                    f"空间动态响应中未提取到任何发布时间戳，uid={self.uid}，"
+                    f"停止获取 resp={response_brief(dyreq_dict)}"
                 )
+                if full_response_log_enabled():
+                    get_others_lot_log.debug(
+                        f"uid={self.uid} 空间动态完整响应：{format_full_response(dyreq_dict)}"
+                    )
                 break
             if time.time() - time_list[-1] >= SpareTime:
                 get_others_lot_log.info(
@@ -333,7 +351,8 @@ class BiliSpaceUserItem:
                     break
             except Exception as e:
                 get_others_lot_log.error(
-                    f"解析has_more字段失败，uid={self.uid}，offset={cur_offset}\nresp={dyreq_dict}\nerror={e}"
+                    f"解析has_more字段失败，uid={self.uid}，offset={cur_offset}，"
+                    f"err={type(e).__name__}: {e} resp={response_brief(dyreq_dict)}"
                 )
                 get_others_lot_log.exception(e)
         get_others_lot_log.debug(f"更新lot_user_info")

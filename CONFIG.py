@@ -95,6 +95,11 @@ class CrawlerRuntimeConfig(BaseModel):
     # 0 表示维持旧的「立即重入队」行为。
     requeue_delay_base: float = 5.0
     requeue_delay_max: float = 300.0
+    # ===== 启动抖动 =====
+    # 所有调度器原先都是「首次运行时间 = 现在」，重启瞬间 N 个爬虫 + 代理健康播种 +
+    # cookie 预热同时开跑，把单核 CPU 打满、事件循环被饿死（HTTP 4.5 分钟无响应）。
+    # 这里给每个调度器的首次运行加 0~N 秒随机偏移，把启动风暴摊平。
+    startup_jitter_seconds: float = 60.0
 
 
 class GetOthersLotDynConfig(BaseModel):
@@ -272,6 +277,23 @@ class ProxyHealthConfig(BaseModel):
     # 单条查询的成本主要是往返而不是行数，所以宁可在一次查询里多取几条。
     candidate_batch: int = 32
     pick_attempts: int = 2
+    # ---- fast 档兜底（避免「自建出口冷却 + 网段冷却」时整条车道停摆）----
+    # 取不到「EWMA 达标」的代理时，按 warm → cold 逐级放宽，但**不放宽冷却闸门**：
+    # 坏出口已经被健康状态扣分/冷却，这里放宽的只是历史成功率门槛。
+    fast_fallback_to_warm: bool = Field(
+        default=True, description="fast 取不到达标代理时，允许降级到 warm（已证明可用但 EWMA 略低）"
+    )
+    fast_fallback_to_cold: bool = Field(
+        default=True, description="warm 也没有时，允许 fast 降级到 cold 探测（未验证代理）"
+    )
+    # ---- 自适应采样：前缀冷却占比高时扩大候选批 ----
+    prefix_block_expand_ratio: float = Field(
+        default=0.5,
+        description="候选里被前缀冷却 / 在途打满挡掉的比例超过它时，扩大候选批后重抽",
+    )
+    candidate_batch_max: int = Field(
+        default=128, description="扩大采样后的候选批上限（一次索引范围扫描，禁止再放大）"
+    )
     # ---- 优先从「已验证分档集合」（hot→warm）取样，取不到才回退随机采样 ----
     verified_sample: int = 8
     # ---- 在途计数 TTL：进程崩溃后计数自动过期，不会永久占住代理 ----
@@ -282,6 +304,20 @@ class ProxyHealthConfig(BaseModel):
     # ---- 冷却代理定期回写 MySQL（update_ts 心跳），使 refresh_proxy 不会提前复位 ----
     persist_interval: int = 60
     persist_batch: int = 2000
+    persist_heartbeat_seconds: int = Field(
+        default=1800,
+        description="冷却代理的 update_ts 心跳间隔（秒）：每轮只重写「比这更旧」的行。"
+        "必须远小于 refresh_proxy 的 2h 复位窗口；调大能显著减少行锁数量",
+    )
+    # ---- proxy_tab 批量写的建议锁（Redis）：refresh_proxy 与 flush_proxy_health 互斥 ----
+    # 两个批量 UPDATE 顺着不同索引（status / computed_proxy_str）加锁，
+    # 并发时会去改同一批行的二级索引条目，形成 AB-BA 循环等待 → MySQL 1213 死锁。
+    batch_write_lock_ttl: int = Field(
+        default=600, description="批量写建议锁 TTL（秒）：持有者崩溃后自动释放"
+    )
+    batch_write_lock_wait: float = Field(
+        default=2.0, description="抢批量写建议锁的最长等待（秒）：等不到就跳过本轮"
+    )
     # ---- 背压：已验证池（hot + warm）低于阈值时按比例收缩 slow 并发（fast 不受影响）----
     # 口径不含 cold：cold 只是「还没验证」，把它算成池子不足会把 slow 车道（dyn /
     # other_space 都跑在这里）压到最低并发，反而拖慢抓取。
@@ -393,6 +429,61 @@ class ProxyRetryConfig(BaseModel):
             max_total_seconds=cfg.max_total_seconds,
             log_interval=cfg.log_interval,
         )
+
+
+class BiliCookieConfig(BaseModel):
+    """B 站 web cookie 池参数（见 Service/GrpcModule/Grpc/Bapi/BiliCookie.py）。
+
+    env 覆盖（嵌套双下划线）：``BILI_COOKIE__WARMUP_COUNT=4``
+    """
+
+    pool_size: int = Field(default=50, description="cookie 池最大容量（超过后挤掉最旧的）")
+    ttl_seconds: int = Field(
+        default=8 * 3600, description="单个 cookie 在池内的有效期（秒）"
+    )
+    warmup_count: int = Field(
+        default=2,
+        description="启动期预热的 cookie 个数：避免首个请求现场跑完整生成链路",
+    )
+    warmup_on_startup: bool = Field(
+        default=True, description="是否在启动期后台预热 cookie 池（IS_DEV 下始终不预热）"
+    )
+    max_352_prefixes: int = Field(
+        default=3,
+        description="同一个 cookie 被多少个**不同出口前缀**报 -352 后判定不可用。"
+        "按前缀去重而不是按次数，避免一个坏出口把整个 cookie 池废掉",
+    )
+
+
+class GrpcDeviceConfig(BaseModel):
+    """gRPC 设备池（buvid / 指纹 / UA）的风控处理参数。
+
+    -352 是出口风控：cookie / 设备 / 出口前缀三者耦合，不能一遇 -352 就剔除设备，
+    否则一个坏网段会把设备池逐台清空（见 ``Utils/GrpcUtils/metadata/device_pool.py``）。
+    """
+
+    max_352_prefixes: int = Field(
+        default=3,
+        description="同一设备被多少个**不同出口前缀**报 -352 后才判定设备不可用并剔除",
+    )
+    risk_ttl_seconds: int = Field(
+        default=6 * 3600, description="-352 前缀记账的保留时长（秒）"
+    )
+
+
+class BiliSpaceMonitorConfig(BaseModel):
+    """up 主动态监控（见 Service/GrpcModule/GrpcSrc/监控up动态/bili_dynamic_monitor.py）。
+
+    env 覆盖（嵌套双下划线）：``SPACE_MONITOR__INTERVAL_SECONDS=300``
+    """
+
+    interval_seconds: int = Field(default=3 * 60, description="每个 uid 的轮询间隔（秒）")
+    history_keep: int = Field(
+        default=30, description="每个 uid 记住多少条动态 id 作为「已推送」基线"
+    )
+    push_content_max_length: int = Field(
+        default=400, description="推送正文最大长度（超出截断，避免一条推送几 KB）"
+    )
 
 
 class ServiceRole(StrEnumAutoDoc):
@@ -604,6 +695,12 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     proxy_health: ProxyHealthConfig = ProxyHealthConfig()
     # ===== 代理错误重试预算分级（fast / slow）=====
     proxy_retry: ProxyRetryConfig = ProxyRetryConfig()
+    # ===== B 站 web cookie 池（预热 / 容量 / 352 判定）=====
+    bili_cookie: BiliCookieConfig = BiliCookieConfig()
+    # ===== up 主动态监控（间隔 / 基线条数 / 推送正文截断）=====
+    space_monitor: BiliSpaceMonitorConfig = BiliSpaceMonitorConfig()
+    # ===== gRPC 设备池（-352 按「出口前缀 + 设备」记账）=====
+    grpc_device: GrpcDeviceConfig = GrpcDeviceConfig()
 
     # ===== 第三方抽奖动态获取 =====
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
@@ -615,6 +712,11 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     #   事实来源「runtime 文件 > .env」，见 Service/llm_service/config_store.py。
     # 空值 = 代码根目录下的 runtime/；容器里由 compose 指向挂载出来的 /app/runtime。
     RUNTIME_DIR: str = ""
+
+    # ===== 推送失败日志 =====
+    # 默认只输出一行「event=push_failed channel=... msg_id=... title=... err=...」，
+    # 需要堆栈时置 true（本地排查用），避免把异常栈按渠道降到 ERROR 里刷屏。
+    push_failure_traceback: bool = False
 
     # ===== 爬虫开始 / 结束推送开关（默认全关，见 CrawlerPushConfig）=====
     # 直接用顶层环境变量，避免嵌套模型需要 env_nested_delimiter：
@@ -977,6 +1079,10 @@ class _CONFIG:
     # 代理健康状态机 / 重试预算分级（选代理、错误分流、背压都从这里读）
     proxy_health = settings.proxy_health
     proxy_retry = settings.proxy_retry
+    # B 站 web cookie 池 / up 主动态监控 / gRPC 设备池风控参数
+    bili_cookie = settings.bili_cookie
+    space_monitor = settings.space_monitor
+    grpc_device = settings.grpc_device
     my_ipv6_addr = settings.PROXY_SERVER
     unidbg_addr = f"http://{settings.UNIDBG_HOST}:{settings.UNIDBG_PORT}"
     RabbitMQConfig = RabbitMQConfig()

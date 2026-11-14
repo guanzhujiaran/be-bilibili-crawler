@@ -19,6 +19,7 @@ from CONFIG import settings
 from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
 from Utils.推送.PushMe import a_pushme
+from Utils.推送.push_log import log_push_failure
 from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 
 
@@ -112,13 +113,21 @@ async def push_lot_csv(title: str, content_list: list[TLotdyninfo]) -> None:
 
     content = header + "".join(rows)
 
-    try:
-        resp = await a_pushme(title, content, "markdata")
+    # 返回值是「是否已发布到 MQ」的消息 id，不是 HTTP 响应：
+    # 真正的推送由 message-service 异步完成，这里不能再读 resp.status_code。
+    msg_id = await a_pushme(title, content, "markdata")
+    if msg_id:
         get_others_lot_log.debug(
-            f"PushMe推送成功，title={title}，status_code={resp.status_code}"
+            f"已发布推送消息（Mq），title={title}，msg_id={msg_id}"
         )
-    except Exception as e:
-        get_others_lot_log.error(f"PushMe推送失败，title={title}\nerror={e}")
+    else:
+        log_push_failure(
+            get_others_lot_log,
+            channel="message-service",
+            msg_id="-",
+            title=title,
+            err="发布推送消息失败（Mq）",
+        )
 
 
 async def solve_return_lot(

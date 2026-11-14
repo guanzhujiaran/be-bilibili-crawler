@@ -1,9 +1,11 @@
 # -*- coding: utf-8 -*-
+import random
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Literal, Optional, AsyncGenerator, Any
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
+from CONFIG import CONFIG
 from Models.base.custom_pydantic import CustomBaseModelHashable, CustomBaseModel
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import CrawlerConfig
@@ -87,6 +89,17 @@ class CrawlerExecutionInfo:
             return False
 
 
+def _first_run_time() -> datetime:
+    """首次运行时间：现在 + 0~``startup_jitter_seconds`` 随机偏移。
+
+    重启瞬间如果所有调度器都 ``next_run_time=now``，几十个爬虫会同 时开跑，
+    单核容器会被直接打满（实测 HTTP 4.5 分钟无响应）。加抖动后启动风暴被摊平，
+    每个爬虫的「第一次」仍在启动后 1 分钟内发生，不影响数据新鲜度。
+    """
+    jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
+    return datetime.now() + timedelta(seconds=random.uniform(0, jitter))
+
+
 class BaseScheduler:
     """
     定时任务调度器
@@ -128,19 +141,22 @@ class BaseScheduler:
                 trigger=self.trigger,
             )
         else:
-            # 强制首次任务立即执行
+            # 首次任务在启动抖动窗内随机执行（见 _first_run_time）
+            first_run = _first_run_time()
             GLOBAL_SCHEDULER.add_job(
                 self.run,
                 name=self.job_id,
                 trigger=self.trigger,
                 id=self.job_id,
-                next_run_time=datetime.now(),  # 立即执行第一次
+                next_run_time=first_run,
                 coalesce=True,  # 错过的任务合并为一次
                 max_instances=1,  # 同时最多允许一个实例
                 misfire_grace_time=24 * 3600,  # 允许延迟最多 1 天
             )
             self.logger.debug(
-                f"[{self.exec_info.info.crawler_name}] 已添加新任务，首次运行时间已设为现在，将立即尝试执行"
+                f"[{self.exec_info.info.crawler_name}] 已添加新任务，"
+                f"首次运行时间={first_run:%H:%M:%S}（启动抖动 "
+                f"{CONFIG.crawler_runtime.startup_jitter_seconds:.0f}s 内随机）"
             )
 
     @async_pushme_try_catch_decorator
@@ -320,7 +336,8 @@ class BaseScheduler:
                 name=self.job_id,
                 trigger=self.trigger,
                 id=self.job_id,
-                next_run_time=datetime.now(),
+                # 与 _add_or_update_job 同一口径：重新挂载时也不允许「立刻开跑」
+                next_run_time=_first_run_time(),
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=3600,

@@ -1,5 +1,5 @@
 from typing import List, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pydantic import Field, ConfigDict
 
 from Models.base.custom_pydantic import CustomBaseModel
@@ -61,13 +61,31 @@ class CookieWrapper:
     ck: BiliWebCookie
     ua: str
     expire_ts: int
+    #: 命中 -352 的**不同出口前缀个数**（不是命中次数，见 :meth:`note_352`）
     times_352: int = 0
+    #: 多少个不同出口前缀被 -352 后判定该 cookie 不可用（可配，见 CONFIG.bili_cookie）
+    max_352_prefixes: int = 3
+    #: 每个出口前缀命中 -352 的次数（前缀 -> 次数）
+    times_352_by_prefix: dict[str, int] = field(default_factory=dict)
+
+    def note_352(self, prefix: str | None) -> int:
+        """记录一次 -352，返回累计的「不同前缀数」。
+
+        为什么按前缀去重：-352 是**出口风控**信号，同一个坏出口会让所有经过它的
+        cookie 一起被记次数。若按次数累加，一个坏出口连续命中就能把池子里 50 个
+        cookie 全部推到 ``times_352 > 10``，池子被整锅废掉；按「不同前缀数」计数后，
+        只有**多个不同出口**都对这个 cookie 报 -352 才判定它本身有问题。
+        """
+        key = prefix or "unknown"
+        count = self.times_352_by_prefix.get(key, 0) + 1
+        self.times_352_by_prefix[key] = count
+        if count == 1:
+            self.times_352 += 1
+        return self.times_352
 
     @property
     def able(self) -> bool:
-        if self.times_352 > 10:
-            return False
-        return True
+        return self.times_352 < max(1, self.max_352_prefixes)
 
 
 if __name__ == "__main__":

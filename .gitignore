@@ -49,6 +49,10 @@ Service/toutiao/src/Tools/Enc/node_modules
 Service/GrpcModule/Utils/极验/Geetest_html
 Service/samsclub/api/app_storage.json
 __test/
-Service/GrpcModule/GrpcSrc/监控up动态/data/monitor_uid_list.json
+# 爬虫运行期状态（推送基线等）：写到 RUNTIME_DIR（容器里是挂载卷），
+# 源码树里的这两个历史路径只作为兜底默认目录，**不允许再被 git 跟踪**
+# （否则每次运行都会把工作区弄脏，部署还得先备份/还原）。
+Service/GrpcModule/GrpcSrc/监控up动态/data/
+Service/GrpcModule/GrpcSrc/监控up动态grpc获取动态状态/data/
 # 冷数据归档产物（本地直跑时的默认落盘目录，DYN_BACKUP_DIR 未配置时才用）
 scripts/database/dyn_backup/

@@ -53,11 +53,28 @@ class RequestProxyUnavailableError(RequestKnownError):
 
     单独成类是为了让调用方区分「代理坏了」和「没有代理可换」：
     前者要扣分换代理，后者应尽快把任务交回队列延迟重试。
+
+    ``reason`` 把两类完全不同的故障分开（历史上合并成一句
+    「没有可用代理：自建出口冷却中且代理池无合格代理」，无法判断该修哪边）：
+
+    - ``local_exit``：自建出口（专线）冷却 / 超配额，代理池本身可能有货；
+    - ``pool_empty``：代理池没有合格候选（网段冷却 / 在途打满 / EWMA 不达标）；
+    - ``both``：两边都不可用。
     """
 
-    def __init__(self, message="", code=-4, tier: str = ""):
+    #: 自建出口不可用
+    REASON_LOCAL_EXIT = "local_exit"
+    #: 代理池无合格候选
+    REASON_POOL_EMPTY = "pool_empty"
+    #: 两条通道都不可用
+    REASON_BOTH = "both"
+
+    def __init__(
+        self, message="", code=-4, tier: str = "", reason: str = ""
+    ):
         super().__init__(message, code)
         self.tier = tier
+        self.reason = reason or self.REASON_BOTH
 
 
 class ProxyRetryBudgetExhausted(RequestKnownError):

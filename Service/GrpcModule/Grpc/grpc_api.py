@@ -79,8 +79,13 @@ from Utils.代理.数据库操作.ProxyEvent import (
     handle_proxy_unknown_err,
 )
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
-from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper
+from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
+    SQLHelper,
+    to_proxy_key,
+)
+from Utils.代理.数据库操作.ProxyHealth import proxy_prefix_of
 from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
+from bili_common.core.log_mask import mask_text
 
 ad_extra = "979CD936E441AD18D4DA41A86BACC8168EBE79AA118B33339F80B75C0CD4A1992D36232462A56F4CC7C7E93BFAE33C2EDEA22F19D1DB9C021604DAB304035F8FD09CC00070E1751C322FDA073FE81362163A60D48EF19F79929E98E56202A64E9CC418923EBCC72B8D676AA9423D243CBA9F7F544456356D3F20CC8EF065EB485098B21A7C39249AAA2944F0878CEB6400A58D841A31395E563CC9C9D0EC24F85A956FC3C0BEBBD28A04F20CA973344137F8583324E9EA32FE172917A0F5068F6C711E0EE360CB39DF943E09D7479CDA7584FB8AAECF4207C2AE5CCB652D1B0E445CCF13E1DAC3DFE45D86190945FECFBD82ED8DFE3BC7182313203A9DF1D93BDB0B32F3542EF35D78A806F29C5F1A66D94790E1B3077361C48F0F6C62202E21E7ACB125B18093EA08237831BB23E545610141CEEDC7D7D3F1B2D8AA4E305B91C22C112EF4E12C0C90034FFE36E32304A3926E7AD04BB7A23C3068DBF1DD757C6B43837275DF468FB0AFA297B71A8C9422175EB48877DA262EF6A41351614E89C05AB4E47292E4B405E49BE54E5F0D30D6FBCB8B441433444A8C0E4B37EDF281170B66BA8CDF704CFEBC6C9C8A8AFD9B35B55A716DEF754409DE4300E5F7A609D6EFC5FF10F253513971D6D8F09552184C7ECF6A62358BB3DBF2DA3B2FFFB77A2F8D34E8DADECDAA842A5A4966797C03"
 
@@ -514,12 +519,14 @@ class BiliGrpc:
                     or "-412" in str(resp.headers.get("Grpc-Message"))
                 ):  # -352的话尝试把这个metadata丢弃
                     self.grpc_api_any_log.warning(
-                        f"\n-352报错！\n"
-                        f"url:{url}\n"
-                        f"body:{grpc_req_message}"
-                        f"headers:{new_headers}\n"
-                        f"token:{validate_token}\n"
-                        f"{sqlalchemy_model_2_dict(proxy)}"
+                        mask_text(
+                            f"\n-352报错！\n"
+                            f"url:{url}\n"
+                            f"body:{grpc_req_message}"
+                            f"headers:{new_headers}\n"
+                            f"token:{validate_token}\n"
+                            f"{sqlalchemy_model_2_dict(proxy)}"
+                        )
                     )
                     if not validate_token:
                         # self.grpc_api_any_log.debug(f'未携带validate_token报错-352')
@@ -612,16 +619,32 @@ class BiliGrpc:
                 )
                 await asyncio.sleep(3)
                 md.times_352 += 1  # -352报错就增加一次352次数，满了之后舍弃
-                # -352/-412 说明这台设备已经不被服务端接受，直接从设备池剔除
+                # -352 是**出口风控**信号：cookie / 设备 / 出口前缀三者耦合，
+                # 不能一遇 -352 就剔除设备（一个坏前缀会把设备池逐台清空）。
+                # 改为按「出口前缀 + 设备」记账：同一前缀只记一次，
+                # 多个不同前缀都对它报 -352 才判定设备本身不可用。
                 if getattr(md, "device", None):
                     try:
-                        await asyncio.wait_for(get_pool().drop(md.device), timeout=10)
-                        self.grpc_api_any_log.warning(
-                            f"设备 {md.buvid} 触发-352，已从设备池剔除"
+                        prefix = (
+                            proxy_prefix_of(to_proxy_key(proxy.proxy)) if proxy else ""
                         )
+                        dropped = await asyncio.wait_for(
+                            get_pool().note_prefix_risk(
+                                md.device,
+                                prefix,
+                                max_prefixes=CONFIG.grpc_device.max_352_prefixes,
+                                ttl=CONFIG.grpc_device.risk_ttl_seconds,
+                            ),
+                            timeout=10,
+                        )
+                        if not dropped:
+                            self.grpc_api_any_log.debug(
+                                f"设备 {md.buvid} 在出口前缀 {prefix} 触发-352，"
+                                f"仅冷却该前缀，设备保留"
+                            )
                     except Exception as pool_err:
                         self.grpc_api_any_log.error(
-                            f"设备池剔除失败：{type(pool_err).__name__} {pool_err}"
+                            f"设备池 -352 记账失败：{type(pool_err).__name__} {pool_err}"
                         )
                 ipv6_proxy_weights -= 10
                 if proxy:

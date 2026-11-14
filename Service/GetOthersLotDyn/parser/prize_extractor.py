@@ -40,6 +40,8 @@ from Service.llm_service import (
     get_removed_llm_records,
 )
 from Utils.推送.PushMe import a_push_error
+from Utils.推送.push_log import log_push_failure
+from bili_common.core.log_mask import mask_text
 
 T = TypeVar("T")
 # _do_extract 的结果模型类型：随调用入口在两种结果模型间切换
@@ -327,6 +329,46 @@ def _raw_text_candidates(
     return [candidate for candidate in candidates if candidate and candidate.strip()]
 
 
+def _json_invalid_retry(
+    exc: ValidationError, result_model: type[_TResult]
+) -> _TResult | None:
+    """``json_invalid`` 专用的一次重试：从原始输出里**提取 JSON 片段**再解析。
+
+    线上 54 次/天的 ``Invalid JSON: expected value at line 1 column 1`` 有两类：
+
+    1. 「JSON 外面包了说明文字 / 代码围栏 / 思考块」——本地抠出 ``{...}`` 就能救回来；
+    2. 「模型直接答了一段自然语言」（如 ``'虎炮抱枕目前市面...好帮你精准找。'``）——
+       没有可提取的片段，这里只记一行 warning 并返回 None，由上层换下一个模型，
+       **不再对同一个模型重复问一遍**（那只会白白多一次请求）。
+
+    返回 None 表示「无法本地修复」。
+    """
+    errors = exc.errors()
+    if not errors:
+        return None
+    first = errors[0]
+    if first.get("type") != "json_invalid":
+        return None
+    raw = first.get("input")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    fragment = _extract_json_object(raw)
+    if fragment is None:
+        # 自然语言输出：没有 JSON 片段可提取，交给上层换模型
+        logger.warning(
+            f"event=llm_output_not_json model={result_model.__name__} "
+            f"input_len={len(raw)} input={mask_text(raw)[:120]!r}（无 JSON 片段，换下一个模型）"
+        )
+        return None
+    repaired = _parse_llm_result_text(fragment, result_model)
+    if repaired is not None:
+        logger.warning(
+            f"event=llm_json_fragment_recovered model={result_model.__name__} "
+            f"（从混排文本中提取 JSON 片段后解析成功）"
+        )
+    return repaired
+
+
 def _repair_structured_output(
     exc: BaseException, result_model: type[_TResult]
 ) -> _TResult | None:
@@ -337,6 +379,10 @@ def _repair_structured_output(
     """
     if not isinstance(exc, ValidationError):
         return None
+    # json_invalid（结构化输出直接不是 JSON）先走「提取片段重试」这条明确路径
+    json_repaired = _json_invalid_retry(exc, result_model)
+    if json_repaired is not None:
+        return json_repaired
     errors = exc.errors()
     if not errors or errors[0].get("loc"):
         return None
@@ -380,7 +426,13 @@ async def _push_no_llm_configured_error(exc: Exception) -> None:
             ),
         )
     except Exception as push_err:
-        logger.exception(f"推送云端 LLM 未配置告警失败: {push_err}")
+        log_push_failure(
+            logger,
+            channel="message-service",
+            msg_id="-",
+            title="云端LLM未配置（抽奖判断已中断）",
+            err=push_err,
+        )
 
 
 def _describe_disabled_llms() -> str:
@@ -481,7 +533,13 @@ async def _push_all_llms_disabled_error(exc: Exception) -> None:
             ),
         )
     except Exception as push_err:
-        logger.exception(f"推送云端 LLM 全部熔断告警失败: {push_err}")
+        log_push_failure(
+            logger,
+            channel="message-service",
+            msg_id="-",
+            title="云端LLM全部不可用（抽奖判断已中断）",
+            err=push_err,
+        )
 
 
 async def _do_extract(

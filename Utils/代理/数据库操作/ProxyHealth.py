@@ -42,6 +42,7 @@
 import asyncio
 import math
 import random
+import secrets
 import time
 from typing import Iterable, Sequence
 
@@ -78,6 +79,8 @@ _PREFIX_MEMBERS_PREFIX = "proxy_health:v1:prefix_members:"
 _PREFIX_EPISODE_PREFIX = "proxy_health:v1:prefix_episode:"
 #: 通道 QPS 配额（固定 1 秒窗口）
 _QPS_PREFIX = "proxy_health:v1:qps:"
+#: proxy_tab 批量写的建议锁（Redis SET NX EX）
+_WRITE_LOCK_PREFIX = "proxy_batch_lock:"
 #: 单个前缀的成员集合最多保留多少条（防止异常段无限膨胀）
 _PREFIX_MEMBERS_MAX = 512
 
@@ -798,6 +801,59 @@ class ProxyHealthStore:
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀成员失败：{type(e).__name__} {e}")
             return []
+
+    # endregion
+
+    # region 批量写建议锁（proxy_tab）
+    @staticmethod
+    def _write_lock_key(scope: str) -> str:
+        return f"{_WRITE_LOCK_PREFIX}{scope}"
+
+    async def acquire_write_lock(
+        self, scope: str, ttl: int, wait: float = 0.0
+    ) -> str | None:
+        """抢占 proxy_tab 批量写的建议锁（``SET NX EX``），返回 token；抢不到返回 None。
+
+        为什么需要：``refresh_proxy`` 的批量复位按 ``status`` 索引扫描加锁，
+        ``flush_proxy_health`` 的心跳回写按 ``computed_proxy_str`` 索引加锁，
+        两个事务会顺着不同索引去改同一批行的二级索引条目（status / update_ts / score
+        都在索引里），形成 AB-BA 循环等待 —— 线上见到过 MySQL 1213。
+        让两个**批量写**互斥，代价只有一次 Redis 往返；单行写（``update_to_proxy_list``）
+        只持一把行锁，不会参与这种环。
+
+        Redis 不可用时返回一个 token 放行：拿不到锁不该让业务停摆，
+        真正的死锁仍有 ``log_sql_retry_wrapper`` 兜底重试。
+        """
+        if not scope:
+            return None
+        token = f"{int(time.time())}-{secrets.token_hex(8)}"
+        key = self._write_lock_key(scope)
+        deadline = time.monotonic() + max(0.0, wait)
+        while True:
+            try:
+                client = self._get_client()
+                acquired = await client.set(key, token, nx=True, ex=max(1, int(ttl)))
+            except Exception as e:  # noqa: BLE001
+                self._warn(f"抢占批量写建议锁失败：{type(e).__name__} {e}")
+                return token
+            if acquired:
+                return token
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.2)
+
+    async def release_write_lock(self, scope: str, token: str) -> None:
+        """释放建议锁（先比对 token 再删，避免误删别人后来抢到的锁）。"""
+        if not scope or not token:
+            return
+        key = self._write_lock_key(scope)
+        try:
+            client = self._get_client()
+            current = await client.get(key)
+            if current == token:
+                await client.delete(key)
+        except Exception as e:  # noqa: BLE001
+            self._warn(f"释放批量写建议锁失败：{type(e).__name__} {e}")
 
     # endregion
 

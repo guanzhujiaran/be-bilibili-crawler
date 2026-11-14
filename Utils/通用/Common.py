@@ -1,6 +1,7 @@
 import asyncio
 import concurrent.futures
 import re
+from collections import Counter
 from functools import wraps
 from typing import Callable, TypeVar, Awaitable, Any, Optional, TYPE_CHECKING
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -15,6 +16,16 @@ GLOBAL_SCHEDULER: AsyncIOScheduler = AsyncIOScheduler()
 _comm_lock = asyncio.Lock()
 # 全局线程池，避免重复创建
 _global_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+
+#: 进程内累计的 SQL 死锁重试次数（按被装饰函数名）。
+#: 死锁会被 ``log_sql_retry_wrapper`` 自动重试兜住，但必须能被观测到：
+#: 线上曾一天 23 次 1213，日志里只有 error 文本、没有「多少次」的口径。
+_deadlock_retry_counts: Counter[str] = Counter()
+
+
+def deadlock_retry_counts() -> Counter[str]:
+    """返回死锁重试次数快照（按函数名），供接口 / 巡检脚本读取。"""
+    return Counter(_deadlock_retry_counts)
 
 TResult = TypeVar("TResult")
 FuncT = TypeVar("FuncT", bound=Callable[..., Awaitable[Any]])
@@ -355,10 +366,17 @@ def log_sql_retry_wrapper(log: "Logger" = myfastapi_logger):
                     # 检查是否是死锁错误(已经在内层处理过重试)
                     error_str = str(e)
                     if "Deadlock" in error_str or "1213" in error_str:
-                        log.error(
-                            f"{_func.__name__} \t死锁错误(内层重试已耗尽): {error_str[:200]}"
+                        name = describe_callable(_func)
+                        _deadlock_retry_counts[name] += 1
+                        # 记 warning（不是 error）：死锁是**可自愈**的并发争用，
+                        # 已经被重试兜住；同时带上累计次数，便于判断是否需要调参。
+                        log.warning(
+                            f"SQL 死锁重试：func={name} "
+                            f"累计重试 {_deadlock_retry_counts[name]} 次 "
+                            f"err={error_str[:160]}（等待后自动重试，不抛出）"
                         )
-                        await asyncio.sleep(5)  # 短暂等待后继续重试
+                        # 抖动：多个事务同时死锁时不要同一刻重试（否则容易再撞一次）
+                        await asyncio.sleep(5 + random.uniform(0, 2))
                         continue
                     # 其他异常保持原有逻辑（补上函数名，便于定位是哪条 SQL 操作）
                     log.exception(

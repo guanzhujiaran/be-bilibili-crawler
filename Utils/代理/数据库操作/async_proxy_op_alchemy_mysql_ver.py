@@ -10,6 +10,7 @@ import datetime
 import json
 import random
 import time
+from dataclasses import dataclass
 from typing import List, Literal
 from zoneinfo import ZoneInfo
 
@@ -120,6 +121,25 @@ def is_local_ipv6_proxy(proxy_key: str) -> bool:
 
 
 
+@dataclass(frozen=True)
+class ProxyPickResult:
+    """一次「按档位挑代理」的结果 + 诊断信息。
+
+    ``blocked_by_prefix`` 是本次候选里因「前缀冷却 / 在途打满 / 本任务已失败」被跳过的
+    条数：占比高说明**可用网段**被压没了（线上 fast 空池的主因），上层据此扩大采样重抽。
+    """
+
+    proxy: ProxyTab | None
+    candidates: int = 0
+    blocked_by_prefix: int = 0
+    #: fast 档降级到了哪一级：""（未降级）/ "warm" / "cold"
+    fallback_stage: str = ""
+
+    @property
+    def prefix_blocked_ratio(self) -> float:
+        return (self.blocked_by_prefix / self.candidates) if self.candidates else 0.0
+
+
 class SQLHelperClass(SqlHelperBase):
     def __init__(self):
         mysql_db_url = CONFIG.database.MYSQL.proxy_db_URI
@@ -131,11 +151,15 @@ class SQLHelperClass(SqlHelperBase):
         self.engine.dialect.supports_sane_rowcount = (
             False  # 避免了批量update报错stableData
         )
+        # 首次运行加抖动：重启瞬间代理池复位 / 健康落盘会与所有爬虫的首批任务
+        # 同时抢 MySQL 与事件循环（线上表现为启动后 HTTP 数分钟无响应）。
+        jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
         GLOBAL_SCHEDULER.add_job(
             self.refresh_proxy,
             "interval",
             seconds=600,
-            next_run_time=datetime.datetime.now(),
+            next_run_time=datetime.datetime.now()
+            + datetime.timedelta(seconds=random.uniform(0, jitter)),
             misfire_grace_time=600,
         )
         # 冷却中的代理需要持续回写 update_ts（心跳），否则 refresh_proxy 会在 2 小时后
@@ -145,7 +169,8 @@ class SQLHelperClass(SqlHelperBase):
             self.flush_proxy_health,
             "interval",
             seconds=max(10, CONFIG.proxy_health.persist_interval),
-            next_run_time=datetime.datetime.now(),
+            next_run_time=datetime.datetime.now()
+            + datetime.timedelta(seconds=random.uniform(0, jitter)),
             misfire_grace_time=120,
         )
         # 取代理改为「MySQL 随机主键起点」，需要知道 id 范围；
@@ -333,11 +358,25 @@ class SQLHelperClass(SqlHelperBase):
         tier: ProxyTier,
         exclude_prefixes: frozenset[str] = frozenset(),
     ) -> ProxyTab | None:
-        """在一批候选行里按档位挑一条。
+        """``_pick_proxy_by_tier_detailed`` 的简版（只返回代理，供测试 / 老调用点使用）。"""
+        result = await self._pick_proxy_by_tier_detailed(
+            rows, tier, exclude_prefixes=exclude_prefixes
+        )
+        return result.proxy
+
+    async def _pick_proxy_by_tier_detailed(
+        self,
+        rows: list[ProxyTab],
+        tier: ProxyTier,
+        exclude_prefixes: frozenset[str] = frozenset(),
+    ) -> ProxyPickResult:
+        """在一批候选行里按档位挑一条，并返回诊断信息。
 
         - **前缀闸门（先过）**：同 /64、/24 在冷却 / 在途打满 / 本任务已失败过 → 整段不取；
-        - ``fast``：只接受「未冷却 + EWMA 达标 + 在途并发未打满」的代理，挑不到就返回 None，
-          由上层快速失败（fast 车道绝不能为了「凑一条」而下沉到坏代理池）；
+        - ``fast``：优先「未冷却 + EWMA 达标 + 在途未打满」；取不到时**分级降级**
+          （warm → cold 探测），而不是直接抛「没有可用代理」——
+          线上 24h 里 176 次 fast 空池，绝大多数是「自建出口 -352 冷却 + 可用网段被
+          前缀冷却压到接近 0」，此时用 warm/cold 兜底远比让整条车道停摆划算；
         - ``slow``：未冷却即可用，并按 ``cold_probe_ratio`` 掺入 cold / suspect 代理做探测，
           dead 一律不取（只有等冷却过期后由成功请求救回）。
         """
@@ -372,12 +411,30 @@ class SQLHelperClass(SqlHelperBase):
                 if proxy_health_store.is_fast_eligible(item[2], item[3], now)
             ]
             if fast_candidates:
-                return random.choice(fast_candidates)[0]
+                return ProxyPickResult(
+                    proxy=random.choice(fast_candidates)[0],
+                    candidates=len(rows),
+                    blocked_by_prefix=blocked_by_prefix,
+                )
+            degraded = self._fast_degrade(scored, now)
+            if degraded is not None:
+                proxy, stage = degraded
+                return ProxyPickResult(
+                    proxy=proxy,
+                    candidates=len(rows),
+                    blocked_by_prefix=blocked_by_prefix,
+                    fallback_stage=stage,
+                )
             sql_log.debug(
                 f"fast 档本次候选 {len(rows)} 条均不达标"
-                f"（需 ewma>={cfg.fast_min_ewma}、未冷却、在途<{cfg.fast_max_in_flight}）"
+                f"（需 ewma>={cfg.fast_min_ewma}、未冷却、在途<{cfg.fast_max_in_flight}；"
+                f"warm/cold 兜底也未命中）"
             )
-            return None
+            return ProxyPickResult(
+                proxy=None,
+                candidates=len(rows),
+                blocked_by_prefix=blocked_by_prefix,
+            )
 
         usable = [
             item
@@ -386,7 +443,11 @@ class SQLHelperClass(SqlHelperBase):
             and item[2].state is not ProxyHealthState.DEAD
         ]
         if not usable:
-            return None
+            return ProxyPickResult(
+                proxy=None,
+                candidates=len(rows),
+                blocked_by_prefix=blocked_by_prefix,
+            )
         # 探测抽签：按比例放行 cold（完全没记录）/ suspect，用来把新代理「养」成 hot
         if random.random() < cfg.cold_probe_ratio:
             probes = [
@@ -400,14 +461,74 @@ class SQLHelperClass(SqlHelperBase):
                 )
             ]
             if probes:
-                return random.choice(probes)[0]
+                return ProxyPickResult(
+                    proxy=random.choice(probes)[0],
+                    candidates=len(rows),
+                    blocked_by_prefix=blocked_by_prefix,
+                    fallback_stage="cold",
+                )
         hot = [item for item in usable if item[2].state is ProxyHealthState.HOT]
         if hot:
-            return random.choice(hot)[0]
+            return ProxyPickResult(
+                proxy=random.choice(hot)[0],
+                candidates=len(rows),
+                blocked_by_prefix=blocked_by_prefix,
+            )
         warm = [item for item in usable if item[2].state is ProxyHealthState.WARM]
         if warm:
-            return random.choice(warm)[0]
-        return random.choice(usable)[0]
+            return ProxyPickResult(
+                proxy=random.choice(warm)[0],
+                candidates=len(rows),
+                blocked_by_prefix=blocked_by_prefix,
+                fallback_stage="warm",
+            )
+        return ProxyPickResult(
+            proxy=random.choice(usable)[0],
+            candidates=len(rows),
+            blocked_by_prefix=blocked_by_prefix,
+            fallback_stage="cold",
+        )
+
+    def _fast_degrade(
+        self,
+        scored: list[tuple[ProxyTab, str, ProxyHealthRecord, int]],
+        now: int,
+    ) -> tuple[ProxyTab, str] | None:
+        """fast 档取不到「达标」代理时的分级降级：warm → cold 探测。
+
+        只降级到「未冷却 + 在途未打满」的候选：坏出口已经在健康状态里被扣分了，
+        这里放宽的只是 EWMA 门槛（历史成功率略低于 0.9 的老代理），而不是冷却闸门。
+        返回 ``(代理行, 降级阶段)``，阶段用于日志与 ``fallback_stage`` 观测。
+        """
+        cfg = CONFIG.proxy_health
+        max_in_flight = max(1, cfg.fast_max_in_flight)
+        if cfg.fast_fallback_to_warm:
+            warm = [
+                item
+                for item in scored
+                if item[2].state is ProxyHealthState.WARM
+                and not item[2].is_cooling(now)
+                and item[3] < max_in_flight
+            ]
+            if warm:
+                sql_log.debug(
+                    f"fast 档无达标代理，降级到 warm 兜底（{len(warm)} 条候选）"
+                )
+                return random.choice(warm)[0], "warm"
+        if cfg.fast_fallback_to_cold:
+            cold = [
+                item
+                for item in scored
+                if item[2].state in (ProxyHealthState.COLD, ProxyHealthState.SUSPECT)
+                and not item[2].is_cooling(now)
+                and item[3] < max_in_flight
+            ]
+            if cold:
+                sql_log.debug(
+                    f"fast 档无达标代理，降级到 cold 探测（{len(cold)} 条候选）"
+                )
+                return random.choice(cold)[0], "cold"
+        return None
 
     async def select_random_proxy(
         self,
@@ -448,24 +569,47 @@ class SQLHelperClass(SqlHelperBase):
                 return verified
 
         fetched_any = False
-        for _ in range(attempts):
+        # 自适应采样：当候选里「被前缀冷却 / 在途打满」挡掉的比例很高时，
+        # 说明不是池子没货，而是**可用网段**被压没了（线上 fast 176 次空池的主因：
+        # 地址级 hot=1959 但 73 个网段在冷却）。此时把候选批翻倍、轮次 +1 再抽，
+        # 而不是直接判定「无合格代理」。
+        attempts_left = attempts
+        current_batch = batch
+        expanded = False
+        while attempts_left > 0:
+            attempts_left -= 1
             # 每次都从随机主键起点取一批：健康状态在 Redis，单条太容易筛空
             start_id = random.randint(min_id, max_id)
-            rows = await self._select_candidate_rows(start_id, batch)
+            rows = await self._select_candidate_rows(start_id, current_batch)
             if excluded:
                 rows = [
                     row for row in rows if self._proxy_key_of(row) not in excluded
                 ]
             if rows:
                 fetched_any = True
-            proxy_tab = await self._pick_proxy_by_tier(
+            result = await self._pick_proxy_by_tier_detailed(
                 rows, tier, exclude_prefixes=excluded_prefixes
             )
-            if proxy_tab is not None:
-                return proxy_tab
+            if result.proxy is not None:
+                return result.proxy
+            if (
+                not expanded
+                and tier is ProxyTier.FAST
+                and current_batch < cfg.candidate_batch_max
+                and result.candidates > 0
+                and result.prefix_blocked_ratio >= cfg.prefix_block_expand_ratio
+            ):
+                expanded = True
+                current_batch = min(cfg.candidate_batch_max, current_batch * 2)
+                attempts_left = max(attempts_left, 1)
+                sql_log.debug(
+                    f"fast 候选 {result.blocked_by_prefix}/{result.candidates} 条被前缀"
+                    f"冷却挡掉（比例 {result.prefix_blocked_ratio:.0%}），"
+                    f"扩大采样到 {current_batch} 条重抽"
+                )
         if not fetched_any:
             # 所有随机起点都落在「末段空洞」（id 已被删干净）之后的兜底：从头取一批
-            rows = await self._select_candidate_rows(min_id, batch)
+            rows = await self._select_candidate_rows(min_id, max(current_batch, batch))
             if excluded:
                 rows = [
                     row for row in rows if self._proxy_key_of(row) not in excluded
@@ -829,21 +973,10 @@ class SQLHelperClass(SqlHelperBase):
     # region 定时任务
     @log_sql_retry_wrapper()
     async def refresh_proxy(self):
-        start_ts = int(time.time())
         avaliable_score = -50
         available_status = 0
         now = int(time.time())
         _412_sep_time = self._412_sep_time
-        # async with self.session() as session:
-        #     async with session.begin():
-        #         del_num = 0
-        #         ____sql = delete(ProxyTab).where(and_(
-        #             ProxyTab.status != 0,
-        #             ProxyTab.success_times < -50
-        #         ))
-        #         del_num += (await session.execute(____sql)).rowcount  # 刷新超过12小时的无效代理，改变status和score
-        #         await session.commit()
-        # sql_log.debug(f'【刷新代理池】\t删除无效代理，影响数量：{del_num}个！')
         ___sql = (
             update(ProxyTab)
             .where(
@@ -866,28 +999,41 @@ class SQLHelperClass(SqlHelperBase):
             )
             .values(status=available_status, update_ts=now, score=50)
         )
-        async with self.async_session() as session:
-            async with session.begin():
-                await session.execute(
-                    ___sql
-                )  # 刷新超过两小时的412风控代理 不改变分数，只改变status
-                await session.execute(
-                    __sql
-                )  # 刷新超过12小时的无效代理，改变status和score
-                await session.commit()
-        # 上面的批量复位只看「update_ts 是否够旧」，不足以表达健康状态机里的冷却：
-        # 风控层冷却 2~6h、网络层冷却 10~30min，必须由 Redis 冷却集合兜底拉回，
-        # 否则 412 代理会在 2 小时后被复位成可用（历史 bug）。
-        cooling_keys = await proxy_health_store.list_cooling_keys(
-            limit=max(1, CONFIG.proxy_health.persist_batch)
-        )
-        if cooling_keys:
-            cooling_keys = await self._filter_still_cooling(cooling_keys)
-            await self._mark_proxy_unavailable(cooling_keys, status=-412, now=now)
-            sql_log.warning(
-                f"【刷新代理池】有 {len(cooling_keys)} 条代理仍在健康冷却中，"
-                f"已保持不可用（不会被 refresh 复位）"
+        # 与 flush_proxy_health 的批量心跳互斥：两个批量 UPDATE 顺着不同索引
+        # （status 索引 vs computed_proxy_str 索引）加锁，并发会互相等对方的
+        # 二级索引条目 → MySQL 1213 死锁。拿不到锁就跳过本轮，下个周期再来。
+        token = await self._acquire_batch_write_lock()
+        if token is None:
+            sql_log.warning("proxy_tab 批量写正被健康心跳占用，本轮 refresh 跳过")
+            return
+        try:
+            # 两个复位拆成两个事务：原来放在同一个事务里，等于同时持有
+            # 「status 索引范围」+「score 索引范围」两套行锁，死锁面翻倍；
+            # 两者互不依赖（都只是把行复位成可用），拆开语义不变、失败可单独重试。
+            async with self.async_session() as session:
+                async with session.begin():
+                    # 刷新超过两小时的 412 风控代理：不改变分数，只改变 status
+                    await session.execute(___sql)
+            async with self.async_session() as session:
+                async with session.begin():
+                    # 刷新超过 24 小时的低分代理：复位 status 并把 score 拉回 50
+                    await session.execute(__sql)
+            # 上面的批量复位只看「update_ts 是否够旧」，不足以表达健康状态机里的冷却：
+            # 风控层冷却 2~6h、网络层冷却 10~30min，必须由 Redis 冷却集合兜底拉回，
+            # 否则 412 代理会在 2 小时后被复位成可用（历史 bug）。
+            cooling_keys = await proxy_health_store.list_cooling_keys(
+                limit=max(1, CONFIG.proxy_health.persist_batch)
             )
+            if cooling_keys:
+                cooling_keys = await self._filter_still_cooling(cooling_keys)
+                # min_interval=0：这里是「刚被复位成 0」之后的立即回写，不能跳过
+                await self._mark_proxy_unavailable(cooling_keys, status=-412, now=now)
+                sql_log.warning(
+                    f"【刷新代理池】有 {len(cooling_keys)} 条代理仍在健康冷却中，"
+                    f"已保持不可用（不会被 refresh 复位）"
+                )
+        finally:
+            await self._release_batch_write_lock(token)
         return
 
     async def _filter_still_cooling(self, proxy_keys: list[str]) -> list[str]:
@@ -911,13 +1057,63 @@ class SQLHelperClass(SqlHelperBase):
                 still_cooling.append(key)
         return still_cooling
 
+    #: proxy_tab 批量写的建议锁名（refresh_proxy 与 flush_proxy_health 互斥）
+    _PROXY_TAB_WRITE_LOCK = "proxy_tab:batch_write"
+
+    async def _acquire_batch_write_lock(self) -> str | None:
+        cfg = CONFIG.proxy_health
+        return await proxy_health_store.acquire_write_lock(
+            self._PROXY_TAB_WRITE_LOCK,
+            ttl=cfg.batch_write_lock_ttl,
+            wait=cfg.batch_write_lock_wait,
+        )
+
+    async def _release_batch_write_lock(self, token: str) -> None:
+        await proxy_health_store.release_write_lock(self._PROXY_TAB_WRITE_LOCK, token)
+
+    @staticmethod
+    def _build_unavailable_stmt(
+        chunk: list[str], status: int, ts: int, min_interval: int = 0
+    ):
+        """构造「置为不可用」的批量 UPDATE。
+
+        ``min_interval > 0`` 时只更新「状态不是目标值」或「update_ts 已经旧于该间隔」的行：
+        心跳只需要保证 ``update_ts`` 不比 ``refresh_proxy`` 的 2h 窗口更旧，
+        每轮全量重写几千行等于白白放大行锁数量，也是死锁的温床。
+        """
+        conditions = [ProxyTab.computed_proxy_str.in_(chunk)]
+        if min_interval > 0:
+            conditions.append(
+                or_(
+                    ProxyTab.status != status,
+                    ProxyTab.update_ts < ts - max(1, int(min_interval)),
+                )
+            )
+        return (
+            update(ProxyTab)
+            .where(and_(*conditions))
+            .values(status=status, update_ts=ts)
+        )
+
     async def _mark_proxy_unavailable(
-        self, proxy_keys: list[str], status: int, now: int | None = None
+        self,
+        proxy_keys: list[str],
+        status: int,
+        now: int | None = None,
+        min_interval: int = 0,
     ) -> int:
         """把一批代理置为不可用并刷新 update_ts（不改变 score / success_times 语义）。
 
         分批更新（每批 200 条）而不是一条大 SQL：``computed_proxy_str`` 是带索引的
         生成列，分批等值 IN 走索引，单批毫秒级，避免长事务。
+
+        **按主键升序加锁**（2026-11 线上 1213 死锁的直接修复）：
+        调用方传进来的 key 顺序是「冷却集合 / 前缀成员集合」的遍历顺序，每次都不一样；
+        两个批量事务若按不同顺序更新同一批行，就会互相等对方的行锁。这里先查主键、
+        排序后再按 id 升序分块更新，让所有批量写共享同一把「加锁顺序」，AB-BA 环自然消失。
+
+        :param min_interval: 心跳间隔（秒）。>0 时对「已经是该状态且 update_ts 仍新鲜」
+            的行直接跳过，既减少写放大，也把单轮的加锁行数压到很小。
         """
         if not proxy_keys:
             return 0
@@ -925,16 +1121,50 @@ class SQLHelperClass(SqlHelperBase):
         touched = 0
         for start in range(0, len(proxy_keys), 200):
             chunk = proxy_keys[start : start + 200]
-            stmt = (
-                update(ProxyTab)
-                .where(ProxyTab.computed_proxy_str.in_(chunk))
-                .values(status=status, update_ts=ts)
-            )
-            async with self.async_session() as session:
-                async with session.begin():
-                    res = await session.execute(stmt)
-            touched += res.rowcount or 0
+            id_rows = await self._select_proxy_ids(chunk)
+            if not id_rows:
+                continue
+            # 升序：与 refresh_proxy（按 status 索引扫描、天然按主键顺序）保持同一顺序
+            id_rows.sort(key=lambda item: item[0])
+            for id_start in range(0, len(id_rows), 200):
+                ids = [pid for pid, _ in id_rows[id_start : id_start + 200]]
+                stmt = self._build_unavailable_stmt_by_ids(ids, status, ts, min_interval)
+                async with self.async_session() as session:
+                    async with session.begin():
+                        res = await session.execute(stmt)
+                touched += res.rowcount or 0
         return touched
+
+    async def _select_proxy_ids(self, proxy_keys: list[str]) -> list[tuple[int, str]]:
+        """按代理串查主键（``computed_proxy_str`` 有索引，等值 IN 走索引）。"""
+        if not proxy_keys:
+            return []
+        sql = select(ProxyTab.proxy_id, ProxyTab.computed_proxy_str).where(
+            ProxyTab.computed_proxy_str.in_(proxy_keys)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        rows = res.all()
+        return [(int(pid), str(key or "")) for pid, key in rows if pid is not None]
+
+    @staticmethod
+    def _build_unavailable_stmt_by_ids(
+        proxy_ids: list[int], status: int, ts: int, min_interval: int = 0
+    ):
+        """按主键构造「置为不可用」的批量 UPDATE（锁定顺序由 id 升序保证）。"""
+        conditions = [ProxyTab.proxy_id.in_(proxy_ids)]
+        if min_interval > 0:
+            conditions.append(
+                or_(
+                    ProxyTab.status != status,
+                    ProxyTab.update_ts < ts - max(1, int(min_interval)),
+                )
+            )
+        return (
+            update(ProxyTab)
+            .where(and_(*conditions))
+            .values(status=status, update_ts=ts)
+        )
 
     @log_sql_retry_wrapper()
     async def flush_proxy_health(self) -> int:
@@ -956,27 +1186,44 @@ class SQLHelperClass(SqlHelperBase):
         if not self._health_bootstrapped:
             await self.bootstrap_proxy_health()
             self._health_bootstrapped = True
-        limit = max(1, CONFIG.proxy_health.persist_batch)
-        keys = await proxy_health_store.list_cooling_keys(limit=limit)
-        # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
-        # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
-        keys = await self._filter_still_cooling(keys)
-        touched = 0
-        if keys:
-            touched += await self._mark_proxy_unavailable(keys, status=-412)
-            if touched:
-                sql_log.debug(f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行")
+        cfg = CONFIG.proxy_health
+        limit = max(1, cfg.persist_batch)
+        # 与 refresh_proxy 的批量复位互斥：两者顺着不同索引加锁，
+        # 并发会形成 AB-BA 循环等待（MySQL 1213 死锁）。
+        token = await self._acquire_batch_write_lock()
+        if token is None:
+            sql_log.debug("proxy_tab 批量写正被 refresh_proxy 占用，本轮心跳跳过")
+            return 0
+        try:
+            keys = await proxy_health_store.list_cooling_keys(limit=limit)
+            # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
+            # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
+            keys = await self._filter_still_cooling(keys)
+            touched = 0
+            if keys:
+                touched += await self._mark_proxy_unavailable(
+                    keys, status=-412, min_interval=cfg.persist_heartbeat_seconds
+                )
+                if touched:
+                    sql_log.debug(
+                        f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行"
+                    )
 
-        prefix_keys, prefix_touched = await self._flush_prefix_cooling(limit=limit)
-        if prefix_touched:
-            sql_log.warning(
-                f"前缀冷却落盘：{prefix_keys} 个网段冷却中，回写 {prefix_touched} 行"
-                f"（同 /64、/24 内所有代理一并置为不可用）"
-            )
-        return touched + prefix_touched
+            prefix_keys, prefix_touched = await self._flush_prefix_cooling(limit=limit)
+            if prefix_touched:
+                sql_log.warning(
+                    f"前缀冷却落盘：{prefix_keys} 个网段冷却中，回写 {prefix_touched} 行"
+                    f"（同 /64、/24 内所有代理一并置为不可用）"
+                )
+            return touched + prefix_touched
+        finally:
+            await self._release_batch_write_lock(token)
 
     async def _flush_prefix_cooling(self, limit: int) -> tuple[int, int]:
-        """把「冷却中的前缀」整段写回 MySQL：返回 (前缀数, 回写行数)。"""
+        """把「冷却中的前缀」整段写回 MySQL：返回 (前缀数, 回写行数)。
+
+        调用方必须已持有批量写建议锁（本方法只被 ``flush_proxy_health`` 调用）。
+        """
         prefixes = await proxy_health_store.list_prefix_cooling(limit=limit)
         if not prefixes:
             return 0, 0
@@ -989,7 +1236,11 @@ class SQLHelperClass(SqlHelperBase):
         keys = [key for key in dict.fromkeys(members) if key]
         if not keys:
             return len(prefixes), 0
-        touched = await self._mark_proxy_unavailable(keys, status=-412)
+        touched = await self._mark_proxy_unavailable(
+            keys,
+            status=-412,
+            min_interval=CONFIG.proxy_health.persist_heartbeat_seconds,
+        )
         return len(prefixes), touched
 
     async def _filter_still_cooling_prefixes(self, prefixes: list[str]) -> list[str]:

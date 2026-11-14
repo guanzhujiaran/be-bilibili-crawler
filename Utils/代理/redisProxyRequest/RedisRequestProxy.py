@@ -65,11 +65,17 @@ from Utils.代理.数据库操作.ProxyHealth import (
 )
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper, to_proxy_key
+from bili_common.core.log_mask import mask_text, response_brief
 
 #: 代理鉴权失败（407）在响应层而不是异常层出现，需要单独判一次
 _PROXY_AUTH_FAILED_STATUS = 407
 #: 专线闸门告警的最小间隔（秒）：冷却 / 超配额期间每个请求都刷一行会把日志打爆
 _LOCAL_GATE_WARN_INTERVAL = 60.0
+
+
+def _clip(text: str, limit: int) -> str:
+    """日志 / 异常消息用的截断：保留开头（url、参数名），避免整段 body 落盘。"""
+    return text if len(text) <= limit else text[:limit] + "...(truncated)"
 
 
 def _curl_code_of(err: BaseException) -> int | None:
@@ -204,6 +210,54 @@ class RequestWithProxy:
         )
         return proxy
 
+    async def _local_exit_state(self) -> tuple[bool, str]:
+        """自建出口（专线）当前状态：``(是否可用, 人话原因)``。
+
+        用于把「出口不可用」与「池子没货」两类故障在异常信息里彻底分开
+        （历史文案把两者合成一句，线上只能看到「没有可用代理」，无法判断该修哪边）。
+        """
+        cfg = CONFIG.proxy_health
+        local_addr = (CONFIG.my_ipv6_addr or "").strip()
+        if not local_addr:
+            return False, "自建出口未配置（CONFIG.my_ipv6_addr 为空）"
+        proxy_key = to_proxy_key(CONFIG.custom_proxy) or local_addr
+        prefix = proxy_prefix_of(proxy_key)
+        if prefix and await proxy_health_store.is_prefix_cooling(prefix):
+            return False, f"自建出口风控冷却中（前缀 {prefix}，冷却期内不换地址绕行）"
+        return True, f"自建出口未取到（QPS 配额 {cfg.local_ipv6_qps}/s 已满或本任务内已失败）"
+
+    async def _unavailable_error(
+        self, tier: ProxyTier, *, local_tried: bool, extra: str = ""
+    ) -> RequestProxyUnavailableError:
+        """构造「取不到代理」异常：分别写清出口侧与池子侧的原因，并给出 reason 分类。"""
+        local_ok, local_reason = await self._local_exit_state()
+        counts = await proxy_health_store.get_counts()
+        pool_empty = (counts.prefix_hot + counts.prefix_warm) <= 0
+        pool_reason = (
+            "代理池无合格网段（prefix_hot=0、prefix_warm=0）"
+            if pool_empty
+            else (
+                f"代理池有 {counts.prefix_hot} 个 hot / {counts.prefix_warm} 个 warm 网段，"
+                f"但当前候选均被在途配额 / EWMA 门槛挡掉"
+                f"（prefix_cooling={counts.prefix_cooling}）"
+            )
+        )
+        if not local_ok and pool_empty:
+            reason = RequestProxyUnavailableError.REASON_BOTH
+        elif not local_ok and local_tried:
+            reason = RequestProxyUnavailableError.REASON_LOCAL_EXIT
+        else:
+            reason = RequestProxyUnavailableError.REASON_POOL_EMPTY
+        message = (
+            f"没有可用代理（tier={tier.value}，已排除 {len(excluded_proxy_keys())} 个失败代理）："
+            f"{local_reason}；{pool_reason}"
+        )
+        if extra:
+            message += f"；{extra}"
+        return RequestProxyUnavailableError(
+            message, tier=tier.value, reason=reason
+        )
+
     async def _select_proxy(
         self, request_conf: RequestConf, tier: ProxyTier
     ) -> tuple[ProxyTab, bool]:
@@ -227,10 +281,10 @@ class RequestWithProxy:
             if proxy is not None:
                 return proxy, True
             if not cfg.local_ipv6_cooling_pool_fallback:
-                raise RequestProxyUnavailableError(
-                    "自建出口不可用（风控冷却 / 超出 QPS 配额），"
-                    "按配置不降级到代理池",
-                    tier=tier.value,
+                raise await self._unavailable_error(
+                    tier,
+                    local_tried=True,
+                    extra="按配置 local_ipv6_cooling_pool_fallback=false，不降级到代理池",
                 )
             fallback = await self._pool_proxy(tier)
             if fallback is not None:
@@ -238,9 +292,8 @@ class RequestWithProxy:
                     "自建出口不可用（风控冷却 / 超出 QPS 配额），本次降级到代理池"
                 )
                 return fallback, False
-            raise RequestProxyUnavailableError(
-                f"没有可用代理（tier={tier.value}）：自建出口冷却中且代理池无合格代理",
-                tier=tier.value,
+            raise await self._unavailable_error(
+                tier, local_tried=True, extra="强制专线的请求已尝试降级到代理池但池内无候选"
             )
 
         use_local = random.choices(
@@ -264,11 +317,7 @@ class RequestWithProxy:
                 f"（配额 {cfg.local_ipv6_qps} req/s）"
             )
             return fallback, True
-        raise RequestProxyUnavailableError(
-            f"没有可用代理（tier={tier.value}，已排除 {len(excluded_proxy_keys())} 个失败代理；"
-            f"自建出口冷却或超出配额）",
-            tier=tier.value,
-        )
+        raise await self._unavailable_error(tier, local_tried=True)
 
     # endregion
 
@@ -386,7 +435,10 @@ class RequestWithProxy:
                     and "bili" in req.url.host
                 ):
                     raise RequestProxyResponseError(
-                        f"代理返回真实响应错误！\n{req.text}\n{kwargs}\n", -500
+                        "代理返回真实响应错误！"
+                        f"\nresp={response_brief(req_dict)}"
+                        f"\nreq={mask_text(_clip(str(kwargs), 500))}",
+                        -500,
                     )
 
                 if (
@@ -395,8 +447,17 @@ class RequestWithProxy:
                     or req_dict.get("code") == 65539
                 ):
                     if cookie_data:
-                        cookie_data.times_352 += 1
-                    err_msg = f"{req_dict.get('code')}报错,换个ip\t{proxy}\t{self._timeshift(time.time())}\t{req_dict}\n{kwargs}\n{req.headers}"
+                        # 按「出口前缀」去重计数：同一个坏出口连续命中不会把整个 cookie 池废掉
+                        cookie_data.note_352(proxy_prefix_of(proxy_key))
+                    # 异常消息会被上层写进 ERROR 日志：只带 code/关键 id 与脱敏后的请求摘要，
+                    # 不再拼整个响应体 / 完整 kwargs（里面有 cookie 头）。
+                    err_msg = (
+                        f"{req_dict.get('code')}报错,换个ip\t{proxy}\t"
+                        f"{self._timeshift(time.time())}\t"
+                        f"{response_brief(req_dict)}\t"
+                        f"{mask_text(_clip(str(kwargs), 500))}\t"
+                        f"{mask_text(_clip(str(req.headers), 300))}"
+                    )
                     if req_dict.get("code") == 65539:
                         pass
                     if req_dict.get("code") == -412:
@@ -432,7 +493,8 @@ class RequestWithProxy:
                         )
                     case -352:
                         Voucher352_logger.warning(
-                            f"代理{pool_proxy.proxy} 报错-352 被封禁\n{kwargs}"
+                            f"代理{pool_proxy.proxy} 报错-352 被封禁\n"
+                            f"{mask_text(_clip(str(kwargs), 500))}"
                         )
                         await handle_proxy_352(
                             proxy_tab=pool_proxy,

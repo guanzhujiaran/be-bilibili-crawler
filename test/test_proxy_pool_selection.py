@@ -240,10 +240,16 @@ def _fake_id_range(min_id: int, max_id: int):
 # ---------------------------------------------------------------------------
 
 
-async def test_fast_tier_rejects_cold_proxy(monkeypatch):
-    """fast 档不接受没有任何健康记录的代理（未验证 = cold）。"""
+async def test_fast_tier_degrades_to_cold_proxy(monkeypatch):
+    """fast 档没有达标代理时**降级到 cold 探测**（线上 fast 长期空池的直接修复）。
+
+    背景：自建出口 -352 冷却 + 网段前缀冷却时，fast 档一条都挑不到，
+    24h 内 176 次「没有可用代理」把整条车道拖死。现在按 warm → cold 分级降级，
+    放宽的只是 EWMA 门槛，冷却闸门仍在（见下一个用例）。
+    """
     from CONFIG import CONFIG
 
+    assert CONFIG.proxy_health.fast_fallback_to_cold
     row = _FakeProxyRow(key="http://cold:1", success_times=0, score=10)
     attempts = CONFIG.proxy_health.pick_attempts
     session = _FakeSession([[row] for _ in range(attempts)])
@@ -251,9 +257,24 @@ async def test_fast_tier_rejects_cold_proxy(monkeypatch):
     monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
     monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
 
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is row
+    assert len(session.statements) >= 1
+
+
+async def test_fast_tier_strict_when_fallback_disabled(monkeypatch):
+    """关掉兜底开关后恢复严格语义：fast 不接受未验证代理（可部署时回退）。"""
+    from CONFIG import CONFIG
+
+    monkeypatch.setattr(CONFIG.proxy_health, "fast_fallback_to_warm", False)
+    monkeypatch.setattr(CONFIG.proxy_health, "fast_fallback_to_cold", False)
+    row = _FakeProxyRow(key="http://cold:2", success_times=0, score=10)
+    attempts = CONFIG.proxy_health.pick_attempts
+    session = _FakeSession([[row] for _ in range(attempts)])
+    _stub_health(monkeypatch)
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
     assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
-    # 每个 pick_attempts 都试过（候选非空时不会走「从头兜底」）
-    assert len(session.statements) == attempts
 
 
 async def test_fast_tier_accepts_hot_proxy(monkeypatch):

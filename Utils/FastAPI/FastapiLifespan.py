@@ -9,10 +9,12 @@ from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import create_async_engine
 from CONFIG import settings, CONFIG
+from Service.GrpcModule.Grpc.Bapi.BiliCookie import warmup_bili_cookie_pool
 from Service.LangChainCompo.lottery_data_vec_sql.sql_helper import milvus_sql_helper
 from Service.llm_service import config_store
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Utils.FastAPI.alembic_manager import check_schemas, run_alembic_upgrade_head
+from Utils.FastAPI.loop_monitor import start_event_loop_stall_monitor
 from Utils.通用.Common import GLOBAL_SCHEDULER, asyncio_gather
 from controller.v1.background_service import BackgroundServiceController
 from log.base_log import myfastapi_logger
@@ -81,20 +83,47 @@ async def life_span(app: FastAPI):
     # 本角色只消费 bili_data 的写库消息，因此这里不 import 任何 RPC handler 模块。
     myfastapi_logger.info("开启其他服务")
     back_ground_tasks = []
+    # 事件循环卡顿监控：任何 >1s 的阻塞都记 warning（并按 10min 节流推送），
+    # 让「启动后 HTTP 无响应但端口已监听」这类问题有直接证据，而不是靠时间戳猜。
+    back_ground_tasks.append(start_event_loop_stall_monitor())
     if settings.IS_DEV:
         myfastapi_logger.info("开发环境不启动定时任务喵~")
     else:
         show_log = False
         GLOBAL_SCHEDULER.start()
-        back_ground_tasks = BackgroundServiceController.start_monitor_tasks(
-            show_log=show_log
+        # extend 而不是赋值：赋值会把上面已经加进去的「事件循环卡顿监控」丢掉，
+        # 导致它在 shutdown 时不会被取消。
+        back_ground_tasks.extend(
+            BackgroundServiceController.start_monitor_tasks(show_log=show_log)
         )
+        back_ground_tasks.append(asyncio.create_task(_warmup_bili_cookie_pool()))
         myfastapi_logger.info("其他服务已开启！可以开启服务了喵~")
     yield
     myfastapi_logger.info("正在取消其他服务")
     [x.cancel() for x in back_ground_tasks]
     await asyncio_gather(*back_ground_tasks, log=myfastapi_logger)
     myfastapi_logger.info("其他服务已取消")
+
+
+#: 启动期 cookie 预热的延迟（秒）。刻意放到「服务已就绪」之后：
+#: 生成 cookie 要跑主站首页 + spi + gaia 一整条链路，放在 lifespan 里 await 会把
+#: 「Application startup complete」推迟，还可能和调度器的首批任务抢同一个事件循环。
+_COOKIE_WARMUP_DELAY_SECONDS = 15
+
+
+async def _warmup_bili_cookie_pool() -> None:
+    """后台预热 cookie 池（可配开关 / 数量，见 ``CONFIG.bili_cookie``）。
+
+    失败只记 warning：预热只是「提前把长链路跑掉」，不预热也必须能正常工作。
+    """
+    if not CONFIG.bili_cookie.warmup_on_startup:
+        myfastapi_logger.info("cookie 池预热已关闭（BILI_COOKIE__WARMUP_ON_STARTUP=false）")
+        return
+    await asyncio.sleep(_COOKIE_WARMUP_DELAY_SECONDS)
+    try:
+        await warmup_bili_cookie_pool()
+    except Exception as e:  # noqa: BLE001 —— 预热失败不影响服务
+        myfastapi_logger.warning(f"cookie 池预热失败（首个业务请求会自行重试）：{e!r}")
 
 
 async def test_database_connections():
