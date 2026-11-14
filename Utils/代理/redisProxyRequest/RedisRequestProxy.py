@@ -34,7 +34,9 @@ from Service.GrpcModule.Models.CustomRequestErrorModel import (
     Request412Error,
     Request352Error,
     RequestKnownError,
+    RequestProxyNetworkError,
     RequestProxyResponseError,
+    RequestProxyUnavailableError,
     RequestUnknownError,
 )
 from Service.GrpcModule.Models.RabbitmqModel import VoucherInfo
@@ -42,8 +44,13 @@ from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from log.base_log import request_with_proxy_logger, Voucher352_logger
 from Models.AntiRisk.Bili.WebCookie import CookieWrapper
 from Utils.代理.SealedRequests import my_async_httpx
+from Utils.代理.mdoel.ProxyTier import ProxyTier
 from Utils.代理.mdoel.RequestConf import RequestConf
-from Utils.代理.redisProxyRequest.GetProxyFromNet import get_proxy_methods
+from Utils.代理.mdoel.request_context import (
+    excluded_proxy_keys,
+    note_failed_proxy,
+    resolve_tier,
+)
 from Utils.代理.数据库操作.ProxyCommOp import get_available_proxy
 from Utils.代理.数据库操作.ProxyEvent import (
     handle_proxy_412,
@@ -51,8 +58,49 @@ from Utils.代理.数据库操作.ProxyEvent import (
     handle_proxy_request_fail,
     handle_proxy_succ,
 )
+from Utils.代理.数据库操作.ProxyHealth import (
+    ProxyFailureKind,
+    proxy_health_store,
+)
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
-from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper
+from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper, to_proxy_key
+
+#: 代理鉴权失败（407）在响应层而不是异常层出现，需要单独判一次
+_PROXY_AUTH_FAILED_STATUS = 407
+#: 本地 ipv6 代理在随机取代理时的权重（相对真实代理池，约 1%）
+_LOCAL_PROXY_WEIGHT = 10
+#: 真实代理池的权重
+_REAL_PROXY_WEIGHT = 1000
+
+
+def _curl_code_of(err: BaseException) -> int | None:
+    """尽量从 curl_cffi 异常里取 curl 错误码（不同版本字段位置不同）。"""
+    for attr in ("code", "errno", "curl_code"):
+        value = getattr(err, attr, None)
+        if isinstance(value, int):
+            return value
+    args = getattr(err, "args", ())
+    for value in args:
+        if isinstance(value, int):
+            return value
+    return None
+
+
+def classify_proxy_failure(err: BaseException) -> ProxyFailureKind:
+    """把异常分流成「网络层 / 风控层 / 上游响应 / 未知」。
+
+    网络层（含 curl 28/7/35、407、连接失败、超时）→ 扣分 + 连续失败 + 10~30min 冷却；
+    风控层（412/352）由调用方在专门的 except 里处理，不走这里。
+    """
+    if isinstance(err, (Request412Error, Request352Error)):
+        return ProxyFailureKind.RISK_CONTROL
+    # 注意顺序：RequestProxyNetworkError 继承 RequestProxyResponseError（兼容旧 except），
+    # 必须先判子类，否则 407 / curl 网络错误会被误归到「上游响应」。
+    if isinstance(err, RequestProxyNetworkError):
+        return ProxyFailureKind.NETWORK
+    if isinstance(err, RequestProxyResponseError):
+        return ProxyFailureKind.RESPONSE
+    return ProxyFailureKind.NETWORK
 
 
 class RequestWithProxy:
@@ -71,8 +119,64 @@ class RequestWithProxy:
         realtime = time.strftime("%Y-%m-%d %H:%M:%S", local_time)
         return realtime
 
-    async def get_one_rand_proxy(self) -> ProxyTab:
-        return await SQLHelper.select_proxy("rand", channel=self.channel)
+    async def get_one_rand_proxy(self, tier: ProxyTier = ProxyTier.FAST) -> ProxyTab:
+        return await SQLHelper.select_proxy("rand", channel=self.channel, tier=tier)
+
+    # region 取代理
+    def _local_ipv6_proxy(self) -> ProxyTab:
+        """本地 ipv6 代理：它是配置项而不是代理池成员，不参与打分 / 健康统计。"""
+        return ProxyTab(
+            **{
+                "proxy_id": 1,
+                "proxy": CONFIG.custom_proxy,
+                "status": 0,
+                "update_ts": 0,
+                "score": 10000,
+                "add_ts": 0,
+                "success_times": 10000,
+                "zhihu_status": 0,
+                "computed_proxy_str": CONFIG.my_ipv6_addr,
+            }
+        )
+
+    async def _select_proxy(
+        self, request_conf: RequestConf, tier: ProxyTier
+    ) -> tuple[ProxyTab, bool]:
+        """选一个代理，返回 ``(代理行, 是否本地 ipv6 代理)``。
+
+        - ``is_use_custom_proxy``：直接用本地 ipv6 代理（原本地行为）；
+        - 否则按权重在「本地 ipv6 代理 / 代理池」之间随机，代理池按 ``tier`` 取
+          （fast 只用已验证的，slow 允许掺 cold 探测）；
+        - 池里没有合格代理时**不再在请求里现场抓一轮**（那会把 worker 挂住几分钟），
+          而是快速抛 ``RequestProxyUnavailableError``：fast 档直接失败交回队列，
+          slow 档由重试预算的指数退避等待后台补池；本地 ipv6 可用时优先用它兜底。
+        """
+        if request_conf.is_use_custom_proxy:
+            return self._local_ipv6_proxy(), True
+
+        use_local = random.choices(
+            [True, False],
+            weights=[_LOCAL_PROXY_WEIGHT, _REAL_PROXY_WEIGHT],
+            k=1,
+        )[0]
+        if use_local:
+            return self._local_ipv6_proxy(), True
+
+        excluded = excluded_proxy_keys()
+        proxy, _ = await get_available_proxy(tier=tier, exclude=excluded)
+        if proxy:
+            return proxy, False
+        if CONFIG.my_ipv6_addr:
+            self.log.debug(
+                f"代理池无符合 tier={tier.value} 的代理，本次使用本地 ipv6 代理兜底"
+            )
+            return self._local_ipv6_proxy(), True
+        raise RequestProxyUnavailableError(
+            f"没有可用代理（tier={tier.value}，已排除 {len(excluded)} 个失败代理）",
+            tier=tier.value,
+        )
+
+    # endregion
 
     async def request_with_proxy(
         self,
@@ -88,59 +192,52 @@ class RequestWithProxy:
         :hybrid 是否将本地ipv6代理加入随机选择中
         :return:
         """
-        is_use_available_proxy: bool = request_conf.is_use_available_proxy
+        tier = resolve_tier(request_conf)
+        proxy, is_local = await self._select_proxy(request_conf, tier)
+        proxy_key = "" if is_local else to_proxy_key(proxy.proxy)
+        # 在途计数：fast 档要求 in_flight<2，靠它把热门代理的并发压在低位，
+        # TTL 兜底，进程崩溃也不会永久占住代理。
+        if proxy_key:
+            await proxy_health_store.acquire_in_flight(proxy_key)
+        try:
+            return await self._dispatch_request(
+                proxy=proxy,
+                proxy_key=proxy_key,
+                is_local=is_local,
+                request_conf=request_conf,
+                cookie_data=cookie_data,
+                **kwargs,
+            )
+        finally:
+            if proxy_key:
+                await proxy_health_store.release_in_flight(proxy_key)
+
+    async def _dispatch_request(
+        self,
+        proxy: ProxyTab,
+        proxy_key: str,
+        is_local: bool,
+        request_conf: RequestConf,
+        cookie_data: CookieWrapper | None = None,
+        **kwargs,
+    ) -> dict | list[dict] | curl_cffi.requests.models.Request:
         is_use_custom_proxy: bool = request_conf.is_use_custom_proxy
         is_return_raw_response: bool = request_conf.is_return_raw_response
-        use_my_ipv6_proxy_pool_weights = 10  # 使用自己的ipv6代理池的权重
-        use_real_proxy_weights = 1000  # 使用抓取的代理的权重
-        status = 0
         origin = kwargs.get("headers", {}).get("origin", "https://www.bilibili.com")
         referer = kwargs.get("headers", {}).get("referer", "https://www.bilibili.com/")
-        used_available_proxy = False
-        my_ipv6_proxy = ProxyTab(
-            **{
-                "proxy_id": 1,
-                "proxy": CONFIG.custom_proxy,
-                "status": 0,
-                "update_ts": 0,
-                "score": 10000,
-                "add_ts": 0,
-                "success_times": 10000,
-                "zhihu_status": 0,
-                "computed_proxy_str": CONFIG.my_ipv6_addr,
-            }
-        )
-        proxy = my_ipv6_proxy if is_use_custom_proxy else None
-        while not proxy:  # 获取代理这里可以while 1 循环
-            proxy_flag: bool = random.choices(
-                [True, False],
-                weights=[
-                    (
-                        use_my_ipv6_proxy_pool_weights
-                        if use_my_ipv6_proxy_pool_weights >= 0
-                        else 0
-                    ),
-                    use_real_proxy_weights if use_real_proxy_weights >= 0 else 0,
-                ],
-                k=1,
-            )[0]
-            if not proxy_flag or status != 0:
-                use_my_ipv6_proxy_pool_weights += 1
-                proxy, used_available_proxy = await get_available_proxy(
-                    is_use_available_proxy
-                )
-                if not proxy:
-                    self.log.warning("获取代理失败！")
-                    await get_proxy_methods.main()
-                    continue
-            else:
-                use_real_proxy_weights += 20
-                proxy = my_ipv6_proxy
         req_dict = False
         req_text = ""
         request_timeout = (
-            self.timeout if not used_available_proxy else self.available_proxy_timeout
+            self.timeout if is_use_custom_proxy else self.available_proxy_timeout
         )
+        pool_proxy = None if is_local else proxy
+
+        def _mark_failed(kind: ProxyFailureKind):
+            """登记一次代理失败：MySQL 打分 + Redis 健康状态机 + 下一轮换代理。"""
+            if not pool_proxy:
+                return
+            note_failed_proxy(proxy_key)
+
         try:
             # 双保险：既把超时透传给 curl_cffi，又在外层用 asyncio.timeout 兜底，
             # 保证单次请求不会超出 request_timeout（+2s 宽限）而长期挂死。
@@ -154,6 +251,14 @@ class RequestWithProxy:
                     proxies=proxy.proxy,
                 )
             req_text = req.text
+            # 407 = 代理需要认证：HTTP 层是「成功」的，但代理不可用，必须当作网络层失败
+            if getattr(req, "status_code", None) == _PROXY_AUTH_FAILED_STATUS:
+                raise RequestProxyNetworkError(
+                    f"代理返回 407（需要认证，该代理不可用）\n{proxy.proxy}\n{kwargs}",
+                    -407,
+                    proxy_key=proxy_key,
+                    curl_code=_PROXY_AUTH_FAILED_STATUS,
+                )
             if "code" not in req_text and "bili" in str(
                 req.url
             ):  # 如果返回的不是json那么就打印出来看看是什么
@@ -194,7 +299,6 @@ class RequestWithProxy:
                 ):
                     if cookie_data:
                         cookie_data.times_352 += 1
-                    status = -412
                     err_msg = f"{req_dict.get('code')}报错,换个ip\t{proxy}\t{self._timeshift(time.time())}\t{req_dict}\n{kwargs}\n{req.headers}"
                     if req_dict.get("code") == 65539:
                         pass
@@ -223,23 +327,24 @@ class RequestWithProxy:
                         raise Request352Error(err_msg, -352)
                     raise Request412Error(err_msg, req_dict.get("code"))
         except (Request412Error, Request352Error) as _err:
-            if proxy:
+            if pool_proxy:
                 match _err.code:
                     case -412:
                         await handle_proxy_412(
-                            proxy_tab=proxy,
+                            proxy_tab=pool_proxy,
                         )
                     case -352:
                         Voucher352_logger.warning(
-                            f"代理{proxy.proxy} 报错-352 被封禁\n{kwargs}"
+                            f"代理{pool_proxy.proxy} 报错-352 被封禁\n{kwargs}"
                         )
                         await handle_proxy_352(
-                            proxy_tab=proxy,
+                            proxy_tab=pool_proxy,
                         )
                     case _:
                         await handle_proxy_request_fail(
-                            proxy_tab=proxy,
+                            proxy_tab=pool_proxy,
                         )
+                note_failed_proxy(proxy_key)
             raise _err
         except curl_cffi.requests.exceptions.ImpersonateError as _err:
             # 客户端指纹（impersonate）问题：异常在 set_curl_options 阶段抛出，
@@ -265,6 +370,7 @@ class RequestWithProxy:
             WriteError,
             InvalidURL,
             NetworkError,
+            RequestProxyNetworkError,
             RequestProxyResponseError,
             ExceptionGroup,
             ProxyConnectionError,
@@ -279,20 +385,25 @@ class RequestWithProxy:
             curl_cffi.requests.exceptions.HTTPError,
             TimeoutError,
         ) as _err:
+            kind = classify_proxy_failure(_err)
             self.log.debug(
-                f"\n代理：{str(proxy)}\n请求时发生网络错误：{type(_err)}\n{_err}"
+                f"\n代理：{str(proxy)}\n请求时发生网络错误（{kind.value}）："
+                f"{type(_err)}\n{_err}"
             )
-            if proxy:
-                await handle_proxy_request_fail(
-                    proxy_tab=proxy,
-                )
-            raise RequestProxyResponseError(_err)
+            if pool_proxy:
+                await handle_proxy_request_fail(proxy_tab=pool_proxy, kind=kind)
+                note_failed_proxy(proxy_key)
+            raise RequestProxyNetworkError(
+                f"{type(_err).__name__}: {_err}",
+                -1,
+                proxy_key=proxy_key,
+                curl_code=_curl_code_of(_err),
+            )
         except AttributeError as _err:
             self.log.exception(f"\n代理：{str(proxy)}\n请求时出错，一般错误：{_err}")
-            if proxy:
-                await handle_proxy_request_fail(
-                    proxy_tab=proxy,
-                )
+            if pool_proxy:
+                await handle_proxy_request_fail(proxy_tab=pool_proxy)
+                note_failed_proxy(proxy_key)
             raise RequestUnknownError(_err)
         except Exception as _err:
             self.log.exception(
@@ -301,10 +412,9 @@ class RequestWithProxy:
                 f"\n{type(_err)}"
                 f"\n{_err}\n{req_text}"
             )
-            if proxy:
-                await handle_proxy_request_fail(
-                    proxy_tab=proxy,
-                )
+            if pool_proxy:
+                await handle_proxy_request_fail(proxy_tab=pool_proxy)
+                note_failed_proxy(proxy_key)
             raise RequestUnknownError(_err)
         if req_dict is False and is_return_raw_response is False:
             raise ValueError("请求返回的req_dict是False")

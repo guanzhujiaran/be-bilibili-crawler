@@ -19,6 +19,7 @@ from Service.BaseCrawler.plugin.statusPlugin import (
     StatsPlugin,
     SequentialNullStopPlugin,
 )
+from Utils.代理.mdoel.ProxyTier import ProxyTier
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -91,6 +92,21 @@ class CrawlerConfig(BaseModel):
     # 任务失败后的延迟时间（秒）：None = 跟随
     worker_error_delay: int | None = Field(default=None)
 
+    # ===== 代理档位（只表达优先级，具体行为见 RequestRetryPolicy / ProxyHealth）=====
+    # fast：只用已验证可用的代理，重试预算小、失败快速交回队列；
+    # slow：允许掺入 cold 代理做探测，重试预算大（指数退避封顶 60s）。
+    # 这是**每个爬虫自己声明**的语义：本文件不写死任何业务名称。
+    proxy_tier: ProxyTier = Field(
+        default=ProxyTier.FAST, description="该爬虫使用的代理档位"
+    )
+    # slow 车道的基准并发相对 max_sem 的比例（hot 池不足时会在其基础上再收缩）
+    slow_lane_ratio: float = Field(
+        default=1.0, description="slow 车道基准并发 = max_sem × 本比例"
+    )
+    # 失败任务的延迟重入队（秒）：None = 跟随 CONFIG.crawler_runtime
+    requeue_delay_base: int | None = Field(default=None)
+    requeue_delay_max: int | None = Field(default=None)
+
     # 日志对象（由 Config 集中管理；运行时可用对应环境变量覆盖其子字段前的 logger 选择）
     logger: Any = myfastapi_logger
     # 插件声明列表：每个元素为 PluginConfig(plugin_name, plugin_cls)，
@@ -111,6 +127,9 @@ class DynDetailScrapyConfig(CrawlerConfig):
     # 差异：失败也重入队；单条详情最长 300s
     requeue_on_fetch_fail: bool = True
     worker_max_timeout: int | None = 300
+    # 该爬虫的任务量巨大且可容忍等待：走 slow 车道，
+    # 允许用 cold 代理做探测（探测成功率高的代理会被养进 hot 池供 fast 车道使用）。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     logger: Any = official_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("status_plugin", StatsPlugin, {"push_result": True}),
@@ -207,6 +226,8 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
     requeue_on_timeout: bool = False
     max_retries: int = 0
     worker_error_delay: int = 0
+    # 空间动态 / 抽奖判定天然依赖「大量不同 IP 低频访问」，走 slow 车道做代理探测
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     logger: Any = get_others_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),

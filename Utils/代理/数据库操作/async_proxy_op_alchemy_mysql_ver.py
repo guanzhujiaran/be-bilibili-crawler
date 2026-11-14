@@ -25,6 +25,14 @@ from Models.v1.background_service.background_service_model import ProxyStatusRes
 from Utils.通用.Common import GLOBAL_SCHEDULER, log_sql_retry_wrapper, asyncio_gather
 from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 from Utils.redisTool.RedisManager import RedisManagerBase
+from Utils.代理.mdoel.ProxyTier import ProxyTier
+from Utils.代理.数据库操作.ProxyHealth import (
+    ProxyHealthCounts,
+    ProxyHealthRecord,
+    ProxyHealthState,
+    proxy_health_store,
+    seed_health_record,
+)
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
 
@@ -106,6 +114,11 @@ def _is_local_ipv6_proxy(proxy_key: str) -> bool:
     return bool(local) and proxy_key.strip().rstrip("/") == local
 
 
+def is_local_ipv6_proxy(proxy_key: str) -> bool:
+    """对外暴露的只读判断：本地 ipv6 代理不参与打分 / 健康状态统计。"""
+    return _is_local_ipv6_proxy(proxy_key)
+
+
 
 class SQLHelperClass(SqlHelperBase):
     def __init__(self):
@@ -125,6 +138,16 @@ class SQLHelperClass(SqlHelperBase):
             next_run_time=datetime.datetime.now(),
             misfire_grace_time=600,
         )
+        # 冷却中的代理需要持续回写 update_ts（心跳），否则 refresh_proxy 会在 2 小时后
+        # 把它们复位成 status=0，风控层的 2~6h 冷却就白设了。周期取
+        # PROXY_HEALTH__PERSIST_INTERVAL（默认 60s），远小于 refresh 的 2h 窗口。
+        GLOBAL_SCHEDULER.add_job(
+            self.flush_proxy_health,
+            "interval",
+            seconds=max(10, CONFIG.proxy_health.persist_interval),
+            next_run_time=datetime.datetime.now(),
+            misfire_grace_time=120,
+        )
         # 取代理改为「MySQL 随机主键起点」，需要知道 id 范围；
         # 每 10 分钟的任务顺带刷新即可，这里只在首次为空时懒加载。
         self._proxy_id_range: tuple[int, int] | None = None
@@ -132,6 +155,8 @@ class SQLHelperClass(SqlHelperBase):
         # 代理池概览的进程内缓存（见 PROXY_STATUS_CACHE_TTL_SECONDS）
         self._proxy_status_cache: ProxyStatusResp | None = None
         self._proxy_status_cache_ts: float = 0.0
+        # 健康状态冷启动播种是否已做过（进程级，只做一次）
+        self._health_bootstrapped: bool = False
 
     @log_sql_retry_wrapper()
     async def clear_unusable_proxy(self) -> int:
@@ -222,6 +247,30 @@ class SQLHelperClass(SqlHelperBase):
                         lookup.alive.add(proxy_key)
         return lookup
 
+    async def get_proxies_by_keys(self, proxy_keys: list[str]) -> dict[str, ProxyTab]:
+        """批量取整行（``computed_proxy_str`` 等值 / IN 走索引），只返回**仍可用**的行。
+
+        供「从已验证分档取样」后回 MySQL 确认使用：一次 IN 查询，避免 N 次单行查询。
+        """
+        keys = [k for k in dict.fromkeys(proxy_keys) if k]
+        if not keys:
+            return {}
+        sql = select(ProxyTab).where(
+            ProxyTab.computed_proxy_str.in_(keys),
+            ProxyTab.status == 0,
+            or_(
+                ProxyTab.success_times.is_(None),
+                ProxyTab.success_times >= ZOMBIE_SUCCESS_TIMES_MAX,
+            ),
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        return {
+            row.computed_proxy_str: row
+            for row in res.scalars().all()
+            if row is not None and row.computed_proxy_str
+        }
+
     @log_sql_retry_wrapper()
     async def select_score_top_proxy(self) -> ProxyTab | None:
         """取分数最高的一条（不再经过 Redis zset）。"""
@@ -244,53 +293,271 @@ class SQLHelperClass(SqlHelperBase):
         self._proxy_id_range_ts = now
         return self._proxy_id_range
 
-    async def select_random_proxy(self) -> ProxyTab | None:
-        """从 MySQL 随机取一条可用代理（不再依赖 Redis 池）。
+    async def _select_candidate_rows(
+        self, start_id: int, limit: int
+    ) -> list[ProxyTab]:
+        """从随机主键起点往后取一批候选行（走 ``(proxy_id, status, ...)`` 索引）。
 
         为什么不用 ``ORDER BY RAND()``：线上实测 69 万可用行时 **2.3 秒/次**，
         每次业务请求都要等 2 秒，不可接受；``LIMIT 1 OFFSET 30万`` 也要 1.7 秒。
-        这里用「随机主键起点 + ``ORDER BY proxy_id LIMIT 1``」，实测 **14~18ms**。
+        这里用「随机主键起点 + ``ORDER BY proxy_id LIMIT N``」，实测 **14~18ms**，
+        N 只取十几条（健康状态在 Redis，需要多取几条才能筛出合格代理），
+        仍然是索引范围扫描，不排序、不全表扫。
+        """
+        sql = (
+            select(ProxyTab)
+            .where(
+                ProxyTab.proxy_id >= start_id,
+                ProxyTab.status == 0,
+                or_(
+                    ProxyTab.success_times.is_(None),
+                    ProxyTab.success_times >= ZOMBIE_SUCCESS_TIMES_MAX,
+                ),
+            )
+            .order_by(ProxyTab.proxy_id)
+            .limit(limit)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        # 过滤 None：单测 / 驱动返回的空行不应进入候选集（否则会在取 key 时炸）
+        return [row for row in res.scalars().all() if row is not None]
 
-        随机点落在最后一条可用行之后会取空，此时回退到「从头取下一条」，保证有结果；
-        取到的行在 id 上略有偏差（空洞后面的行更容易被选中），但 id 与代理质量无关。
+    @staticmethod
+    def _proxy_key_of(proxy_tab: ProxyTab) -> str:
+        """取代理串（优先用生成列，避免再解析一次 JSON）。"""
+        return proxy_tab.computed_proxy_str or to_proxy_key(proxy_tab.proxy) or ""
+
+    async def _pick_proxy_by_tier(
+        self, rows: list[ProxyTab], tier: ProxyTier
+    ) -> ProxyTab | None:
+        """在一批候选行里按档位挑一条。
+
+        - ``fast``：只接受「未冷却 + EWMA 达标 + 在途并发未打满」的代理，挑不到就返回 None，
+          由上层快速失败（fast 车道绝不能为了「凑一条」而下沉到坏代理池）；
+        - ``slow``：未冷却即可用，并按 ``cold_probe_ratio`` 掺入 cold / suspect 代理做探测，
+          dead 一律不取（只有等冷却过期后由成功请求救回）。
+        """
+        keys = [self._proxy_key_of(row) for row in rows]
+        health_map = await proxy_health_store.get_many(keys)
+        in_flight_map = await proxy_health_store.get_in_flight(keys)
+        now = int(time.time())
+        cfg = CONFIG.proxy_health
+
+        scored: list[tuple[ProxyTab, str, ProxyHealthRecord, int]] = []
+        for row, key in zip(rows, keys):
+            record = health_map.records.get(key) or seed_health_record(
+                row.success_times, row.score
+            )
+            scored.append((row, key, record, in_flight_map.get(key)))
+
+        if tier is ProxyTier.FAST:
+            fast_candidates = [
+                item
+                for item in scored
+                if proxy_health_store.is_fast_eligible(item[2], item[3], now)
+            ]
+            if fast_candidates:
+                return random.choice(fast_candidates)[0]
+            sql_log.debug(
+                f"fast 档本次候选 {len(rows)} 条均不达标"
+                f"（需 ewma>={cfg.fast_min_ewma}、未冷却、在途<{cfg.fast_max_in_flight}）"
+            )
+            return None
+
+        usable = [
+            item
+            for item in scored
+            if proxy_health_store.is_slow_eligible(item[2], now)
+            and item[2].state is not ProxyHealthState.DEAD
+        ]
+        if not usable:
+            return None
+        # 探测抽签：按比例放行 cold（完全没记录）/ suspect，用来把新代理「养」成 hot
+        if random.random() < cfg.cold_probe_ratio:
+            probes = [
+                item
+                for item in usable
+                if item[2].state
+                in (
+                    ProxyHealthState.COLD,
+                    ProxyHealthState.SUSPECT,
+                    ProxyHealthState.WARM,
+                )
+            ]
+            if probes:
+                return random.choice(probes)[0]
+        hot = [item for item in usable if item[2].state is ProxyHealthState.HOT]
+        if hot:
+            return random.choice(hot)[0]
+        warm = [item for item in usable if item[2].state is ProxyHealthState.WARM]
+        if warm:
+            return random.choice(warm)[0]
+        return random.choice(usable)[0]
+
+    async def select_random_proxy(
+        self,
+        tier: ProxyTier = ProxyTier.FAST,
+        exclude: frozenset[str] | set[str] | None = None,
+    ) -> ProxyTab | None:
+        """按档位从 MySQL 随机取一条可用代理（随机主键起点，禁止 ORDER BY / 全表扫）。
+
+        :param tier: ``fast`` 只取已证明可用的代理；``slow`` 允许掺入 cold 代理做探测
+        :param exclude: 本次任务已失败的代理串（换代理用）。注意 ``fast`` 档在候选不足时
+            宁可返回 None 也不放宽条件，否则又会回到「反复命中同一个坏代理」的老问题。
+
+        随机点落在最后一条可用行之后会取空，此时最后一次尝试回退到「从头取」，
+        保证有结果；取到的行在 id 上略有偏差（空洞后面的行更容易被选中），
+        但 id 与代理质量无关。
         """
         min_id, max_id = await self._get_proxy_id_range()
         if max_id <= 0:
             return None
-        for attempt in range(2):
-            start_id = min_id if attempt else random.randint(min_id, max_id)
-            sql = (
-                select(ProxyTab)
-                .where(
-                    ProxyTab.proxy_id >= start_id,
-                    ProxyTab.status == 0,
-                    func.coalesce(ProxyTab.success_times, 0)
-                    >= ZOMBIE_SUCCESS_TIMES_MAX,
-                )
-                .order_by(ProxyTab.proxy_id)
-                .limit(1)
-            )
-            async with self.async_session() as session:
-                res = await session.execute(sql)
-                proxy_tab = res.scalars().first()
+        cfg = CONFIG.proxy_health
+        excluded = exclude or frozenset()
+        batch = max(1, cfg.candidate_batch)
+        attempts = max(1, cfg.pick_attempts)
+
+        # 第一步：从「已验证分档集合」直接取样。
+        # 代理池 68 万行里已验证的只有几千条，随机主键起点几乎抽不到（实测 80 次中 1 次），
+        # 不先从这里取，就等于「名义上优先好代理、实际全用冷代理」。
+        if tier is ProxyTier.FAST or random.random() >= cfg.cold_probe_ratio:
+            verified = await self._pick_from_verified_pool(tier, excluded)
+            if verified is not None:
+                return verified
+
+        fetched_any = False
+        for _ in range(attempts):
+            # 每次都从随机主键起点取一批：健康状态在 Redis，单条太容易筛空
+            start_id = random.randint(min_id, max_id)
+            rows = await self._select_candidate_rows(start_id, batch)
+            if excluded:
+                rows = [
+                    row for row in rows if self._proxy_key_of(row) not in excluded
+                ]
+            if rows:
+                fetched_any = True
+            proxy_tab = await self._pick_proxy_by_tier(rows, tier)
             if proxy_tab is not None:
                 return proxy_tab
+        if not fetched_any:
+            # 所有随机起点都落在「末段空洞」（id 已被删干净）之后的兜底：从头取一批
+            rows = await self._select_candidate_rows(min_id, batch)
+            if excluded:
+                rows = [
+                    row for row in rows if self._proxy_key_of(row) not in excluded
+                ]
+            proxy_tab = await self._pick_proxy_by_tier(rows, tier)
+            if proxy_tab is not None:
+                return proxy_tab
+        if tier is ProxyTier.FAST:
+            # fast 档取不到：可能是 Redis 刚清空（还没播种）。懒触发一次播种，
+            # 这样即使调度器没跑（开发环境 IS_DEV=1），fast 车道也不会长期空池。
+            self._ensure_health_bootstrapped()
         return None
+
+    async def _pick_from_verified_pool(
+        self, tier: ProxyTier, exclude: frozenset[str] | set[str]
+    ) -> ProxyTab | None:
+        """从「已验证分档」（hot → warm）里取样，取到就返回，取不到返回 None。
+
+        为什么不能只靠随机主键起点：已验证代理只占池子的极小比例（实测几千 / 68 万），
+        32 行候选里出现一条的概率约 0.4%，相当于「名义上优先、实际上全用冷代理」。
+        分档集合（``SRANDMEMBER``）才是可枚举的好代理名单，取样是 O(count)。
+
+        取样后要回 MySQL 做一次点查（``computed_proxy_str`` 有索引）：
+        Redis 只是缓存，MySQL 才是「这行还能不能用」的真相；
+        已经被删 / 被置黑的成员顺手从集合里摘掉，避免每次都抽到它。
+        """
+        cfg = CONFIG.proxy_health
+        states = (ProxyHealthState.HOT, ProxyHealthState.WARM)
+        keys = await proxy_health_store.sample_state_keys(states, max(1, cfg.verified_sample))
+        if exclude:
+            keys = [key for key in keys if key not in exclude]
+        if not keys:
+            return None
+
+        health_map = await proxy_health_store.get_many(keys)
+        in_flight_map = await proxy_health_store.get_in_flight(keys)
+        now = int(time.time())
+        stale: list[str] = []
+        candidates: list[tuple[str, ProxyHealthRecord]] = []
+        for key in keys:
+            record = health_map.records.get(key)
+            if record is None:
+                # 分档集合里有、明细已过期：属于残留，清掉
+                stale.append(key)
+                continue
+            if tier is ProxyTier.FAST:
+                if not proxy_health_store.is_fast_eligible(
+                    record, in_flight_map.get(key), now
+                ):
+                    continue
+            elif not proxy_health_store.is_slow_eligible(record, now):
+                continue
+            candidates.append((key, record))
+        if stale:
+            await asyncio_gather(
+                *[proxy_health_store.forget_state(key) for key in stale], log=sql_log
+            )
+        if not candidates:
+            return None
+
+        # 同档内按 EWMA 加权：成功率越高的越先被抽到，但不会把流量全压在少数几条上
+        chosen_pool = [c for c in candidates if c[1].state is ProxyHealthState.HOT]
+        if not chosen_pool:
+            chosen_pool = candidates
+        weights = [max(0.05, record.ewma_success) for _, record in chosen_pool]
+        chosen_key = random.choices(
+            [key for key, _ in chosen_pool], weights=weights, k=1
+        )[0]
+
+        rows = await self.get_proxies_by_keys([chosen_key])
+        row = rows.get(chosen_key)
+        if row is None:
+            # 这一条在 MySQL 里已经不可用（被删 / 被置黑）：摘掉并让上层继续找
+            await proxy_health_store.forget_state(chosen_key)
+            return None
+        return row
+
+    def _ensure_health_bootstrapped(self) -> None:
+        """首次需要时触发一次健康状态播种（后台任务，不阻塞请求）。"""
+        if self._health_bootstrapped:
+            return
+        # 先置位再起任务：并发请求同时失败时只播种一次
+        self._health_bootstrapped = True
+        try:
+            asyncio.create_task(self._bootstrap_health_quietly())
+        except RuntimeError as e:  # 没有运行中的事件循环（同步脚本入口）
+            sql_log.warning(f"没有可用事件循环，跳过健康状态播种：{e}")
+
+    async def _bootstrap_health_quietly(self) -> None:
+        try:
+            await self.bootstrap_proxy_health()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 后台播种失败不能影响请求路径
+            sql_log.exception(f"健康状态播种失败：{type(e).__name__} {e}")
 
     @log_sql_retry_wrapper()
     async def select_proxy(
-        self, mode: Literal["single", "all", "rand"] = "single", channel="bili"
+        self,
+        mode: Literal["single", "all", "rand"] = "single",
+        channel="bili",
+        tier: ProxyTier = ProxyTier.FAST,
+        exclude: frozenset[str] | set[str] | None = None,
     ) -> ProxyTab | List[ProxyTab] | None:
         """
         选择一个可用的代理
         :param channel:
         :param mode: single 就选择分数最高的未被风控的代理 默认是rand，改成single之后从分数最高的代理开始用，这样获取响应特别快
+        :param tier: 代理档位（fast=只用已验证的；slow=允许掺 cold 探测）
+        :param exclude: 本次任务内已失败的代理串
         :return:[{...}, {...}] proxy_dict
         """
         if mode == "rand":
             # MySQL 随机（随机主键起点，实测 ~15ms）；不再经过 Redis zset。
             # 注意：不能用这里的 `ORDER BY RAND()` 分支，69 万可用行时 2.3s/次。
-            return await self.select_random_proxy()
+            return await self.select_random_proxy(tier=tier, exclude=exclude)
         if mode == "single":
             return await self.select_score_top_proxy()
         available_status = 0
@@ -572,7 +839,150 @@ class SQLHelperClass(SqlHelperBase):
                     __sql
                 )  # 刷新超过12小时的无效代理，改变status和score
                 await session.commit()
+        # 上面的批量复位只看「update_ts 是否够旧」，不足以表达健康状态机里的冷却：
+        # 风控层冷却 2~6h、网络层冷却 10~30min，必须由 Redis 冷却集合兜底拉回，
+        # 否则 412 代理会在 2 小时后被复位成可用（历史 bug）。
+        cooling_keys = await proxy_health_store.list_cooling_keys(
+            limit=max(1, CONFIG.proxy_health.persist_batch)
+        )
+        if cooling_keys:
+            cooling_keys = await self._filter_still_cooling(cooling_keys)
+            await self._mark_proxy_unavailable(cooling_keys, status=-412, now=now)
+            sql_log.warning(
+                f"【刷新代理池】有 {len(cooling_keys)} 条代理仍在健康冷却中，"
+                f"已保持不可用（不会被 refresh 复位）"
+            )
         return
+
+    async def _filter_still_cooling(self, proxy_keys: list[str]) -> list[str]:
+        """从冷却集合里剔除「已经解冻」的代理。
+
+        必要性：冷却集合是快照，读出来到写库之间代理可能已经成功（成功会立即清冷却），
+        此时若仍把它写成 ``status != 0``，它会在 MySQL 里躺到下一次 refresh（最长 2h）
+        才会重新可用 —— 等于把好代理误封 2 小时。
+        """
+        if not proxy_keys:
+            return []
+        health = await proxy_health_store.get_many(proxy_keys)
+        now = int(time.time())
+        still_cooling: list[str] = []
+        for key in proxy_keys:
+            if not health.has(key):
+                # Redis 明细已过期但冷却集合里还有：按「仍在冷却」保守处理
+                still_cooling.append(key)
+                continue
+            if health.get(key).is_cooling(now):
+                still_cooling.append(key)
+        return still_cooling
+
+    async def _mark_proxy_unavailable(
+        self, proxy_keys: list[str], status: int, now: int | None = None
+    ) -> int:
+        """把一批代理置为不可用并刷新 update_ts（不改变 score / success_times 语义）。
+
+        分批更新（每批 200 条）而不是一条大 SQL：``computed_proxy_str`` 是带索引的
+        生成列，分批等值 IN 走索引，单批毫秒级，避免长事务。
+        """
+        if not proxy_keys:
+            return 0
+        ts = now if now is not None else int(time.time())
+        touched = 0
+        for start in range(0, len(proxy_keys), 200):
+            chunk = proxy_keys[start : start + 200]
+            stmt = (
+                update(ProxyTab)
+                .where(ProxyTab.computed_proxy_str.in_(chunk))
+                .values(status=status, update_ts=ts)
+            )
+            async with self.async_session() as session:
+                async with session.begin():
+                    res = await session.execute(stmt)
+            touched += res.rowcount or 0
+        return touched
+
+    @log_sql_retry_wrapper()
+    async def flush_proxy_health(self) -> int:
+        """把 Redis 里的冷却状态定期「落盘」到 MySQL（心跳）。
+
+        MySQL 侧**不新增字段**，只复用 ``proxy_tab`` 原有的 status / update_ts：
+        冷却中的代理保持 ``status != 0``，并持续刷新 ``update_ts``，
+        使 ``refresh_proxy`` 的「update_ts 超过 2 小时才复位」条件永远不成立。
+
+        明细（连续失败、EWMA、冷却到期时间）留在 Redis 热缓存 —— 它本来就是
+        「可重建的观测数据」，丢失只会让代理退回 cold（需重新探测），不会破坏业务。
+        """
+        # 进程首次执行时先做一次冷启动播种：Redis 空 → fast 车道没有任何候选，
+        # 会把「上线 / 清缓存」变成一次全量停摆。
+        if not self._health_bootstrapped:
+            await self.bootstrap_proxy_health()
+            self._health_bootstrapped = True
+        keys = await proxy_health_store.list_cooling_keys(
+            limit=max(1, CONFIG.proxy_health.persist_batch)
+        )
+        # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
+        # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
+        keys = await self._filter_still_cooling(keys)
+        if not keys:
+            return 0
+        touched = await self._mark_proxy_unavailable(keys, status=-412)
+        if touched:
+            sql_log.debug(f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行")
+        return touched
+
+    @log_sql_retry_wrapper()
+    async def bootstrap_proxy_health(self, limit: int = 5000) -> int:
+        """冷启动播种：把 MySQL 里「历史上确实成功过」的代理写进 Redis 健康缓存。
+
+        只读一次 ``(status, success_times)`` 索引的范围查询（``success_times >= 3``
+        在 158 万行的池子里只有几千条，走索引毫秒级），**不是**选代理的常规路径
+        （常规路径必须保持随机主键起点 O(1)）。
+
+        播种口径与 ``seed_health_record`` 完全一致：``ewma`` 只给到刚好达标的
+        ``fast_min_ewma``，状态为 ``warm``（不是 hot）—— 它们还需要被真实请求再验证一次。
+        """
+        cfg = CONFIG.proxy_health
+        min_success = max(1, cfg.seed_success_times)
+        sql = (
+            select(
+                ProxyTab.computed_proxy_str,
+                ProxyTab.success_times,
+                ProxyTab.score,
+            )
+            .where(
+                ProxyTab.status == 0,
+                ProxyTab.success_times >= min_success,
+                ProxyTab.score >= cfg.seed_min_score,
+            )
+            .limit(max(1, limit))
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+            rows = res.all()
+        if not rows:
+            return 0
+        keys = [row[0] for row in rows if row[0] and not is_local_ipv6_proxy(row[0])]
+        existing = await proxy_health_store.get_many(keys)
+        to_seed = []
+        for key, success_times, score in rows:
+            if not key or is_local_ipv6_proxy(key) or existing.has(key):
+                continue
+            record = seed_health_record(success_times, score)
+            if record.state is ProxyHealthState.COLD:
+                continue
+            to_seed.append((key, record))
+        if not to_seed:
+            return 0
+        written = await proxy_health_store.bulk_seed(to_seed)
+        if written:
+            sql_log.warning(
+                f"代理健康冷启动播种：从 MySQL 历史表现播种 {written} 条"
+                f"（success_times>={min_success} 且 score>={cfg.seed_min_score}）"
+            )
+        return written
+
+    async def get_proxy_health_counts(self, force: bool = False) -> ProxyHealthCounts:
+        """分档数量（hot/warm/suspect/quarantine/dead/cooling），供背压与接口观测。"""
+        return await proxy_health_store.get_counts(force=force)
 
     @log_sql_retry_wrapper()
     async def get_proxy_by_ip(self, ip: str) -> ProxyTab | None:
@@ -619,6 +1029,14 @@ class SQLHelperClass(SqlHelperBase):
                 log=sql_log,
             )
         )
+        # 健康分档来自 Redis 热缓存（自带 10s 进程内缓存，失败时返回全 0，不影响本接口）
+        health_counts = await proxy_health_store.get_counts()
+        # cold 没有 Redis 记录（=未验证），用「MySQL 可用行数 - 已有记录的代理数」估算，
+        # 这样接口能同时看到 hot / warm / suspect / quarantine / dead / cold 六个口径。
+        # 用 model_copy 而不是原地改：counts 是带缓存的共享对象，不能污染其它读取方。
+        health_counts = health_counts.model_copy(
+            update={"cold": max(0, (usable_count or 0) - health_counts.known_total)}
+        )
         resp = ProxyStatusResp(
             proxy_total_count=total_count or 0,
             proxy_black_count=black_count or 0,
@@ -627,6 +1045,13 @@ class SQLHelperClass(SqlHelperBase):
             proxy_unknown_count=unknown_count or 0,
             proxy_usable_count=usable_count or 0,
             free_proxy_fetch_ts=latest_add_ts or 0,
+            proxy_hot_count=health_counts.hot,
+            proxy_warm_count=health_counts.warm,
+            proxy_suspect_count=health_counts.suspect,
+            proxy_quarantine_count=health_counts.quarantine,
+            proxy_dead_count=health_counts.dead,
+            proxy_cooling_count=health_counts.cooling,
+            proxy_cold_count=health_counts.cold,
         )
         self._proxy_status_cache = resp
         self._proxy_status_cache_ts = time.monotonic()

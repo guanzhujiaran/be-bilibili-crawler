@@ -194,7 +194,25 @@ class BiliGrpc:
     async def _get_random_channel(
         self, is_need_channel: bool = False, is_use_available_proxy: bool = False
     ) -> tuple[ProxyTab, grpc.aio.Channel | None]:
-        proxy_tab, _ = await get_available_proxy(is_use_available_proxy)
+        # 档位跟随当前爬虫上下文（is_use_available_proxy 已废弃为死参数：
+        # 「是否用探测档」由 CrawlerConfig.proxy_tier / RequestConf.tier 决定）
+        proxy_tab, _ = await get_available_proxy()
+        if proxy_tab is None:
+            # 池里暂时没有合格代理：回退本地 ipv6 代理（它不是池成员，不参与打分），
+            # 不能让 proxy 为 None —— 下面的 using_proxy 会直接取 proxy.proxy。
+            proxy_tab = ProxyTab(
+                **{
+                    "proxy_id": 1,
+                    "proxy": CONFIG.custom_proxy,
+                    "status": 0,
+                    "update_ts": 0,
+                    "score": 10000,
+                    "add_ts": 0,
+                    "success_times": 10000,
+                    "zhihu_status": 0,
+                    "computed_proxy_str": CONFIG.my_ipv6_addr,
+                }
+            )
         channel = None
         if is_need_channel:
             channel = grpc.aio.secure_channel(

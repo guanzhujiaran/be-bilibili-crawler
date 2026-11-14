@@ -1,6 +1,7 @@
 from typing import Any, AsyncGenerator, Generic, List, ClassVar, TypeVar
 from abc import abstractmethod
 import asyncio
+import random
 from types import EllipsisType
 from CONFIG import CONFIG
 from log.base_log import myfastapi_logger
@@ -8,8 +9,19 @@ from Service.BaseCrawler.base.core import BaseCrawler
 from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus, ParamsType
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
-from Utils.通用.Common import asyncio_gather
+from Utils.通用.Common import ConcurrencyLimit, asyncio_gather
 from Utils.推送.PushMe import a_push_error
+from Utils.代理.mdoel.ProxyTier import ProxyTier
+from Utils.代理.mdoel.request_context import (
+    ProxyAttemptState,
+    bind_attempt_state,
+    bind_retry_yield,
+    reset_attempt_state,
+    reset_retry_yield,
+    set_proxy_tier,
+    reset_proxy_tier,
+)
+from Utils.代理.数据库操作.ProxyHealth import proxy_health_store
 
 P = TypeVar("P", bound=CrawlerPlugin)
 
@@ -117,6 +129,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.worker_error_delay = _resolve(
             self.config.worker_error_delay, runtime.worker_error_delay
         )
+        # 失败任务的延迟重入队（避免坏代理期间「取出→失败→立刻放回」的忙循环）
+        self.requeue_delay_base = _resolve(
+            self.config.requeue_delay_base, runtime.requeue_delay_base
+        )
+        self.requeue_delay_max = _resolve(
+            self.config.requeue_delay_max, runtime.requeue_delay_max
+        )
 
         # 并发：统一从 CONFIG.concurrency 取，各爬虫只声明 concurrency_key。
         concurrency = CONFIG.concurrency
@@ -133,6 +152,11 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             _logger=self.config.logger,
         )
 
+        # 代理档位由各爬虫 Config 声明：只影响「走哪条车道 / 取哪一档代理」，
+        # 不在这里写死任何业务判断。
+        self.proxy_tier: ProxyTier = self.config.proxy_tier
+        self.slow_lane_ratio: float = self.config.slow_lane_ratio
+
         # 实例名优先取 Config 声明的 crawler_name（支持同类多实例各自命名），
         # 留空则保持基类的类名；调度器创建时还会进一步回填为 BackgroundServiceName 的值。
         if self.config.crawler_name:
@@ -140,6 +164,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         # 本轮在跑的 worker task 集合：用于「杀旧开新」时回收残留 worker
         self._worker_tasks: set[asyncio.Task] = set()
+        # 延迟重入队的挂起任务：run() 收尾时要等它们把任务放回队列，否则会漏任务
+        self._pending_requeues: set[asyncio.Task] = set()
+        # 代理背压监控任务（只有 slow 车道需要）
+        self._backpressure_task: asyncio.Task | None = None
 
         self._plugins = []
         for plugin_cfg in self.config.plugins:
@@ -389,34 +417,43 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             *[x.on_run_end(end_param) for x in self._plugins], log=self.log
         )
 
-    async def worker(self, queue: asyncio.Queue[WorkerModel | None] | None = None):
+    async def worker(
+        self,
+        queue: asyncio.Queue[WorkerModel | None] | None = None,
+        gate: ConcurrencyLimit | None = None,
+    ):
         """
         Worker 协程，固定池模式，持续从队列中获取任务并处理
 
         Args:
-            queue: 本轮任务队列。必须由 run() 显式传入并全程使用该实例，
+            queue: 本轮车道的任务队列。必须由 run() 显式传入并全程使用该实例，
                 不能用 self.task_queue —— 爬虫实例会被「杀旧开新」复用，
                 旧 worker 若回头读 self.task_queue 会拿到新一轮的队列对象，
                 导致 task_done() 打到新队列上（ValueError: task_done() called
                 too many times）并抢走本轮任务。默认为 self.task_queue 仅为兼容。
+            gate: 本轮车道的并发闸（fast / slow 各一套）。默认为 fast 车道。
 
         工作流程：
         1. 从任务队列获取一个任务（如果收到 None 则退出）
-        2. 获取信号量（控制并发数）
-        3. 触发 on_worker_start 回调
-        4. 调用 handle_fetch 处理任务
-        5. 处理异常情况
-        6. 更新任务状态
+        2. 获取并发额度（控制并发数）
+        3. 绑定本次任务的上下文（代理档位 / 失败代理名单 / 重试让出钩子）
+        4. 触发 on_worker_start 回调
+        5. 调用 handle_fetch 处理任务
+        6. 处理异常情况、更新任务状态
         7. 触发 on_worker_end 回调
-        8. 释放信号量
-        9. 如果任务失败且需要重试，在信号量作用域外重新入队（避免死锁）
+        8. 释放并发额度
+        9. 如果任务失败且需要重试，在**并发额度之外**延迟重新入队（避免死锁与忙循环）
         10. 循环回到步骤 1
 
-        重要：重新入队的操作必须在 async with self.sem 作用域外执行，
-        否则当 max_sem=1 时可能导致死锁。
+        重要：重新入队的操作必须在并发额度之外执行，否则当 max_sem=1 时可能导致死锁。
         """
         if queue is None:
             queue = self.task_queue
+        if gate is None:
+            gate = self.fast_gate
+        # 重试等待期间「让出并发额度」的钩子：注入到上下文后，request_wrapper
+        # 的所有 sleep 都会先释放额度、睡完再取回，坏代理不会长期占满 worker。
+        retry_yield = self._make_retry_yield(gate)
         while True:
             worker_model: WorkerModel | None = await queue.get()
             if worker_model is None:
@@ -425,9 +462,12 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 return
 
             should_requeue = False
+            tier_token = set_proxy_tier(self.proxy_tier)
+            attempt_token = bind_attempt_state(ProxyAttemptState())
+            yield_token = bind_retry_yield(retry_yield)
 
             try:
-                async with self.sem:
+                async with gate:
                     try:
                         self.log.debug(
                             self.format_log(f"开始处理任务: {worker_model.params}")
@@ -463,8 +503,30 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 )
                 if worker_model.fetchStatus == WorkerStatus.pending:
                     worker_model.fetchStatus = WorkerStatus.fail
+            finally:
+                reset_retry_yield(yield_token)
+                reset_attempt_state(attempt_token)
+                reset_proxy_tier(tier_token)
 
             await self.on_worker_end(worker_model)
+
+    def _make_retry_yield(self, gate: ConcurrencyLimit):
+        """构造「让出并发额度」钩子：release → sleep → acquire。
+
+        取消时不重新取回额度：本轮 run 即将结束，gate 随本轮丢弃，
+        不会把偏差带进下一轮（这也是本类不用裸 Semaphore 的原因）。
+        """
+
+        async def _yield(delay: float) -> None:
+            await gate.release()
+            try:
+                if delay > 0:
+                    await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                raise
+            await gate.acquire()
+
+        return _yield
 
     async def _execute_fetch(self, worker_model: WorkerModel) -> WorkerStatus:
         """执行 fetch 操作，处理超时和异常，返回任务状态。"""
@@ -524,40 +586,151 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         )
         return False
 
+    def _requeue_delay(self, retry_count: int) -> float:
+        """失败任务的延迟重入队时长：``base × 2^(retry-1)``，封顶 ``requeue_delay_max``。
+
+        没有这个延迟时，坏代理会让队列形成「取出→失败→立刻放回」的忙循环：
+        任务重入次数暴涨、有效数据为 0，看起来像 worker 卡死。
+        """
+        base = max(0.0, float(self.requeue_delay_base or 0))
+        if base <= 0:
+            return 0.0
+        cap = max(base, float(self.requeue_delay_max or 0))
+        exponent = min(max(retry_count - 1, 0), 16)
+        delay = min(base * (2**exponent), cap)
+        # 抖动：避免同一批失败任务在同一时刻一起回到队列；抖动后仍要夹在 cap 内
+        return min(cap, delay * random.uniform(0.85, 1.15))
+
     async def _handle_requeue(
         self,
         worker_model: WorkerModel,
         queue: asyncio.Queue[WorkerModel | None] | None = None,
     ):
-        """将任务重新入队（在信号量作用域外执行，避免死锁）。
+        """将任务延迟重新入队（在并发额度之外执行，避免死锁）。
 
         queue 必须与 worker 处理该任务时使用的是同一个队列实例，
         否则「杀旧开新」后重排的任务会落进新一轮的队列。
+        延迟通过独立 task 实现：不占用 worker 协程，也不占并发额度。
         """
         if queue is None:
             queue = self.task_queue
         worker_model.fetchStatus = WorkerStatus.pending
         worker_model.retry_count += 1
         await self.on_task_requeue(worker_model)
+        delay = self._requeue_delay(worker_model.retry_count)
+        if delay <= 0:
+            await queue.put(worker_model)
+            return
+        task = asyncio.create_task(
+            self._delayed_requeue(queue, worker_model, delay)
+        )
+        self._pending_requeues.add(task)
+        task.add_done_callback(self._pending_requeues.discard)
+
+    async def _delayed_requeue(
+        self,
+        queue: asyncio.Queue[WorkerModel | None],
+        worker_model: WorkerModel,
+        delay: float,
+    ):
+        await asyncio.sleep(delay)
         await queue.put(worker_model)
 
     async def _reap_leftover_workers(self):
-        """回收上一轮残留的 worker 协程。
+        """回收上一轮残留的 worker 协程与「延迟重入队」任务。
 
         「杀旧开新」只 cancel 了 run()/main() 所在的协程，worker 是独立 task，
-        不会随之结束：它们会阻塞在旧队列的 get() 上，并继续占用信号量。
-        新一轮 run() 开始时统一 cancel 掉，避免协程与信号量泄漏。
+        不会随之结束：它们会阻塞在旧队列的 get() 上，并继续占用并发额度。
+        新一轮 run() 开始时统一 cancel 掉，避免协程与额度泄漏。
         """
         leftover = [t for t in self._worker_tasks if not t.done()]
-        if not leftover:
+        pending = [t for t in self._pending_requeues if not t.done()]
+        # 上一轮被 cancel 时不会走到 run() 的收尾逻辑，背压监控要在这里一并回收
+        if self._backpressure_task is not None and not self._backpressure_task.done():
+            self._backpressure_task.cancel()
+            await asyncio.gather(self._backpressure_task, return_exceptions=True)
+        self._backpressure_task = None
+        if not leftover and not pending:
             return
-        self.log.warning(
-            self.format_log(f"发现上一轮残留 worker {len(leftover)} 个，已回收。")
-        )
-        for task in leftover:
+        if leftover:
+            self.log.warning(
+                self.format_log(f"发现上一轮残留 worker {len(leftover)} 个，已回收。")
+            )
+        if pending:
+            # 延迟重入队任务属于上一轮：直接取消，任务本身随旧队列一起丢弃
+            self.log.warning(
+                self.format_log(
+                    f"发现上一轮残留的延迟重入队任务 {len(pending)} 个，已取消。"
+                )
+            )
+        for task in leftover + pending:
             task.cancel()
-        await asyncio.gather(*leftover, return_exceptions=True)
+        await asyncio.gather(*leftover, *pending, return_exceptions=True)
         self._worker_tasks.clear()
+        self._pending_requeues.clear()
+
+    def _slow_lane_base_limit(self) -> int:
+        """slow 车道基准并发 = ``max_sem × slow_lane_ratio``（至少 1）。"""
+        ratio = self.slow_lane_ratio if self.slow_lane_ratio > 0 else 1.0
+        return max(1, int(round(self.max_sem * ratio)))
+
+    async def _proxy_backpressure_loop(
+        self, gate: ConcurrencyLimit, base_limit: int
+    ) -> None:
+        """代理背压：已验证可用池低于阈值时按比例收缩 slow 车道并发。
+
+        背景：坏代理占满 worker 会让整个 slow 车道「有并发、无产出」。
+        这里用健康状态机的分档计数（Redis，O(1)）判断「已验证可用池」是否够用，
+        不够就按比例收缩 slow 并发，把有限的槽位留给更有希望的探测；
+        **fast 车道用自己的闸，完全不受影响**。
+
+        口径为什么是 ``hot + warm`` 而不是只看 hot：cold 只代表「还没验证」，
+        不代表不可用；只看 hot 会让「池子里全是冷代理」的早期阶段把 slow 并发
+        压到最低（本项目的 dyn / other_space 正是跑在 slow 车道），反而拖慢抓取。
+
+        收缩不会打断在途任务，只限制新的进入；池子恢复后自动回到基准值。
+        """
+        cfg = CONFIG.proxy_health
+        interval = max(5, cfg.backpressure_interval)
+        watermark = max(1, cfg.hot_low_watermark)
+        min_ratio = min(1.0, max(0.0, cfg.slow_shrink_min_ratio))
+        last_limit = base_limit
+        cycle = 0
+        while True:
+            await asyncio.sleep(interval)
+            cycle += 1
+            try:
+                counts = await proxy_health_store.get_counts()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 背压失败不能拖垮爬虫
+                self.log.warning(
+                    self.format_log(f"读取代理分档失败，本轮不调整并发：{e!r}")
+                )
+                continue
+            verified = counts.hot + counts.warm
+            if verified >= watermark:
+                target = base_limit
+            else:
+                ratio = max(min_ratio, verified / watermark)
+                target = max(1, int(round(base_limit * ratio)))
+            if await gate.set_limit(target):
+                self.log.warning(
+                    self.format_log(
+                        f"代理背压：slow 并发 {last_limit} → {target}"
+                        f"（已验证池 hot+warm={verified} < 阈值 {watermark}，"
+                        f"fast 车道不受影响）；分档 {counts.to_log_str()}"
+                    )
+                )
+                last_limit = target
+            elif cycle % 20 == 0:
+                # 每 20 个周期（约 5 分钟）留一条分档快照，便于观察池子变化
+                self.log.warning(
+                    self.format_log(
+                        f"代理分档快照：slow 并发 {gate.limit}/{base_limit}"
+                        f"（活跃 {gate.active}）；{counts.to_log_str()}"
+                    )
+                )
 
     async def run(self, init_params: ParamsType | None = None):
         """
@@ -605,9 +778,20 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             self.log.warning(
                 self.format_log(f"发现上一轮残留任务 {leftover} 条，已丢弃并重建队列。")
             )
-        # 本轮队列单独持有引用，并显式传给 worker；
-        # 绝不能让 worker 通过 self.task_queue 取队（那会指向下一轮的队列）。
-        queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
+
+        # 本轮两条车道都重建（并发闸同理）：取消后计数偏差随本轮一起丢弃。
+        fast_queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
+        slow_queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
+        fast_gate = ConcurrencyLimit(self.max_sem)
+        slow_base_limit = self._slow_lane_base_limit()
+        slow_gate = ConcurrencyLimit(slow_base_limit)
+        self.fast_queue = fast_queue
+        self.slow_queue = slow_queue
+        self.fast_gate = fast_gate
+        self.slow_gate = slow_gate
+        # 本轮生效车道：由爬虫 Config 声明，队列与并发闸都取这一条
+        queue = fast_queue if self.proxy_tier is ProxyTier.FAST else slow_queue
+        gate = fast_gate if self.proxy_tier is ProxyTier.FAST else slow_gate
         self.task_queue = queue
 
         await asyncio_gather(
@@ -620,13 +804,19 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         task_set = set()
 
-        # 启动固定数量的 worker
+        # 启动固定数量的 worker（只挂在生效车道上；另一条车道保留结构但不占协程）
         for _ in range(worker_count):
-            task = asyncio.create_task(self.worker(queue))
+            task = asyncio.create_task(self.worker(queue, gate))
             task_set.add(task)
             self._worker_tasks.add(task)
             task.add_done_callback(task_set.discard)
             task.add_done_callback(self._worker_tasks.discard)
+
+        # slow 车道起一个背压监控：hot 池不足时按比例收缩 slow 并发，fast 车道不受影响
+        if self.proxy_tier is ProxyTier.SLOW:
+            self._backpressure_task = asyncio.create_task(
+                self._proxy_backpressure_loop(slow_gate, slow_base_limit)
+            )
 
         # 处理初始参数（仅当 init_params 不为 None 时才入队执行）
         if init_params is not None:
@@ -674,18 +864,34 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         )
 
         # 等待队列中的所有任务被处理完毕。
-        # join() 与失败任务重排入队之间存在竞态：join 的等待 future 已被唤醒、但协程尚未
-        # 恢复时，worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务。
-        # 因此 join 返回后再确认队列确实为空，不为空则补一次等待。
+        # 两个竞态要一起处理：
+        # 1. join() 与失败任务重排入队之间：join 的等待 future 已被唤醒、但协程尚未恢复时，
+        #    worker 仍可能 put 一个重排任务，此时 join 会直接返回而漏掉该任务；
+        # 2. 延迟重入队：任务还在 sleep，尚未 put 回队列，join() 看不到它。
+        # 因此 join 返回后要同时确认「队列为空」且「没有挂起的延迟重入队任务」。
         while True:
             await queue.join()
-            if queue.empty():
+            if queue.empty() and not self._pending_requeues:
                 break
-            self.log.debug(
-                self.format_log(
-                    f"join 后仍有 {queue.qsize()} 个任务，继续等待（重排竞态）。"
+            if not queue.empty():
+                self.log.debug(
+                    self.format_log(
+                        f"join 后仍有 {queue.qsize()} 个任务，继续等待（重排竞态）。"
+                    )
                 )
-            )
+            else:
+                self.log.debug(
+                    self.format_log(
+                        f"还有 {len(self._pending_requeues)} 个任务在延迟重入队，继续等待。"
+                    )
+                )
+                await asyncio.sleep(0.1)
+
+        # 收尾：停掉背压监控
+        if self._backpressure_task is not None:
+            self._backpressure_task.cancel()
+            await asyncio.gather(self._backpressure_task, return_exceptions=True)
+            self._backpressure_task = None
 
         # 发送哨兵值通知所有 worker 退出
         # 发送 worker_count 个哨兵值，确保所有 worker 都能收到退出信号

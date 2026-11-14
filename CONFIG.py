@@ -11,6 +11,8 @@ from bili_common.core.push_settings import PushNotifySettingsMixin
 from bili_common.models.push import PushChannelConfig
 
 from Service.BaseCrawler.config import CrawlerConfig, get_crawler_config
+from Utils.代理.mdoel.ProxyTier import ProxyTier
+from Utils.代理.mdoel.RequestConf import RequestRetryPolicy
 
 _current_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -86,6 +88,13 @@ class CrawlerRuntimeConfig(BaseModel):
     log_error: bool = True
     # 任务失败后的等待时间（秒）
     worker_error_delay: int = 300
+    # ===== 失败任务的「延迟重入队」=====
+    # 原来失败立刻 put 回队列，坏代理期间会形成「取出→失败→立刻放回」的忙循环，
+    # 队列重入次数暴涨而有效数据为 0。改为按重试次数指数退避后再入队：
+    # delay = min(requeue_delay_base × 2^(retry-1), requeue_delay_max)（含抖动）。
+    # 0 表示维持旧的「立即重入队」行为。
+    requeue_delay_base: float = 5.0
+    requeue_delay_max: float = 300.0
 
 
 class GetOthersLotDynConfig(BaseModel):
@@ -225,6 +234,119 @@ class LLMApiConfigPatch(BaseModel):
     model_name: str | None = None
     token: str | None = None
     requests_per_second: float | None = None
+
+
+class ProxyHealthConfig(BaseModel):
+    """代理健康状态机参数（hot / warm / suspect / quarantine / dead）。
+
+    状态与冷却的明细放在 Redis 热缓存（见 ``Utils/代理/数据库操作/ProxyHealth.py``），
+    MySQL 只保留 ``proxy_tab`` 原有的 status / score / success_times 语义，
+    因此这里**都是运行期参数**，不涉及任何 DDL。
+
+    env 覆盖（嵌套双下划线）：``PROXY_HEALTH__WARM_AFTER_FAILS=3``
+    """
+
+    # ---- EWMA 成功率：越快反映近期表现，越不容易被历史净累计（success_times）掩盖 ----
+    ewma_alpha: float = Field(
+        default=0.3, description="EWMA 平滑系数，0~1，越大越看重最近一次结果"
+    )
+    # ---- 连续失败 → 降档阈值（指数冷却的档位边界）----
+    warm_after_fails: int = 3
+    suspect_after_fails: int = 6
+    quarantine_after_fails: int = 12
+    dead_after_fails: int = 18
+    # ---- 网络层失败冷却（10~30 分钟）：600s×2^档位 后夹在 [600, 1800] ----
+    network_cooldown_min: int = 600
+    network_cooldown_max: int = 1800
+    # ---- 风控层（412/352）冷却（2~6 小时）：期间 refresh_proxy 不得复位 ----
+    risk_cooldown_min: int = 7200
+    risk_cooldown_max: int = 21600
+    dead_cooldown: int = 21600
+    # ---- fast 档准入：ews_success 下限 / 单代理在途并发上限 ----
+    fast_min_ewma: float = 0.9
+    fast_max_in_flight: int = 2
+    # ---- slow 档探测：按比例掺入 cold / suspect 代理 ----
+    cold_probe_ratio: float = 0.15
+    # ---- 选代理：一次随机主键起点最多取多少候选行（保持 O(1)，禁止 ORDER BY）----
+    # 12 条 / 3 次 = 3 次 MySQL 往返（实测 80ms）；32 条 / 2 次 ≈ 34ms 且候选更多，
+    # 单条查询的成本主要是往返而不是行数，所以宁可在一次查询里多取几条。
+    candidate_batch: int = 32
+    pick_attempts: int = 2
+    # ---- 优先从「已验证分档集合」（hot→warm）取样，取不到才回退随机采样 ----
+    verified_sample: int = 8
+    # ---- 在途计数 TTL：进程崩溃后计数自动过期，不会永久占住代理 ----
+    in_flight_ttl: int = 120
+    # ---- Redis 热缓存 ----
+    redis_timeout: float = 2.0
+    count_cache_seconds: int = 10
+    # ---- 冷却代理定期回写 MySQL（update_ts 心跳），使 refresh_proxy 不会提前复位 ----
+    persist_interval: int = 60
+    persist_batch: int = 2000
+    # ---- 背压：已验证池（hot + warm）低于阈值时按比例收缩 slow 并发（fast 不受影响）----
+    # 口径不含 cold：cold 只是「还没验证」，把它算成池子不足会把 slow 车道（dyn /
+    # other_space 都跑在这里）压到最低并发，反而拖慢抓取。
+    hot_low_watermark: int = 200
+    slow_shrink_min_ratio: float = 0.1
+    backpressure_interval: int = 15
+    # ---- 冷启动播种：Redis 无记录时按 MySQL 历史表现推断初始 EWMA ----
+    seed_success_times: int = 3
+    seed_min_score: int = 50
+
+
+class ProxyRetryTierConfig(BaseModel):
+    """单个档位的重试预算（见 ``RequestRetryPolicy``）。"""
+
+    max_rounds: int | None = 2
+    attempts_per_round: int = 3
+    backoff_base: float = 0.2
+    backoff_max: float = 1.0
+    backoff_jitter: float = 0.2
+    # 单次请求累计重试等待上限（秒）：即使 max_rounds=None，也不会让单个任务重试数小时
+    max_total_seconds: float | None = 10.0
+    log_interval: int = 50
+
+
+class ProxyRetryConfig(BaseModel):
+    """已知错误的重试预算分级。
+
+    - ``fast``：换 2 轮代理、每轮 3 次后快速失败（总 6 次）；
+    - ``slow``：大预算 + 指数退避封顶 60s（等待期间让出 worker 并发额度）。
+
+    env 覆盖：``PROXY_RETRY__SLOW__BACKOFF_MAX=90``
+    """
+
+    fast: ProxyRetryTierConfig = ProxyRetryTierConfig(
+        max_rounds=2,
+        attempts_per_round=3,
+        backoff_base=0.2,
+        backoff_max=1.0,
+        backoff_jitter=0.2,
+        max_total_seconds=10.0,
+        log_interval=20,
+    )
+    slow: ProxyRetryTierConfig = ProxyRetryTierConfig(
+        max_rounds=None,
+        attempts_per_round=3,
+        backoff_base=2.0,
+        backoff_max=60.0,
+        backoff_jitter=0.2,
+        # 3 分钟：足够等到「后台补池 / 短暂网络抖动」恢复，又不会让单个 worker 挂几小时
+        max_total_seconds=180.0,
+        log_interval=10,
+    )
+
+    def policy_for(self, tier: ProxyTier) -> RequestRetryPolicy:
+        cfg = self.slow if tier is ProxyTier.SLOW else self.fast
+        return RequestRetryPolicy(
+            tier=tier,
+            max_rounds=cfg.max_rounds,
+            attempts_per_round=cfg.attempts_per_round,
+            backoff_base=cfg.backoff_base,
+            backoff_max=cfg.backoff_max,
+            backoff_jitter=cfg.backoff_jitter,
+            max_total_seconds=cfg.max_total_seconds,
+            log_interval=cfg.log_interval,
+        )
 
 
 class ServiceRole(StrEnumAutoDoc):
@@ -432,6 +554,10 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     # ===== 爬虫运行行为统一配置（超时 / 重试 / 退避 / 日志开关）=====
     crawler_runtime: CrawlerRuntimeConfig = CrawlerRuntimeConfig()
+    # ===== 代理健康状态机（Redis 热缓存 + 定期回写 MySQL）=====
+    proxy_health: ProxyHealthConfig = ProxyHealthConfig()
+    # ===== 代理错误重试预算分级（fast / slow）=====
+    proxy_retry: ProxyRetryConfig = ProxyRetryConfig()
 
     # ===== 第三方抽奖动态获取 =====
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
@@ -802,6 +928,9 @@ class _CONFIG:
     # 并发 / 爬虫运行行为的统一配置（CrawlerType、抓取模块都从这里读）
     concurrency = settings.concurrency
     crawler_runtime = settings.crawler_runtime
+    # 代理健康状态机 / 重试预算分级（选代理、错误分流、背压都从这里读）
+    proxy_health = settings.proxy_health
+    proxy_retry = settings.proxy_retry
     my_ipv6_addr = settings.PROXY_SERVER
     unidbg_addr = f"http://{settings.UNIDBG_HOST}:{settings.UNIDBG_PORT}"
     RabbitMQConfig = RabbitMQConfig()

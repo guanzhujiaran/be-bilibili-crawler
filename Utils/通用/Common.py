@@ -24,6 +24,73 @@ def sem_gen(sem_limit=100) -> asyncio.Semaphore:
     return asyncio.Semaphore(sem_limit)
 
 
+class ConcurrencyLimit:
+    """可动态调整上限的并发闸（爬虫 worker 用，替代裸 asyncio.Semaphore）。
+
+    为什么不用 ``asyncio.Semaphore``：
+
+    1. **上限要能在运行期收缩**：代理 hot 池不足时按比例收缩 slow 车道并发
+       （``set_limit``），fast 车道用自己的实例，完全不受影响；
+    2. **重试要能「让出名额」**：请求重试的 sleep 如果发生在信号量内部，
+       坏代理会把 worker 长期占住（历史事故：20 个槽位被坏代理占满）。
+       这里把 ``acquire`` / ``release`` 拆开，重试前 release、sleep 完 acquire；
+    3. ``asyncio.Semaphore`` 的许可在协程被 cancel 时极易「丢失」或「多释放」，
+       而这里是纯计数 + 条件变量，且 fast / slow 两套实例都是**每轮 run 新建**，
+       取消时即使计数偏差也随本轮一起丢弃，不会污染下一轮。
+
+    用法与 Semaphore 一致（``async with gate:``）。
+    """
+
+    def __init__(self, limit: int = 1):
+        self._limit: int = max(1, int(limit))
+        self._active: int = 0
+        self._cond: asyncio.Condition = asyncio.Condition()
+        self._peak_active: int = 0
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+    @property
+    def peak_active(self) -> int:
+        return self._peak_active
+
+    async def set_limit(self, limit: int) -> bool:
+        """调整上限（返回是否发生变化）。收缩时不会打断在途任务，只限制新的进入。"""
+        new_limit = max(1, int(limit))
+        if new_limit == self._limit:
+            return False
+        self._limit = new_limit
+        # 放大上限后要唤醒等在条件变量上的 waiter（缩小则等 active 自然下降）
+        async with self._cond:
+            self._cond.notify_all()
+        return True
+
+    async def acquire(self) -> None:
+        async with self._cond:
+            await self._cond.wait_for(lambda: self._active < self._limit)
+            self._active += 1
+            if self._active > self._peak_active:
+                self._peak_active = self._active
+
+    async def release(self) -> None:
+        if self._active > 0:
+            self._active -= 1
+        async with self._cond:
+            self._cond.notify(1)
+
+    async def __aenter__(self) -> "ConcurrencyLimit":
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        await self.release()
+
+
 def ensure_asyncio_loop():
     try:
         loop = asyncio.get_running_loop()

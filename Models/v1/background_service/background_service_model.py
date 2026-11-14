@@ -87,6 +87,23 @@ class ProxyStatusResp(CustomBaseModel):
     free_proxy_fetch_ts: int = Field(
         default=0, description="最近一次入库代理的 add_ts（代理源最新产出时间，unix 秒）"
     )
+    # ===== 健康状态分档计数（Redis 热缓存，见 Utils/代理/数据库操作/ProxyHealth.py）=====
+    # 与上面的 MySQL 统计口径互补：MySQL 只有 status/score 净累计，
+    # 这里才是「当前有多少代理真的能用 / 在冷却」的实时视图，供调度做背压。
+    proxy_hot_count: int = Field(default=0, description="hot：已验证可用，fast 档主池")
+    proxy_warm_count: int = Field(default=0, description="warm：连续失败已降档")
+    proxy_suspect_count: int = Field(
+        default=0, description="suspect：只允许 slow 档低频探测"
+    )
+    proxy_quarantine_count: int = Field(
+        default=0, description="quarantine：风控层命中，按 IP 长冷却"
+    )
+    proxy_dead_count: int = Field(default=0, description="dead：连续失败到上限")
+    proxy_cooling_count: int = Field(default=0, description="当前处于冷却中的代理数")
+    proxy_cold_count: int = Field(
+        default=0,
+        description="cold：无健康记录（未验证）的代理数，由「MySQL 可用行数 - 已有记录」估算",
+    )
 
 
 TypeScrapyStatus = StatsPlugin | ProgressStatusResp | None
