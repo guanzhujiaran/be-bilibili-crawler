@@ -15,7 +15,11 @@ from Utils.代理.数据库操作.ProxyHealth import (
     ProxyHealthRecord,
     ProxyHealthState,
     ProxyInFlightMap,
+    ProxyPrefixMap,
+    ProxyPrefixRecord,
+    ProxySelectionState,
     proxy_health_store,
+    proxy_prefix_of,
 )
 from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
     ZOMBIE_SUCCESS_TIMES_MAX,
@@ -85,20 +89,34 @@ class _FakeProxyRow:
         self.score = score
 
 
-def _stub_health(monkeypatch, mapping=None, in_flight=None, verified=None):
+def _stub_health(
+    monkeypatch,
+    mapping=None,
+    in_flight=None,
+    verified=None,
+    prefix_records=None,
+    prefix_in_flight=None,
+):
     """把健康缓存替换成内存桩，单测不依赖 Redis。
 
     :param verified: 「已验证分档取样」返回的代理串（默认空 = 走随机采样兜底）
+    :param prefix_records: 前缀级明细（field=前缀串），用于验证「整段冷却」语义
+    :param prefix_in_flight: 前缀在途并发数（field=前缀串）
     """
     health_map = ProxyHealthMap(records=mapping or {})
     flight_map = ProxyInFlightMap(counts=in_flight or {})
+    prefix_map = ProxyPrefixMap(records=prefix_records or {})
+    prefix_flight = ProxyInFlightMap(counts=prefix_in_flight or {})
     verified_keys = list(verified or [])
 
-    async def _get_many(keys):
-        return health_map
-
-    async def _get_in_flight(keys):
-        return flight_map
+    async def _read_selection_state(keys, prefixes, excluded_prefixes=frozenset()):
+        return ProxySelectionState(
+            address=health_map,
+            address_in_flight=flight_map,
+            prefixes=prefix_map,
+            prefix_in_flight=prefix_flight,
+            excluded_prefixes=frozenset(excluded_prefixes),
+        )
 
     async def _sample_keys(states, count):
         return verified_keys[:count]
@@ -107,8 +125,9 @@ def _stub_health(monkeypatch, mapping=None, in_flight=None, verified=None):
         return None
 
     # 实例属性会遮蔽同名方法；桩函数不带 self
-    monkeypatch.setattr(proxy_health_store, "get_many", _get_many, raising=False)
-    monkeypatch.setattr(proxy_health_store, "get_in_flight", _get_in_flight, raising=False)
+    monkeypatch.setattr(
+        proxy_health_store, "read_selection_state", _read_selection_state, raising=False
+    )
     monkeypatch.setattr(
         proxy_health_store, "sample_state_keys", _sample_keys, raising=False
     )
@@ -430,6 +449,143 @@ async def test_exclude_skips_failed_proxy(monkeypatch):
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# 前缀级（网段）判定
+# ---------------------------------------------------------------------------
+
+def _prefix_key(ip: str) -> str:
+    return proxy_prefix_of(f"http://{ip}:8080")
+
+
+async def test_same_prefix_cooling_blocks_all_addresses(monkeypatch):
+    """同 /24 内一个代理 412 → 整段冷却：同段其它地址也不能再被选中。"""
+    from CONFIG import CONFIG
+
+    sibling_a = _FakeProxyRow(key="http://45.74.31.7:8080")
+    sibling_b = _FakeProxyRow(key="http://45.74.31.99:8080")
+    attempts = CONFIG.proxy_health.pick_attempts
+    session = _FakeSession([[sibling_a, sibling_b] for _ in range(attempts)])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.7:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+            "http://45.74.31.99:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+        },
+        prefix_records={
+            _prefix_key("45.74.31.7"): ProxyPrefixRecord(
+                state=ProxyHealthState.QUARANTINE,
+                cooldown_until=10**12,
+                risk_level=1,
+            )
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
+
+
+async def test_other_prefix_still_selectable_when_one_cools(monkeypatch):
+    """整段冷却只影响该段：另一个 /24 的代理照常可选。"""
+    cooled = _FakeProxyRow(key="http://45.74.31.7:8080")
+    healthy = _FakeProxyRow(key="http://8.8.8.8:8080")
+    session = _FakeSession([[cooled, healthy]])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.7:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+            "http://8.8.8.8:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+        },
+        prefix_records={
+            _prefix_key("45.74.31.7"): ProxyPrefixRecord(
+                state=ProxyHealthState.QUARANTINE, cooldown_until=10**12
+            )
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is healthy
+
+
+async def test_failed_proxy_blocks_its_prefix(monkeypatch):
+    """任务内失败过的代理 → 同 /24 的其它地址一并跳过（同段换地址没有意义）。"""
+    sibling = _FakeProxyRow(key="http://45.74.31.99:8080")
+    session = _FakeSession([[sibling], [sibling], [sibling]])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.99:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            )
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert (
+        await SQLHelper.select_random_proxy(
+            tier=ProxyTier.FAST, exclude=frozenset({"http://45.74.31.7:8080"})
+        )
+        is None
+    )
+
+
+async def test_prefix_inflight_limit_blocks_segment(monkeypatch):
+    """同段在途打满（>= prefix_inflight_limit）→ 不再往该段压并发。"""
+    from CONFIG import CONFIG
+
+    limit = CONFIG.proxy_health.prefix_inflight_limit
+    row = _FakeProxyRow(key="http://45.74.31.7:8080")
+    session = _FakeSession([[row], [row], [row]])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.7:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            )
+        },
+        prefix_in_flight={_prefix_key("45.74.31.7"): limit},
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
+
+
+async def test_verified_pool_respects_prefix_cooling(monkeypatch):
+    """已验证分档取样也要过前缀闸门：hot 里同段整片冷却时不能返回它。"""
+    row = _FakeProxyRow(key="http://45.74.31.7:8080")
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.7:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            )
+        },
+        verified=["http://45.74.31.7:8080"],
+        prefix_records={
+            _prefix_key("45.74.31.7"): ProxyPrefixRecord(
+                state=ProxyHealthState.QUARANTINE, cooldown_until=10**12
+            )
+        },
+    )
+    _stub_db_rows(monkeypatch, {"http://45.74.31.7:8080": row})
+    session = _FakeSession([[row], [row]])
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
 
 
 # ---------------------------------------------------------------------------

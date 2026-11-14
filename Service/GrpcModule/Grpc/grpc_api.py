@@ -391,15 +391,18 @@ class BiliGrpc:
             if proxy_flag:
                 proxy, channel = await self._get_random_channel()
             else:
+                # 自建出口（专线）：score / success_times 如实填 0。
+                # 以前伪造成 10000，等于宣称「历史表现完美」，配合健康度豁免
+                # 就是永不降权、永不冷却；现在它的健康度按 /64 前缀记账。
                 proxy: ProxyTab = ProxyTab(
                     **{
                         "proxy_id": 1,
                         "proxy": CONFIG.custom_proxy,
                         "status": 0,
                         "update_ts": 0,
-                        "score": 10000,
+                        "score": 0,
                         "add_ts": 0,
-                        "success_times": 10000,
+                        "success_times": 0,
                         "zhihu_status": 0,
                         "computed_proxy_str": CONFIG.my_ipv6_addr,
                     }

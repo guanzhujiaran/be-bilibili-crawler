@@ -31,6 +31,7 @@ from Utils.代理.数据库操作.ProxyHealth import (
     ProxyHealthRecord,
     ProxyHealthState,
     proxy_health_store,
+    proxy_prefix_of,
     seed_health_record,
 )
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
@@ -105,17 +106,16 @@ def to_proxy_key(proxy_info_dict: dict | str) -> str | None:
 def _is_local_ipv6_proxy(proxy_key: str) -> bool:
     """判断代理串是否为「本地 IPv6 代理」（配置项 PROXY_SERVER / CONFIG.my_ipv6_addr）。
 
-    它是配置项而不是代理池成员：既不参与打分，也不该往 proxy_db 写。
-    原先这层判断只写在 ``RedisRequestProxy.update_to_proxy_dict`` 里，
-    ProxyEvent / grpc_api 等直接调用 ``update_to_proxy_list`` 的路径会绕过它，
-    于是本地代理每次被加减分都会走到「MySQL 与 Redis 均不存在」分支刷屏。
+    它是配置项而不是代理池成员：**不写 proxy_db**（没有行可写）。
+    注意：它不再豁免健康记账 —— 自建出口是一条固定出口，健康度按它所在的 /64
+    前缀统计（见 ``ProxyHealth.proxy_prefix_of``），否则它会永不降权、永不冷却。
     """
     local = (CONFIG.my_ipv6_addr or "").strip().rstrip("/")
     return bool(local) and proxy_key.strip().rstrip("/") == local
 
 
 def is_local_ipv6_proxy(proxy_key: str) -> bool:
-    """对外暴露的只读判断：本地 ipv6 代理不参与打分 / 健康状态统计。"""
+    """只读判断：该代理串是否为本机自建出口（不写 proxy_db，但仍按前缀记账）。"""
     return _is_local_ipv6_proxy(proxy_key)
 
 
@@ -328,27 +328,42 @@ class SQLHelperClass(SqlHelperBase):
         return proxy_tab.computed_proxy_str or to_proxy_key(proxy_tab.proxy) or ""
 
     async def _pick_proxy_by_tier(
-        self, rows: list[ProxyTab], tier: ProxyTier
+        self,
+        rows: list[ProxyTab],
+        tier: ProxyTier,
+        exclude_prefixes: frozenset[str] = frozenset(),
     ) -> ProxyTab | None:
         """在一批候选行里按档位挑一条。
 
+        - **前缀闸门（先过）**：同 /64、/24 在冷却 / 在途打满 / 本任务已失败过 → 整段不取；
         - ``fast``：只接受「未冷却 + EWMA 达标 + 在途并发未打满」的代理，挑不到就返回 None，
           由上层快速失败（fast 车道绝不能为了「凑一条」而下沉到坏代理池）；
         - ``slow``：未冷却即可用，并按 ``cold_probe_ratio`` 掺入 cold / suspect 代理做探测，
           dead 一律不取（只有等冷却过期后由成功请求救回）。
         """
         keys = [self._proxy_key_of(row) for row in rows]
-        health_map = await proxy_health_store.get_many(keys)
-        in_flight_map = await proxy_health_store.get_in_flight(keys)
+        prefixes = [proxy_prefix_of(key) for key in keys]
+        snapshot = await proxy_health_store.read_selection_state(
+            keys, prefixes, excluded_prefixes=exclude_prefixes
+        )
         now = int(time.time())
         cfg = CONFIG.proxy_health
 
         scored: list[tuple[ProxyTab, str, ProxyHealthRecord, int]] = []
-        for row, key in zip(rows, keys):
-            record = health_map.records.get(key) or seed_health_record(
+        blocked_by_prefix = 0
+        for row, key, prefix in zip(rows, keys, prefixes):
+            if not snapshot.prefix_allows(prefix, now):
+                blocked_by_prefix += 1
+                continue
+            record = snapshot.address.records.get(key) or seed_health_record(
                 row.success_times, row.score
             )
-            scored.append((row, key, record, in_flight_map.get(key)))
+            scored.append((row, key, record, snapshot.address_in_flight.get(key)))
+        if blocked_by_prefix:
+            sql_log.debug(
+                f"本次候选 {blocked_by_prefix}/{len(rows)} 条因前缀冷却 / 在途打满 / "
+                f"本任务已失败被跳过（tier={tier.value}）"
+            )
 
         if tier is ProxyTier.FAST:
             fast_candidates = [
@@ -404,6 +419,7 @@ class SQLHelperClass(SqlHelperBase):
         :param tier: ``fast`` 只取已证明可用的代理；``slow`` 允许掺入 cold 代理做探测
         :param exclude: 本次任务已失败的代理串（换代理用）。注意 ``fast`` 档在候选不足时
             宁可返回 None 也不放宽条件，否则又会回到「反复命中同一个坏代理」的老问题。
+            这里会**按其前缀归并**：同 /64、/24 内换地址不重试（风控按段聚合）。
 
         随机点落在最后一条可用行之后会取空，此时最后一次尝试回退到「从头取」，
         保证有结果；取到的行在 id 上略有偏差（空洞后面的行更容易被选中），
@@ -414,6 +430,10 @@ class SQLHelperClass(SqlHelperBase):
             return None
         cfg = CONFIG.proxy_health
         excluded = exclude or frozenset()
+        # 失败代理 → 失败前缀：同段内换地址对风控没有意义，整段跳过
+        excluded_prefixes = frozenset(
+            prefix for prefix in (proxy_prefix_of(k) for k in excluded) if prefix
+        )
         batch = max(1, cfg.candidate_batch)
         attempts = max(1, cfg.pick_attempts)
 
@@ -421,7 +441,9 @@ class SQLHelperClass(SqlHelperBase):
         # 代理池 68 万行里已验证的只有几千条，随机主键起点几乎抽不到（实测 80 次中 1 次），
         # 不先从这里取，就等于「名义上优先好代理、实际全用冷代理」。
         if tier is ProxyTier.FAST or random.random() >= cfg.cold_probe_ratio:
-            verified = await self._pick_from_verified_pool(tier, excluded)
+            verified = await self._pick_from_verified_pool(
+                tier, excluded, excluded_prefixes
+            )
             if verified is not None:
                 return verified
 
@@ -436,7 +458,9 @@ class SQLHelperClass(SqlHelperBase):
                 ]
             if rows:
                 fetched_any = True
-            proxy_tab = await self._pick_proxy_by_tier(rows, tier)
+            proxy_tab = await self._pick_proxy_by_tier(
+                rows, tier, exclude_prefixes=excluded_prefixes
+            )
             if proxy_tab is not None:
                 return proxy_tab
         if not fetched_any:
@@ -446,7 +470,9 @@ class SQLHelperClass(SqlHelperBase):
                 rows = [
                     row for row in rows if self._proxy_key_of(row) not in excluded
                 ]
-            proxy_tab = await self._pick_proxy_by_tier(rows, tier)
+            proxy_tab = await self._pick_proxy_by_tier(
+                rows, tier, exclude_prefixes=excluded_prefixes
+            )
             if proxy_tab is not None:
                 return proxy_tab
         if tier is ProxyTier.FAST:
@@ -456,7 +482,10 @@ class SQLHelperClass(SqlHelperBase):
         return None
 
     async def _pick_from_verified_pool(
-        self, tier: ProxyTier, exclude: frozenset[str] | set[str]
+        self,
+        tier: ProxyTier,
+        exclude: frozenset[str] | set[str],
+        exclude_prefixes: frozenset[str] = frozenset(),
     ) -> ProxyTab | None:
         """从「已验证分档」（hot → warm）里取样，取到就返回，取不到返回 None。
 
@@ -467,6 +496,9 @@ class SQLHelperClass(SqlHelperBase):
         取样后要回 MySQL 做一次点查（``computed_proxy_str`` 有索引）：
         Redis 只是缓存，MySQL 才是「这行还能不能用」的真相；
         已经被删 / 被置黑的成员顺手从集合里摘掉，避免每次都抽到它。
+
+        另外按**前缀**再过一遍：hot 集合里常有几十条落在同一个 `/24` 上，
+        整段被风控时它们会一起失效（实测单 /24 最多 108 条），必须按段去重。
         """
         cfg = CONFIG.proxy_health
         states = (ProxyHealthState.HOT, ProxyHealthState.WARM)
@@ -476,20 +508,24 @@ class SQLHelperClass(SqlHelperBase):
         if not keys:
             return None
 
-        health_map = await proxy_health_store.get_many(keys)
-        in_flight_map = await proxy_health_store.get_in_flight(keys)
+        prefixes = [proxy_prefix_of(key) for key in keys]
+        snapshot = await proxy_health_store.read_selection_state(
+            keys, prefixes, excluded_prefixes=exclude_prefixes
+        )
         now = int(time.time())
         stale: list[str] = []
         candidates: list[tuple[str, ProxyHealthRecord]] = []
-        for key in keys:
-            record = health_map.records.get(key)
+        for key, prefix in zip(keys, prefixes):
+            record = snapshot.address.records.get(key)
             if record is None:
                 # 分档集合里有、明细已过期：属于残留，清掉
                 stale.append(key)
                 continue
+            if not snapshot.prefix_allows(prefix, now):
+                continue
             if tier is ProxyTier.FAST:
                 if not proxy_health_store.is_fast_eligible(
-                    record, in_flight_map.get(key), now
+                    record, snapshot.address_in_flight.get(key), now
                 ):
                     continue
             elif not proxy_health_store.is_slow_eligible(record, now):
@@ -910,24 +946,67 @@ class SQLHelperClass(SqlHelperBase):
 
         明细（连续失败、EWMA、冷却到期时间）留在 Redis 热缓存 —— 它本来就是
         「可重建的观测数据」，丢失只会让代理退回 cold（需重新探测），不会破坏业务。
+
+        前缀级冷却（412/352 记在 /64、/24 上）没有对应的 MySQL 行可写，
+        因此按 ``prefix_members``（该段下被实际用过的代理串）把整段一起置为不可用：
+        只读「当前冷却中的前缀」，成本与前缀数量同阶，不扫全表。
         """
         # 进程首次执行时先做一次冷启动播种：Redis 空 → fast 车道没有任何候选，
         # 会把「上线 / 清缓存」变成一次全量停摆。
         if not self._health_bootstrapped:
             await self.bootstrap_proxy_health()
             self._health_bootstrapped = True
-        keys = await proxy_health_store.list_cooling_keys(
-            limit=max(1, CONFIG.proxy_health.persist_batch)
-        )
+        limit = max(1, CONFIG.proxy_health.persist_batch)
+        keys = await proxy_health_store.list_cooling_keys(limit=limit)
         # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
         # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
         keys = await self._filter_still_cooling(keys)
+        touched = 0
+        if keys:
+            touched += await self._mark_proxy_unavailable(keys, status=-412)
+            if touched:
+                sql_log.debug(f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行")
+
+        prefix_keys, prefix_touched = await self._flush_prefix_cooling(limit=limit)
+        if prefix_touched:
+            sql_log.warning(
+                f"前缀冷却落盘：{prefix_keys} 个网段冷却中，回写 {prefix_touched} 行"
+                f"（同 /64、/24 内所有代理一并置为不可用）"
+            )
+        return touched + prefix_touched
+
+    async def _flush_prefix_cooling(self, limit: int) -> tuple[int, int]:
+        """把「冷却中的前缀」整段写回 MySQL：返回 (前缀数, 回写行数)。"""
+        prefixes = await proxy_health_store.list_prefix_cooling(limit=limit)
+        if not prefixes:
+            return 0, 0
+        prefixes = await self._filter_still_cooling_prefixes(prefixes)
+        if not prefixes:
+            return 0, 0
+        members: list[str] = []
+        for prefix in prefixes:
+            members.extend(await proxy_health_store.prefix_members(prefix))
+        keys = [key for key in dict.fromkeys(members) if key]
         if not keys:
-            return 0
+            return len(prefixes), 0
         touched = await self._mark_proxy_unavailable(keys, status=-412)
-        if touched:
-            sql_log.debug(f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行")
-        return touched
+        return len(prefixes), touched
+
+    async def _filter_still_cooling_prefixes(self, prefixes: list[str]) -> list[str]:
+        """剔除「已经解冻」的前缀（同一前缀在冷却集合里但明细已恢复）。"""
+        if not prefixes:
+            return []
+        prefix_map = await proxy_health_store.get_prefixes(prefixes)
+        now = int(time.time())
+        still: list[str] = []
+        for prefix in prefixes:
+            if not prefix_map.has(prefix):
+                # 明细已过期但冷却集合里还有：按「仍在冷却」保守处理
+                still.append(prefix)
+                continue
+            if prefix_map.get(prefix).is_cooling(now):
+                still.append(prefix)
+        return still
 
     @log_sql_retry_wrapper()
     async def bootstrap_proxy_health(self, limit: int = 5000) -> int:

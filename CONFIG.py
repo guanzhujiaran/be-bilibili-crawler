@@ -291,6 +291,52 @@ class ProxyHealthConfig(BaseModel):
     # ---- 冷启动播种：Redis 无记录时按 MySQL 历史表现推断初始 EWMA ----
     seed_success_times: int = 3
     seed_min_score: int = 50
+    # ================= 前缀级（网段）判定 =================
+    # 风控按网段聚合：IPv6 常见 /64、IPv4 常见 /24。同一段内换地址对服务端还是同一个来源，
+    # 所以连续失败 / EWMA / 冷却 / 并发配额都按前缀算（地址级明细只留作日志）。
+    # 见 Utils/代理/mdoel/ProxyPrefix.py 与 docs/be-bilibili-crawler-代理选取与获取策略计划书.md 第 8 节。
+    prefix_v4_length: int = Field(default=24, description="IPv4 归并前缀长度")
+    prefix_v6_length: int = Field(default=64, description="IPv6 归并前缀长度")
+    prefix_inflight_limit: int = Field(
+        default=2, description="同一前缀允许的在途并发上限（打满会整段被封，宁可变慢）"
+    )
+    prefix_network_fail_threshold: int = Field(
+        default=3,
+        description="前缀级连续网络失败达到多少次才开始冷却（避免单个坏代理停掉整段）",
+    )
+    # 412/352 是段级风控信号：冷却记在前缀上，且阶梯 2h → 6h → 24h（可配，最后一级为上限）
+    prefix_risk_cooldown_first: int = Field(
+        default=7200, description="412/352 第 1 级前缀冷却（秒）"
+    )
+    prefix_risk_cooldown_second: int = Field(
+        default=21600, description="412/352 第 2 级前缀冷却（秒）"
+    )
+    prefix_risk_cooldown_max: int = Field(
+        default=86400, description="412/352 第 3 级及以后的前缀冷却上限（秒）"
+    )
+    # ================= 自建 IPv6 出口（专线） =================
+    # 它是「一条固定出口」而不是「可轮换的 IP 池」：不再伪造 score/success_times=10000，
+    # 也不豁免健康记账；独立通道 + 独立 QPS 配额，352 同样进入前缀冷却。
+    local_ipv6_channel: str = Field(
+        default="local-ipv6", description="自建出口的通道名（QPS 配额按通道独立计数）"
+    )
+    local_ipv6_qps: float = Field(
+        default=3.0, description="自建出口独立 QPS 配额（固定 1 秒窗口；<=0 表示不限）"
+    )
+    local_ipv6_qps_wait: float = Field(
+        default=1.0, description="自建出口超出配额时最多等待多久（秒），之后快速失败"
+    )
+    local_ipv6_weight: int = Field(
+        default=10, description="非强制场景下抽到自建出口的权重（相对 pool_weight）"
+    )
+    pool_weight: int = Field(
+        default=1000, description="非强制场景下抽到代理池的权重（相对 local_ipv6_weight）"
+    )
+    local_ipv6_cooling_pool_fallback: bool = Field(
+        default=True,
+        description="专线冷却 / 超额时，强制专线的请求是否允许降级到代理池"
+        "（False = 直接快速失败交回队列，等专线冷却结束）",
+    )
 
 
 class ProxyRetryTierConfig(BaseModel):

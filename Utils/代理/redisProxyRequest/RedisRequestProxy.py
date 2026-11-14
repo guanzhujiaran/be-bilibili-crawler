@@ -61,16 +61,15 @@ from Utils.代理.数据库操作.ProxyEvent import (
 from Utils.代理.数据库操作.ProxyHealth import (
     ProxyFailureKind,
     proxy_health_store,
+    proxy_prefix_of,
 )
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper, to_proxy_key
 
 #: 代理鉴权失败（407）在响应层而不是异常层出现，需要单独判一次
 _PROXY_AUTH_FAILED_STATUS = 407
-#: 本地 ipv6 代理在随机取代理时的权重（相对真实代理池，约 1%）
-_LOCAL_PROXY_WEIGHT = 10
-#: 真实代理池的权重
-_REAL_PROXY_WEIGHT = 1000
+#: 专线闸门告警的最小间隔（秒）：冷却 / 超配额期间每个请求都刷一行会把日志打爆
+_LOCAL_GATE_WARN_INTERVAL = 60.0
 
 
 def _curl_code_of(err: BaseException) -> int | None:
@@ -113,6 +112,8 @@ class RequestWithProxy:
         self.timeout = 15
         self.available_proxy_timeout = 15
         self.task_set = set()
+        # 专线闸门（冷却 / 超配额）告警的限流时间戳
+        self._local_gate_warn_ts = 0.0
 
     def _timeshift(self, timestamp):
         local_time = time.localtime(timestamp)
@@ -124,55 +125,148 @@ class RequestWithProxy:
 
     # region 取代理
     def _local_ipv6_proxy(self) -> ProxyTab:
-        """本地 ipv6 代理：它是配置项而不是代理池成员，不参与打分 / 健康统计。"""
+        """自建 IPv6 出口（专线）的代理行。
+
+        它是配置项而不是代理池成员：MySQL 侧不会写它（``_is_local_ipv6_proxy`` 跳过）。
+        以前这里伪造成 ``score=10000 / success_times=10000``，等于对外宣称
+        「历史表现完美的代理」，再叠加健康度豁免，结果是**永不降权、永不冷却**；
+        现在如实填 0：它的健康度按所在 /64 前缀统计（与普通代理同一套前缀规则）。
+        """
         return ProxyTab(
             **{
                 "proxy_id": 1,
                 "proxy": CONFIG.custom_proxy,
                 "status": 0,
                 "update_ts": 0,
-                "score": 10000,
+                "score": 0,
                 "add_ts": 0,
-                "success_times": 10000,
+                "success_times": 0,
                 "zhihu_status": 0,
                 "computed_proxy_str": CONFIG.my_ipv6_addr,
             }
         )
 
+    def _warn_local_gate(self, msg: str) -> None:
+        """专线闸门告警限流：冷却 / 超配额期间每个请求都会走到这里，不能刷屏。"""
+        now = time.monotonic()
+        if now - self._local_gate_warn_ts < _LOCAL_GATE_WARN_INTERVAL:
+            self.log.debug(msg)
+            return
+        self._local_gate_warn_ts = now
+        self.log.warning(msg)
+
+    async def _acquire_local_exit(self, tier: ProxyTier) -> ProxyTab | None:
+        """自建出口（专线）闸门：未冷却 + 拿到独立 QPS 配额才放行。
+
+        三道闸门按顺序判定（任一不通过就返回 ``None``，由调用方决定兜底 / 快速失败）：
+
+        1. 本任务内已经失败过（或其前缀失败过）→ 不再重试，同段换地址没有意义；
+        2. 前缀处于风控冷却（412/352 记在 /64 上）→ 冷却期内一律不用；
+        3. 独立通道 QPS 配额（``local_ipv6_qps``）→ 专线是兜底通道，必须限流。
+        """
+        cfg = CONFIG.proxy_health
+        local_addr = (CONFIG.my_ipv6_addr or "").strip()
+        if not local_addr:
+            return None
+        proxy = self._local_ipv6_proxy()
+        proxy_key = to_proxy_key(proxy.proxy) or local_addr
+        prefix = proxy_prefix_of(proxy_key)
+
+        excluded = excluded_proxy_keys()
+        if proxy_key in excluded or (
+            prefix and prefix in {proxy_prefix_of(key) for key in excluded}
+        ):
+            self.log.debug(f"自建出口（前缀 {prefix}）本任务内已失败过，本次不再重试")
+            return None
+
+        if prefix and await proxy_health_store.is_prefix_cooling(prefix):
+            self._warn_local_gate(
+                f"自建出口前缀 {prefix} 处于风控冷却中，本次不使用"
+                f"（不换地址绕 412/352，等冷却自然到期）"
+            )
+            return None
+
+        if not await proxy_health_store.acquire_qps(
+            cfg.local_ipv6_channel,
+            cfg.local_ipv6_qps,
+            cfg.local_ipv6_qps_wait,
+        ):
+            self._warn_local_gate(
+                f"自建出口超出 QPS 配额（{cfg.local_ipv6_qps} req/s），本次不使用"
+            )
+            return None
+        return proxy
+
+    async def _pool_proxy(self, tier: ProxyTier) -> ProxyTab | None:
+        """从代理池按档位取一条（池内已按前缀去重 / 配额）。"""
+        proxy, _ = await get_available_proxy(
+            tier=tier, exclude=excluded_proxy_keys()
+        )
+        return proxy
+
     async def _select_proxy(
         self, request_conf: RequestConf, tier: ProxyTier
     ) -> tuple[ProxyTab, bool]:
-        """选一个代理，返回 ``(代理行, 是否本地 ipv6 代理)``。
+        """选一个代理，返回 ``(代理行, 是否自建出口)``。
 
-        - ``is_use_custom_proxy``：直接用本地 ipv6 代理（原本地行为）；
-        - 否则按权重在「本地 ipv6 代理 / 代理池」之间随机，代理池按 ``tier`` 取
-          （fast 只用已验证的，slow 允许掺 cold 探测）；
-        - 池里没有合格代理时**不再在请求里现场抓一轮**（那会把 worker 挂住几分钟），
-          而是快速抛 ``RequestProxyUnavailableError``：fast 档直接失败交回队列，
-          slow 档由重试预算的指数退避等待后台补池；本地 ipv6 可用时优先用它兜底。
+        两条通道：
+
+        - **自建出口（专线）**：独立通道 + 独立 QPS 配额；不参与「换 IP 绕 412/352」，
+          冷却中直接不可用（见 ``_acquire_local_exit``）；
+        - **真实代理池**：按 ``tier`` 取（fast 只用已验证的，slow 允许掺 cold 探测），
+          池内按前缀去重 / 在途配额（见 ``select_random_proxy``）。
+
+        ``is_use_custom_proxy`` 的请求强制走专线；池子空时才用专线兜底（同样受限流约束）。
+        池里没有合格代理时**不在请求里现场抓一轮**（那会把 worker 挂住几分钟）：
+        抛 ``RequestProxyUnavailableError`` 让上层快速失败 / 延迟重入队，后台补池照常进行。
         """
+        cfg = CONFIG.proxy_health
+
         if request_conf.is_use_custom_proxy:
-            return self._local_ipv6_proxy(), True
+            proxy = await self._acquire_local_exit(tier)
+            if proxy is not None:
+                return proxy, True
+            if not cfg.local_ipv6_cooling_pool_fallback:
+                raise RequestProxyUnavailableError(
+                    "自建出口不可用（风控冷却 / 超出 QPS 配额），"
+                    "按配置不降级到代理池",
+                    tier=tier.value,
+                )
+            fallback = await self._pool_proxy(tier)
+            if fallback is not None:
+                self._warn_local_gate(
+                    "自建出口不可用（风控冷却 / 超出 QPS 配额），本次降级到代理池"
+                )
+                return fallback, False
+            raise RequestProxyUnavailableError(
+                f"没有可用代理（tier={tier.value}）：自建出口冷却中且代理池无合格代理",
+                tier=tier.value,
+            )
 
         use_local = random.choices(
             [True, False],
-            weights=[_LOCAL_PROXY_WEIGHT, _REAL_PROXY_WEIGHT],
+            weights=[max(0, cfg.local_ipv6_weight), max(1, cfg.pool_weight)],
             k=1,
         )[0]
         if use_local:
-            return self._local_ipv6_proxy(), True
+            proxy = await self._acquire_local_exit(tier)
+            if proxy is not None:
+                return proxy, True
 
-        excluded = excluded_proxy_keys()
-        proxy, _ = await get_available_proxy(tier=tier, exclude=excluded)
-        if proxy:
+        proxy = await self._pool_proxy(tier)
+        if proxy is not None:
             return proxy, False
-        if CONFIG.my_ipv6_addr:
-            self.log.debug(
-                f"代理池无符合 tier={tier.value} 的代理，本次使用本地 ipv6 代理兜底"
+
+        fallback = await self._acquire_local_exit(tier)
+        if fallback is not None:
+            self._warn_local_gate(
+                f"代理池无符合 tier={tier.value} 的代理，本次使用自建出口兜底"
+                f"（配额 {cfg.local_ipv6_qps} req/s）"
             )
-            return self._local_ipv6_proxy(), True
+            return fallback, True
         raise RequestProxyUnavailableError(
-            f"没有可用代理（tier={tier.value}，已排除 {len(excluded)} 个失败代理）",
+            f"没有可用代理（tier={tier.value}，已排除 {len(excluded_proxy_keys())} 个失败代理；"
+            f"自建出口冷却或超出配额）",
             tier=tier.value,
         )
 
@@ -188,35 +282,42 @@ class RequestWithProxy:
         :param request_conf:
         :param cookie_data:
         :param kwargs:
-        :mode single|rand 设置代理是否选择最高的单一代理还是随机
-        :hybrid 是否将本地ipv6代理加入随机选择中
-        :return:
+        :param request_conf: 请求配置（档位 / 是否强制走自建出口等）
+        取代理与失败记账的口径见 ``_select_proxy`` / ``ProxyHealth``：
+        健康度按前缀（IPv6 /64、IPv4 /24）判定，地址级只作日志明细。
         """
         tier = resolve_tier(request_conf)
         proxy, is_local = await self._select_proxy(request_conf, tier)
-        proxy_key = "" if is_local else to_proxy_key(proxy.proxy)
-        # 在途计数：fast 档要求 in_flight<2，靠它把热门代理的并发压在低位，
-        # TTL 兜底，进程崩溃也不会永久占住代理。
-        if proxy_key:
+        proxy_key = to_proxy_key(proxy.proxy) or ""
+        prefix = proxy_prefix_of(proxy_key)
+        # 在途计数：
+        # - 池代理：地址级 + 前缀级都记（fast 档 in_flight<2，
+        #   同段 in_flight<prefix_inflight_limit，避免整段并发打满被整段封）；
+        # - 自建出口：并发只由 QPS 配额控制，不记在途 —— 否则 15s 超时 × 3 req/s
+        #   会让 prefix_inflight_limit 常驻打满，把专线自己锁死。
+        track_flight = bool(proxy_key) and not is_local
+        if track_flight:
             await proxy_health_store.acquire_in_flight(proxy_key)
+            if prefix:
+                await proxy_health_store.acquire_prefix_in_flight(prefix)
         try:
             return await self._dispatch_request(
                 proxy=proxy,
                 proxy_key=proxy_key,
-                is_local=is_local,
                 request_conf=request_conf,
                 cookie_data=cookie_data,
                 **kwargs,
             )
         finally:
-            if proxy_key:
+            if track_flight:
                 await proxy_health_store.release_in_flight(proxy_key)
+                if prefix:
+                    await proxy_health_store.release_prefix_in_flight(prefix)
 
     async def _dispatch_request(
         self,
         proxy: ProxyTab,
         proxy_key: str,
-        is_local: bool,
         request_conf: RequestConf,
         cookie_data: CookieWrapper | None = None,
         **kwargs,
@@ -230,13 +331,9 @@ class RequestWithProxy:
         request_timeout = (
             self.timeout if is_use_custom_proxy else self.available_proxy_timeout
         )
-        pool_proxy = None if is_local else proxy
-
-        def _mark_failed(kind: ProxyFailureKind):
-            """登记一次代理失败：MySQL 打分 + Redis 健康状态机 + 下一轮换代理。"""
-            if not pool_proxy:
-                return
-            note_failed_proxy(proxy_key)
+        # 自建出口同样参与健康记账：它是「专线」，健康度记在所在 /64 前缀上
+        # （MySQL 侧仍是 no-op，因为它不是 proxy_tab 成员）。
+        pool_proxy = proxy
 
         try:
             # 双保险：既把超时透传给 curl_cffi，又在外层用 asyncio.timeout 兜底，
