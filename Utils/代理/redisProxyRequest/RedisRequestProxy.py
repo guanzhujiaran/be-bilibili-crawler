@@ -10,6 +10,7 @@ from ssl import SSLError
 
 import curl_cffi
 from exceptiongroup import ExceptionGroup
+from pydantic import BaseModel, Field
 from httpx import (
     ProxyError,
     RemoteProtocolError,
@@ -124,6 +125,42 @@ class LocalExitGate:
     qps: float = 0.0
 
 
+class LocalExitGateStats(BaseModel):
+    """自建出口（专线）闸门计数：说明「业务请求最后到底走了哪条出口」。
+
+    专线被风控冷却时会静默降级到免费代理池（权重 10 : 1000），
+    只看零散的 ``_warn_local_gate`` 无法判断「现在还有多少请求走专线」，
+    因此这里按累计次数给出占比，由周期日志输出（冷却期间为 WARNING）。
+    """
+
+    local_used: int = Field(default=0, description="实际走自建出口的次数")
+    pool_used: int = Field(default=0, description="实际走代理池的次数")
+    blocked_risk_cooldown: int = Field(default=0, description="专线因风控冷却被挡次数")
+    blocked_quota: int = Field(default=0, description="专线因 QPS 配额被挡次数")
+    blocked_excluded: int = Field(default=0, description="专线因本任务内已失败被挡次数")
+    degraded_to_pool: int = Field(default=0, description="专线不可用后降级到代理池的次数")
+    local_failed: int = Field(default=0, description="专线请求本身失败（网络层）次数")
+
+    @property
+    def total(self) -> int:
+        return self.local_used + self.pool_used
+
+    @property
+    def local_share(self) -> float:
+        return 0.0 if self.total <= 0 else self.local_used / self.total
+
+    def to_log_str(self) -> str:
+        if self.total <= 0:
+            return "出口占比：暂无统计样本"
+        return (
+            f"出口占比（累计 {self.total} 次）：专线 {self.local_share:.1%}"
+            f"（{self.local_used} 次）/ 代理池 {1 - self.local_share:.1%}"
+            f"（{self.pool_used} 次）；专线被挡：风控冷却 {self.blocked_risk_cooldown} / "
+            f"QPS 配额 {self.blocked_quota} / 本任务内已失败 {self.blocked_excluded}；"
+            f"降级到池 {self.degraded_to_pool} 次；专线请求失败 {self.local_failed} 次"
+        )
+
+
 class RequestWithProxy:
     def __init__(self):
         self.use_p_dict_flag = False
@@ -136,6 +173,12 @@ class RequestWithProxy:
         self.task_set = set()
         # 专线闸门（冷却 / 超配额）告警的限流时间戳
         self._local_gate_warn_ts = 0.0
+        # 专线闸门计数 / 状态迁移（冷却开始与结束各打一条 WARNING）
+        self._local_gate_stats = LocalExitGateStats()
+        self._local_exit_cooling = False
+        self._local_exit_degraded_in_cooldown = 0
+        # 出口占比周期日志的时间戳（monotonic）
+        self._local_gate_share_ts = 0.0
 
     def _timeshift(self, timestamp):
         local_time = time.localtime(timestamp)
@@ -176,6 +219,78 @@ class RequestWithProxy:
             return
         self._local_gate_warn_ts = now
         self.log.warning(msg)
+
+    def _note_local_exit_gate(self, cooling: bool, detail: str = "") -> None:
+        """专线闸门状态迁移：冷却**开始 / 结束各打一条 WARNING**。
+
+        历史问题：专线被风控冷却后业务请求静默降级到免费池，日志里只有零散的
+        ``_warn_local_gate``，无法判断「现在到底走哪条出口、为什么走这条」。
+        这里把「降级策略 + 当前出口占比」一并写进一条日志，恢复时再写一条。
+        """
+        if cooling == self._local_exit_cooling:
+            return
+        self._local_exit_cooling = cooling
+        cfg = CONFIG.proxy_health
+        if cooling:
+            if cfg.local_ipv6_cooling_pool_fallback:
+                policy = (
+                    "降级策略：强制专线的请求改走代理池"
+                    f"（local_ipv6_cooling_pool_fallback=true，抽样权重 "
+                    f"local_ipv6_weight={cfg.local_ipv6_weight} : pool_weight={cfg.pool_weight}）；"
+                    "local_exit_only 请求不降级，直接失败交回队列"
+                )
+            else:
+                policy = (
+                    "降级策略：不降级（local_ipv6_cooling_pool_fallback=false），"
+                    "专线请求直接失败交回队列等冷却结束"
+                )
+            self.log.warning(
+                f"自建出口（专线）进入风控冷却：{detail or '前缀冷却生效'}；{policy}；"
+                f"{self._local_gate_stats.to_log_str()}"
+            )
+            return
+        self.log.warning(
+            f"自建出口（专线）风控冷却结束，恢复使用；冷却期间降级到代理池 "
+            f"{self._local_exit_degraded_in_cooldown} 次；"
+            f"{self._local_gate_stats.to_log_str()}"
+        )
+        self._local_exit_degraded_in_cooldown = 0
+
+    async def _report_exit_share(self) -> None:
+        """周期输出「专线 / 代理池」出口占比，并顺带探测冷却状态迁移。
+
+        冷却状态靠一次 ``is_prefix_cooling``（单次 HGET）懒探测：每
+        ``local_exit_gate_report_interval`` 秒一次，既有明确的起止 WARNING，
+        又不会在热路径上每个请求都查 Redis。
+        """
+        interval = max(30.0, float(CONFIG.proxy_health.local_exit_gate_report_interval))
+        now = time.monotonic()
+        if now - self._local_gate_share_ts < interval:
+            return
+        self._local_gate_share_ts = now
+        local_addr = (CONFIG.my_ipv6_addr or "").strip()
+        cooling = self._local_exit_cooling
+        if local_addr:
+            proxy_key = to_proxy_key(CONFIG.custom_proxy) or local_addr
+            prefix = proxy_prefix_of(proxy_key)
+            try:
+                cooling = await proxy_health_store.is_prefix_cooling(prefix)
+            except Exception as e:  # noqa: BLE001 观测失败不能影响业务请求
+                self.log.debug(f"读取自建出口冷却状态失败：{type(e).__name__} {e}")
+                cooling = self._local_exit_cooling
+            self._note_local_exit_gate(
+                cooling,
+                detail=f"前缀 {prefix} 处于冷却" if cooling else "",
+            )
+        message = (
+            f"自建出口用量观测（每 {interval:.0f}s 一条）："
+            f"{self._local_gate_stats.to_log_str()}；当前专线冷却中={cooling}"
+        )
+        # 冷却期间用 WARNING（需要持续可见），正常状态下降到 INFO，避免长期刷屏
+        if cooling:
+            self.log.warning(message)
+        else:
+            self.log.info(message)
 
     @staticmethod
     def _local_exit_quota(request_conf: RequestConf | None) -> tuple[str, float]:
@@ -230,6 +345,7 @@ class RequestWithProxy:
         if proxy_key in excluded or (
             prefix and prefix in {proxy_prefix_of(key) for key in excluded}
         ):
+            self._local_gate_stats.blocked_excluded += 1
             self.log.debug(f"自建出口（前缀 {prefix}）本任务内已失败过，本次不再重试")
             return LocalExitGate(
                 reason=f"自建出口（前缀 {prefix}）本任务内已失败过",
@@ -237,26 +353,30 @@ class RequestWithProxy:
                 qps=qps,
             )
 
-        if (
-            prefix
-            and self._check_risk_cooldown(request_conf)
-            and await proxy_health_store.is_prefix_cooling(prefix)
-        ):
-            self._warn_local_gate(
-                f"自建出口前缀 {prefix} 处于风控冷却中，本次不使用"
-                f"（不换地址绕 412/352，等冷却自然到期）"
+        if prefix and self._check_risk_cooldown(request_conf):
+            cooling = await proxy_health_store.is_prefix_cooling(prefix)
+            # 冷却开始 / 结束各一条 WARNING（状态迁移才打，不刷屏）
+            self._note_local_exit_gate(
+                cooling, detail=f"前缀 {prefix} 处于风控冷却"
             )
-            return LocalExitGate(
-                reason=f"自建出口前缀 {prefix} 处于风控冷却中",
-                channel=channel,
-                qps=qps,
-            )
+            if cooling:
+                self._local_gate_stats.blocked_risk_cooldown += 1
+                self._warn_local_gate(
+                    f"自建出口前缀 {prefix} 处于风控冷却中，本次不使用"
+                    f"（不换地址绕 412/352，等冷却自然到期）"
+                )
+                return LocalExitGate(
+                    reason=f"自建出口前缀 {prefix} 处于风控冷却中",
+                    channel=channel,
+                    qps=qps,
+                )
 
         if not await proxy_health_store.acquire_qps(
             channel,
             qps,
             cfg.local_ipv6_qps_wait,
         ):
+            self._local_gate_stats.blocked_quota += 1
             self._warn_local_gate(
                 f"自建出口超出 QPS 配额（通道 {channel}，{qps} req/s），本次不使用"
             )
@@ -362,6 +482,22 @@ class RequestWithProxy:
     async def _select_proxy(
         self, request_conf: RequestConf, tier: ProxyTier
     ) -> tuple[ProxyTab, bool]:
+        """选一个代理并记账「本次出口是专线还是池」，返回 ``(代理行, 是否自建出口)``。
+
+        记账口径只影响可观测性（周期 WARNING 的出口占比），不改变选取行为。
+        """
+        # 周期观测：出口占比 + 专线冷却状态（内部按 interval 节流，热路径只是一次比较）
+        await self._report_exit_share()
+        proxy, is_local = await self._select_proxy_impl(request_conf, tier)
+        if is_local:
+            self._local_gate_stats.local_used += 1
+        else:
+            self._local_gate_stats.pool_used += 1
+        return proxy, is_local
+
+    async def _select_proxy_impl(
+        self, request_conf: RequestConf, tier: ProxyTier
+    ) -> tuple[ProxyTab, bool]:
         """选一个代理，返回 ``(代理行, 是否自建出口)``。
 
         两条通道：
@@ -394,6 +530,8 @@ class RequestWithProxy:
                 )
             fallback = await self._pool_proxy(tier)
             if fallback is not None:
+                self._local_gate_stats.degraded_to_pool += 1
+                self._local_exit_degraded_in_cooldown += 1
                 self._warn_local_gate(
                     "自建出口不可用（风控冷却 / 超出 QPS 配额），本次降级到代理池"
                 )
@@ -461,6 +599,7 @@ class RequestWithProxy:
                 proxy_key=proxy_key,
                 request_conf=request_conf,
                 cookie_data=cookie_data,
+                is_local=is_local,
                 **kwargs,
             )
         finally:
@@ -475,6 +614,7 @@ class RequestWithProxy:
         proxy_key: str,
         request_conf: RequestConf,
         cookie_data: CookieWrapper | None = None,
+        is_local: bool = False,
         **kwargs,
     ) -> dict | list[dict] | curl_cffi.requests.models.Request:
         is_use_custom_proxy: bool = request_conf.is_use_custom_proxy
@@ -663,6 +803,13 @@ class RequestWithProxy:
                 f"\n代理：{str(proxy)}\n请求时发生网络错误（{kind.value}）："
                 f"{type(_err)}\n{_err}"
             )
+            if is_local:
+                # 专线自身的网络失败单独计数：池子好坏与它无关，排障时要能分开看
+                self._local_gate_stats.local_failed += 1
+                self._warn_local_gate(
+                    f"自建出口请求失败（网络层，{kind.value}）："
+                    f"{type(_err).__name__}: {_err}"
+                )
             if account_health and pool_proxy:
                 await handle_proxy_request_fail(proxy_tab=pool_proxy, kind=kind)
             note_failed_proxy(proxy_key)

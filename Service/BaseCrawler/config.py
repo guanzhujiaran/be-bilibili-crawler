@@ -106,6 +106,9 @@ class CrawlerConfig(BaseModel):
     # 失败任务的延迟重入队（秒）：None = 跟随 CONFIG.crawler_runtime
     requeue_delay_base: int | None = Field(default=None)
     requeue_delay_max: int | None = Field(default=None)
+    # 重入队上限（重试预算耗尽后的处置上限）：None = 跟随 CONFIG.crawler_runtime
+    max_requeue_per_task: int | None = Field(default=None)
+    requeue_max_task_seconds: float | None = Field(default=None)
 
     # 日志对象（由 Config 集中管理；运行时可用对应环境变量覆盖其子字段前的 logger 选择）
     logger: Any = myfastapi_logger

@@ -335,6 +335,9 @@ class ProxyHealthStore:
         self._counts_cache: ProxyHealthCounts | None = None
         self._counts_cache_ts: float = 0.0
         self._warn_ts: float = 0.0
+        # 已观测到「处于冷却」的前缀：只用于冷却结束打一条 WARNING。
+        # 冷却开始的那条 WARNING 在 record_failure 里（带阶梯档次）。
+        self._cooling_prefixes: set[str] = set()
 
     # region 基础设施
     @property
@@ -764,17 +767,53 @@ class ProxyHealthStore:
     # endregion
 
     # region 前缀级读取 / 冷却
-    async def is_prefix_cooling(self, prefix: str) -> bool:
-        """该前缀当前是否在冷却（专线闸门用，一次 HGET）。"""
+    async def prefix_cooldown_until(self, prefix: str) -> int:
+        """该前缀的冷却到期时间（unix 秒，0 = 不在冷却；Redis 异常按 0 降级）。
+
+        同时负责**冷却起止的可观测性**：首次观测到冷却打一条 WARNING，
+        冷却到期后再打一条「冷却结束」WARNING（懒探测，不需要定时任务）。
+        """
         if not prefix:
-            return False
+            return 0
         try:
             client = self._get_client()
             raw = await client.hget(self._prefix_detail_key(prefix), "cd")
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀冷却失败：{type(e).__name__} {e}")
-            return False
-        return int(float(raw or 0)) > int(time.time())
+            return 0
+        now = int(time.time())
+        until = int(float(raw or 0))
+        self._note_prefix_cooldown(prefix, until > now, until, now)
+        return until if until > now else 0
+
+    def _note_prefix_cooldown(
+        self, prefix: str, cooling: bool, until: int, now: int
+    ) -> None:
+        """前缀冷却状态迁移日志（懒探测：只在被查询时才能发现状态变化）。"""
+        if cooling:
+            if prefix in self._cooling_prefixes:
+                return
+            self._cooling_prefixes.add(prefix)
+            # 防御性上限：长期运行后集合不应无限增长
+            if len(self._cooling_prefixes) > 10000:
+                self._cooling_prefixes.clear()
+                self._cooling_prefixes.add(prefix)
+            sql_log.warning(
+                f"前缀 {prefix} 处于风控冷却中，剩余 {max(0, until - now)}s"
+                f"（到期后本条前缀才会重新参与选代理；不换地址绕 412/352）"
+            )
+            return
+        if prefix not in self._cooling_prefixes:
+            return
+        self._cooling_prefixes.discard(prefix)
+        sql_log.warning(
+            f"前缀 {prefix} 风控冷却结束，恢复可用（观测时间 {now}），"
+            f"该前缀重新参与选代理"
+        )
+
+    async def is_prefix_cooling(self, prefix: str) -> bool:
+        """该前缀当前是否在冷却（专线闸门用，一次 HGET）。"""
+        return await self.prefix_cooldown_until(prefix) > 0
 
     async def list_prefix_cooling(self, limit: int = 1000) -> list[str]:
         """当前仍在冷却的前缀（按到期时间升序，最多 ``limit`` 条）。"""

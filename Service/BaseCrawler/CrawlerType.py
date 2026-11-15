@@ -1,5 +1,6 @@
 from typing import Any, AsyncGenerator, Generic, List, ClassVar, TypeVar
 from abc import abstractmethod
+from datetime import datetime
 import asyncio
 import random
 import time
@@ -10,6 +11,13 @@ from Service.BaseCrawler.base.core import BaseCrawler
 from Service.BaseCrawler.config import CrawlerConfig
 from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus, ParamsType
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
+from Service.BaseCrawler.resilience import (
+    AlertDecision,
+    FailureAlertThrottle,
+    FinalFailTally,
+    ProxyCircuitBreaker,
+    is_pool_level_error,
+)
 from Utils.通用.Common import ConcurrencyLimit, asyncio_gather
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.ProxyTier import ProxyTier
@@ -137,6 +145,14 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.requeue_delay_max = _resolve(
             self.config.requeue_delay_max, runtime.requeue_delay_max
         )
+        # 重入队上限：重试预算耗尽后「预算之外」的处置上限，
+        # 没有它时代理池整体不可用会让同一批任务无限打回队列（26 条/分钟 ERROR）。
+        self.max_requeue_per_task = _resolve(
+            self.config.max_requeue_per_task, runtime.max_requeue_per_task
+        )
+        self.requeue_max_task_seconds = _resolve(
+            self.config.requeue_max_task_seconds, runtime.requeue_max_task_seconds
+        )
 
         # 并发：统一从 CONFIG.concurrency 取，各爬虫只声明 concurrency_key。
         concurrency = CONFIG.concurrency
@@ -169,6 +185,18 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self._pending_requeues: set[asyncio.Task] = set()
         # 代理背压监控任务（只有 slow 车道需要）
         self._backpressure_task: asyncio.Task | None = None
+
+        # ===== 故障收敛：代理池熔断 + 失败告警聚合 =====
+        # 实例级（不是进程级）：每个爬虫各自熔断，互不牵连；
+        # 跨轮次保留（调度器「杀旧开新」不复位），否则几秒一次的重启会让熔断形同虚设。
+        self._breaker = ProxyCircuitBreaker(
+            name=lambda: self.crawler_name,
+            config=CONFIG.crawler_breaker,
+            log=self.log,
+        )
+        self._alert_throttle = FailureAlertThrottle(config=CONFIG.crawler_alert)
+        # 本轮「达到重入队上限」的最终失败计数（run 开始时重置）
+        self._final_fail_tally = FinalFailTally()
 
         self._plugins = []
         for plugin_cfg in self.config.plugins:
@@ -530,24 +558,33 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         return _yield
 
     async def _execute_fetch(self, worker_model: WorkerModel) -> WorkerStatus:
-        """执行 fetch 操作，处理超时和异常，返回任务状态。"""
+        """执行 fetch 操作，处理超时和异常，返回任务状态。
+
+        代理池整体不可用时（熔断开启）先 ``await`` 退避到可用为止，**继续取数**
+        只会制造失败风暴；退避结束后再走正常流程。
+        """
+        # 熔断退避：必须 await（禁止 time.sleep），期间不产生任何上游请求
+        await self._breaker.wait_until_ready()
         try:
             async with asyncio.timeout(self.worker_max_timeout):
                 fetch_result = await self.handle_fetch(worker_model.params)
         except asyncio.TimeoutError:
+            self._breaker.record_failure("爬取超时", pool_level=False)
             if self.log_timeout_error:
                 self.log.exception(
                     self.format_log(f"爬取超时：{self.worker_max_timeout}s")
                 )
             return WorkerStatus.timeoutError
         except Exception as e:
+            pool_level = is_pool_level_error(e)
+            self._breaker.record_failure(f"{type(e).__name__}: {e}", pool_level=pool_level)
             if self.log_error:
                 self.log.exception(self.format_log(f"爬取异常：{e}"))
-                await a_push_error(
-                    subject="运行异常",
-                    content=f"爬取任务[{self.crawler_name}]异常\n{worker_model}\n{e}",
-                )
-            await asyncio.sleep(self.worker_error_delay)
+                await self._push_failure_alert(worker_model, e)
+            # 熔断已开启时不再叠加 worker_error_delay：
+            # 退避等待本身就是冷却，双重等待会让任务时长无谓翻倍。
+            if not self._breaker.is_open:
+                await asyncio.sleep(self.worker_error_delay)
             return WorkerStatus.fail
 
         if fetch_result is None:
@@ -559,13 +596,85 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                     f"{worker_model.params}"
                 )
             )
+            self._breaker.record_success()
             return WorkerStatus.complete
         if not isinstance(fetch_result, WorkerStatus):
+            self._breaker.record_success()
             return WorkerStatus.complete
+        if fetch_result in (WorkerStatus.complete, WorkerStatus.nullData):
+            self._breaker.record_success()
+        elif fetch_result in (WorkerStatus.fail, WorkerStatus.timeoutError):
+            # handle_fetch 内部吞掉异常、直接返回失败状态：同样计入熔断口径
+            self._breaker.record_failure(
+                f"fetch_status={fetch_result.name}", pool_level=False
+            )
         return fetch_result
 
+    async def _push_failure_alert(
+        self, worker_model: WorkerModel, err: BaseException
+    ) -> None:
+        """失败告警：按「爬虫 + 时间窗口」聚合，避免失败风暴打爆推送通道。
+
+        content 里只放**稳定可去重**的信息（爬虫名 / 计数 / 异常类型），
+        具体 params 与堆栈已写本地日志 —— message-service 才能聚合成一条摘要。
+        """
+        decision: AlertDecision = self._alert_throttle.hit()
+        if not decision.push:
+            self.log.debug(
+                self.format_log(
+                    f"失败告警已聚合（窗口 {decision.window_seconds:.0f}s 内 "
+                    f"{decision.count} 次，暂不推送）：{type(err).__name__}"
+                )
+            )
+            return
+        aggregated = (
+            f"，其中 {decision.suppressed} 次已聚合省略" if decision.suppressed else ""
+        )
+        tag = "窗口汇总" if decision.aggregated else "首次告警"
+        await a_push_error(
+            subject="运行异常",
+            content=(
+                f"爬虫[{self.crawler_name}] 失败{tag}：窗口 {decision.window_seconds:.0f}s 内 "
+                f"{decision.count} 次失败{aggregated}；最近一次异常类型 "
+                f"{type(err).__name__}；熔断状态 {self._breaker.state.value}"
+                f"（明细见本地日志）"
+            ),
+        )
+
+    def _requeue_limit_reason(
+        self, worker_model: WorkerModel
+    ) -> tuple[str, str] | None:
+        """重入队上限判定：返回 ``(原因代码, 人话说明)``，未到上限返回 ``None``。
+
+        三道上限取**最先到的一条**：
+
+        - ``max_retries``：历史语义，-1 表示不限；
+        - ``max_requeue_per_task``：预算耗尽后「预算之外」的处置上限（新增）；
+        - ``requeue_max_task_seconds``：单个任务的累计时长上限（新增）。
+
+        注意：``retry_count`` 只在 ``_handle_requeue`` 中自增一次，这里读到的是
+        「已经重入队过多少次」，因此 ``>=`` 判定刚好允许 cap 次重入队。
+        """
+        retries = max(0, int(worker_model.retry_count))
+        if self.max_retries >= 0 and retries >= self.max_retries:
+            return "max_retries", f"已达到最大重试次数({self.max_retries})"
+        requeue_cap = int(self.max_requeue_per_task)
+        if requeue_cap >= 0 and retries >= requeue_cap:
+            return "requeue_cap", f"重入队次数已达上限({requeue_cap})"
+        duration_cap = float(self.requeue_max_task_seconds or 0)
+        if duration_cap > 0:
+            elapsed = max(
+                0.0, (datetime.now() - worker_model.created_at).total_seconds()
+            )
+            if elapsed >= duration_cap:
+                return (
+                    "duration_cap",
+                    f"任务累计时长 {elapsed:.0f}s 达上限({duration_cap:.0f}s)",
+                )
+        return None
+
     def _should_requeue(self, worker_model: WorkerModel) -> bool:
-        """判断任务是否需要重试，检查状态和重试次数限制。"""
+        """判断任务是否需要重试，检查状态和重入队上限。"""
         status = worker_model.fetchStatus
         if status == WorkerStatus.fail and not self.requeue_on_fetch_fail:
             return False
@@ -574,18 +683,51 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         if status not in (WorkerStatus.fail, WorkerStatus.timeoutError):
             return False
 
-        # 注意：retry_count 只在 _handle_requeue 中自增一次，
-        # 此前在 _should_requeue 与 on_task_requeue 中各 +1，导致一轮重试被计成 2 次，
-        # 实际重试次数只有 max_retries 的一半。
-        if self.max_retries < 0 or worker_model.retry_count < self.max_retries:
+        limit = self._requeue_limit_reason(worker_model)
+        if limit is None:
             return True
 
+        code, text = limit
+        total = self._final_fail_tally.add(code)
+        # 每个达标任务只落一条汇总 WARNING（不再无限打回队列 → 不再无限刷屏）
         self.log.warning(
             self.format_log(
-                f"任务已达到最大重试次数({self.max_retries})，不再重试：{worker_model.params}"
+                f"任务终止重入队（{text}），记为最终失败：{worker_model.params}；"
+                f"本轮累计 {self._final_fail_tally.to_log_str()}"
             )
         )
+        if total % 20 == 0:
+            self.log.warning(
+                self.format_log(f"最终失败持续增长：{self._final_fail_tally.to_log_str()}")
+            )
         return False
+
+    async def _flush_failure_alert(self) -> None:
+        """运行结束时把失败告警窗口里积压的数量补一条汇总推送。"""
+        decision = self._alert_throttle.flush()
+        if decision is None:
+            return
+        await a_push_error(
+            subject="运行异常",
+            content=(
+                f"爬虫[{self.crawler_name}] 失败窗口汇总：窗口 "
+                f"{decision.window_seconds:.0f}s 内共 {decision.count} 次失败"
+                f"（{decision.suppressed} 次已聚合省略）；本轮最终失败 "
+                f"{self._final_fail_tally.total} 个；熔断状态 "
+                f"{self._breaker.state.value}（明细见本地日志）"
+            ),
+        )
+
+    def _log_final_fail_summary(self) -> None:
+        """运行结束时落一条汇总（有最终失败才打，正常跑完不产生噪音）。"""
+        if self._final_fail_tally.total <= 0:
+            return
+        self.log.warning(
+            self.format_log(
+                f"本轮最终失败汇总：{self._final_fail_tally.to_log_str()}；"
+                f"熔断快照 {self._breaker.snapshot().model_dump(mode='json')}"
+            )
+        )
 
     def _requeue_delay(self, retry_count: int) -> float:
         """失败任务的延迟重入队时长：``base × 2^(retry-1)``，封顶 ``requeue_delay_max``。
@@ -763,6 +905,11 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         """
         self.log.info(self.format_log(f"starting with init_params: {init_params}"))
 
+        # 本轮统计复位：最终失败计数 / 告警聚合窗口。
+        # 熔断状态**不**复位 —— 「杀旧开新」几秒一次，复位会让熔断形同虚设。
+        self._final_fail_tally = FinalFailTally()
+        self._alert_throttle.reset()
+
         seqId = 0
         worker_model = WorkerModel(params=init_params, seqId=seqId)
 
@@ -915,6 +1062,10 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.log.info(self.format_log("所有任务已完成。"))
 
         await self.on_run_end(worker_model)
+
+        # 收尾：最终失败汇总 + 告警窗口积压补推（有积压才推）
+        self._log_final_fail_summary()
+        await self._flush_failure_alert()
 
         self.log.info(self.format_log("run finished."))
 

@@ -95,11 +95,103 @@ class CrawlerRuntimeConfig(BaseModel):
     # 0 表示维持旧的「立即重入队」行为。
     requeue_delay_base: float = 5.0
     requeue_delay_max: float = 300.0
+    # ===== 重入队上限（重试预算耗尽之后的处置）=====
+    # 重试预算（fast 2 轮 × 3 次 / slow 累计等待）只约束「一次 handle_fetch 内部」，
+    # 预算耗尽后任务会被打回队列 —— 若代理池整体不可用，这一步会无限循环：
+    # attempts 与 requeued_count 线性增长、有效数据为 0、日志按 26 条/分钟刷屏。
+    # 因此对「同一个 params」再加两道兜底上限，达到上限即记为**最终失败**并停止重入队。
+    max_requeue_per_task: int = Field(
+        default=3,
+        description="同一个任务（同一 params）最多重入队次数；0 = 不重入队，-1 = 不限"
+        "（与 max_retries 取更严格的一条：任一上限先到就终止）",
+    )
+    requeue_max_task_seconds: float = Field(
+        default=1800.0,
+        description="同一个任务从创建到最终失败的累计时长上限（秒）；<=0 表示不限",
+    )
     # ===== 启动抖动 =====
     # 所有调度器原先都是「首次运行时间 = 现在」，重启瞬间 N 个爬虫 + 代理健康播种 +
     # cookie 预热同时开跑，把单核 CPU 打满、事件循环被饿死（HTTP 4.5 分钟无响应）。
     # 这里给每个调度器的首次运行加 0~N 秒随机偏移，把启动风暴摊平。
     startup_jitter_seconds: float = 60.0
+
+
+class CrawlerBreakerConfig(BaseModel):
+    """代理池整体不可用时的**爬虫级熔断**（见 ``Service/BaseCrawler/resilience.py``）。
+
+    背景：专线被风控冷却后业务请求静默落到免费代理池，池子整体不可用时每个任务
+    都会走满重试预算再打回队列，形成「26 条/分钟 ERROR + 队列空转」的失败风暴。
+    熔断的作用是**暂停取数与重试**（``await asyncio.sleep`` 退避），而不是继续打。
+
+    两个触发条件（任一满足即熔断）：
+
+    1. 连续 ``consecutive_proxy_failures`` 次「代理池级」失败
+       （``ProxyRetryBudgetExhausted`` / ``RequestProxyUnavailableError``）；
+    2. 成功率窗口 ``window_seconds`` 内样本数 >= ``min_samples`` 且成功率
+       低于 ``min_success_rate``（计入网络错误 / 超时 / 风控，不含 412/352 的绕行）。
+
+    恢复：退避到期后进入半开（HALF_OPEN），只放 ``probe_limit`` 个探测请求；
+    连续 ``probe_successes`` 次成功即关闭熔断并打 WARNING，失败则按倍数重新熔断
+    （上限 ``open_seconds_max``）。
+
+    env 覆盖（嵌套双下划线）：``CRAWLER_BREAKER__CONSECUTIVE_PROXY_FAILURES=5``
+    """
+
+    enabled: bool = Field(default=True, description="是否启用爬虫级代理池熔断")
+    consecutive_proxy_failures: int = Field(
+        default=8, description="连续多少次「代理池级」失败后熔断（<=0 表示不按连续次数触发）"
+    )
+    window_seconds: float = Field(
+        default=300.0, description="成功率统计的滑动窗口（秒）"
+    )
+    min_samples: int = Field(
+        default=20, description="成功率窗口内的最少样本数，样本不足不按成功率熔断"
+    )
+    min_success_rate: float = Field(
+        default=0.2, description="成功率低于该值即熔断（0~1）"
+    )
+    open_seconds_min: float = Field(
+        default=300.0, description="首次熔断的退避时长（秒），建议 5~15 分钟"
+    )
+    open_seconds_max: float = Field(
+        default=900.0, description="熔断退避的上限（秒），连续失败按倍数逼近该值"
+    )
+    probe_limit: int = Field(
+        default=2, description="半开状态允许的并发探测数（探测成功前不再放大并发）"
+    )
+    probe_successes: int = Field(
+        default=2, description="半开状态需要连续多少次成功才解除熔断"
+    )
+    probe_lease_seconds: float = Field(
+        default=120.0,
+        description="半开探测名额的租约（秒）：协程被取消时不会回到记账分支，"
+        "租约到期后强制归还名额，避免熔断器被永久卡在半开",
+    )
+    log_interval: float = Field(
+        default=60.0, description="熔断期间进度日志的最小间隔（秒）"
+    )
+
+
+class CrawlerAlertConfig(BaseModel):
+    """``_execute_fetch`` 失败告警的聚合 / 节流窗口（按爬虫维度生效）。
+
+    背景：失败风暴期间每个失败任务都会 ``a_push_error(subject="运行异常")``，
+    一次风暴就能把推送通道打爆（且 message-service 侧只能看到互不相同的条目）。
+    这里改成「首条立即推送 + 窗口内聚合，窗口滚动时补一条汇总」。
+
+    env 覆盖：``CRAWLER_ALERT__WINDOW_SECONDS=600``
+    """
+
+    enabled: bool = Field(default=True, description="是否启用失败告警聚合（False = 逐条推送）")
+    window_seconds: float = Field(
+        default=300.0, description="聚合窗口（秒）：窗口滚动时把积压的失败补一条汇总"
+    )
+    min_interval_seconds: float = Field(
+        default=60.0, description="两次推送之间的最小间隔（秒），防止首条之外连续刷屏"
+    )
+    max_push_per_window: int = Field(
+        default=1, description="单个窗口内最多推送多少条（其余全部并入汇总）"
+    )
 
 
 class GetOthersLotDynConfig(BaseModel):
@@ -389,6 +481,11 @@ class ProxyHealthConfig(BaseModel):
         default=True,
         description="是否允许 RequestConf.ignore_risk_cooldown 生效（跳过自建出口前缀风控冷却）。"
         "关闭后所有请求都按冷却判定，用于风控异常时的全局回退开关",
+    )
+    local_exit_gate_report_interval: float = Field(
+        default=300.0,
+        description="自建出口（专线）用量占比的周期日志间隔（秒）："
+        "说明业务请求当前有多少走专线、多少降级到代理池，冷却起止另各打一条 WARNING",
     )
 
 
@@ -753,6 +850,10 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     concurrency: ConcurrencyConfig = ConcurrencyConfig()
     # ===== 爬虫运行行为统一配置（超时 / 重试 / 退避 / 日志开关）=====
     crawler_runtime: CrawlerRuntimeConfig = CrawlerRuntimeConfig()
+    # ===== 爬虫级熔断（代理池整体不可用时暂停取数与重试）=====
+    crawler_breaker: CrawlerBreakerConfig = CrawlerBreakerConfig()
+    # ===== 失败告警聚合 / 节流（避免失败风暴打爆推送通道）=====
+    crawler_alert: CrawlerAlertConfig = CrawlerAlertConfig()
     # ===== 代理健康状态机（Redis 热缓存 + 定期回写 MySQL）=====
     proxy_health: ProxyHealthConfig = ProxyHealthConfig()
     # ===== 代理错误重试预算分级（fast / slow）=====
@@ -1140,6 +1241,8 @@ class _CONFIG:
     # 并发 / 爬虫运行行为的统一配置（CrawlerType、抓取模块都从这里读）
     concurrency = settings.concurrency
     crawler_runtime = settings.crawler_runtime
+    crawler_breaker = settings.crawler_breaker
+    crawler_alert = settings.crawler_alert
     # 代理健康状态机 / 重试预算分级（选代理、错误分流、背压都从这里读）
     proxy_health = settings.proxy_health
     proxy_retry = settings.proxy_retry

@@ -480,6 +480,24 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
 
     @computed_field
     @property
+    def breaker(self) -> JsonValue:
+        """代理池熔断快照（未接入熔断的爬虫返回 None）。
+
+        只在接口层做投影：``Service/BaseCrawler/resilience.py`` 依赖 ``CONFIG``，
+        而本模块被 ``Service.BaseCrawler.config`` 在 ``CONFIG`` 初始化期间导入，
+        顶层 import 会形成循环导入，因此这里用 duck-typing 取快照。
+        """
+        breaker = getattr(self.crawler, "_breaker", None)
+        snapshot = getattr(breaker, "snapshot", None)
+        if not callable(snapshot):
+            return None
+        try:
+            return snapshot().model_dump(mode="json")
+        except Exception:  # noqa: BLE001 观测字段失败不能影响统计接口
+            return None
+
+    @computed_field
+    @property
     def health_status(self) -> CrawlerHealthStatus:
         """
         爬虫健康状态。
