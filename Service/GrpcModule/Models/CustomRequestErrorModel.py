@@ -58,12 +58,16 @@ class RequestProxyUnavailableError(RequestKnownError):
     「没有可用代理：自建出口冷却中且代理池无合格代理」，无法判断该修哪边）：
 
     - ``local_exit``：自建出口（专线）冷却 / 超配额，代理池本身可能有货；
+    - ``local_exit_only``：请求声明了「专线独占」，而自建出口不可用 ——
+      此时**不走代理池**（也不直连），由上层重建 / 重试；
     - ``pool_empty``：代理池没有合格候选（网段冷却 / 在途打满 / EWMA 不达标）；
     - ``both``：两边都不可用。
     """
 
     #: 自建出口不可用
     REASON_LOCAL_EXIT = "local_exit"
+    #: 专线独占请求，且自建出口不可用（未降级到代理池）
+    REASON_LOCAL_EXIT_ONLY = "local_exit_only"
     #: 代理池无合格候选
     REASON_POOL_EMPTY = "pool_empty"
     #: 两条通道都不可用

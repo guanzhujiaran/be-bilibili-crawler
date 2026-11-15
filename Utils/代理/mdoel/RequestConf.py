@@ -74,6 +74,19 @@ class RequestConf(CustomBaseModel):
         "（tier=slow，可用未验证代理），实际取代理档位请用 tier",
     )
     is_use_custom_proxy: bool = Field(False)
+    local_exit_only: bool = Field(
+        default=False,
+        description="专线独占：本次请求只允许走自建出口（CONFIG.custom_proxy），"
+        "自建出口不可用时直接快速失败，禁止降级到公共代理池、也禁止回落成直连。"
+        "这是「通道选择语义」（走哪条出口），不是站点 / 业务专属判断，"
+        "任何需要固定来源 IP 的请求都可以打开它",
+    )
+    ignore_risk_cooldown: bool = Field(
+        default=False,
+        description="本次请求不因「自建出口前缀风控冷却」被拒（自建出口的闸门语义，"
+        "与站点 / 业务无关）：cookie / metadata 这类激活类请求按业务判断不受 B 站风控影响，"
+        "冷却不适用于它们，但本任务内失败去重与 QPS 限流仍然保留",
+    )
     is_return_raw_response: bool = Field(False)
     tier: ProxyTier | None = Field(
         default=None,

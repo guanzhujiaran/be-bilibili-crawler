@@ -3,6 +3,7 @@
 import asyncio
 import random
 import time
+from dataclasses import dataclass
 from functools import reduce
 from json import JSONDecodeError
 from ssl import SSLError
@@ -108,6 +109,21 @@ def classify_proxy_failure(err: BaseException) -> ProxyFailureKind:
     return ProxyFailureKind.NETWORK
 
 
+@dataclass(frozen=True, slots=True)
+class LocalExitGate:
+    """自建出口（专线）闸门的判定结果。
+
+    ``proxy is None`` 时 ``reason`` 说明是哪一道闸门挡下来的（未配置 / 本任务内已失败 /
+    前缀风控冷却 / 超 QPS 配额），供调用方决定「降级到池」还是「专线独占直接失败」，
+    并让异常文案能带出通道名与出口地址。
+    """
+
+    proxy: ProxyTab | None = None
+    reason: str = ""
+    channel: str = ""
+    qps: float = 0.0
+
+
 class RequestWithProxy:
     def __init__(self):
         self.use_p_dict_flag = False
@@ -161,19 +177,51 @@ class RequestWithProxy:
         self._local_gate_warn_ts = now
         self.log.warning(msg)
 
-    async def _acquire_local_exit(self, tier: ProxyTier) -> ProxyTab | None:
-        """自建出口（专线）闸门：未冷却 + 拿到独立 QPS 配额才放行。
+    @staticmethod
+    def _local_exit_quota(request_conf: RequestConf | None) -> tuple[str, float]:
+        """本次请求该用的专线配额：``(通道名, QPS)``。
 
-        三道闸门按顺序判定（任一不通过就返回 ``None``，由调用方决定兜底 / 快速失败）：
-
-        1. 本任务内已经失败过（或其前缀失败过）→ 不再重试，同段换地址没有意义；
-        2. 前缀处于风控冷却（412/352 记在 /64 上）→ 冷却期内一律不用；
-        3. 独立通道 QPS 配额（``local_ipv6_qps``）→ 专线是兜底通道，必须限流。
+        专线独占请求（cookie / metadata 激活）走 ``local_exit_only_*`` 独立通道，
+        业务请求仍走 ``local_ipv6_*``：两条通道在 Redis 里分开计数，
+        激活类请求再多也不会把业务请求的额度抢走，反之亦然。
         """
         cfg = CONFIG.proxy_health
+        if request_conf is not None and request_conf.local_exit_only:
+            return cfg.local_exit_only_channel, cfg.local_exit_only_qps
+        return cfg.local_ipv6_channel, cfg.local_ipv6_qps
+
+    @staticmethod
+    def _check_risk_cooldown(request_conf: RequestConf | None) -> bool:
+        """本次请求是否仍受「自建出口前缀风控冷却」约束。
+
+        ``ignore_risk_cooldown`` 是通道语义（这条链路按业务判断不受风控冷却影响），
+        总闸 ``local_exit_ignore_risk_cooldown`` 可在风控异常时全局收回该豁免。
+        """
+        if request_conf is None or not request_conf.ignore_risk_cooldown:
+            return True
+        return not CONFIG.proxy_health.local_exit_ignore_risk_cooldown
+
+    async def _acquire_local_exit(
+        self, tier: ProxyTier, request_conf: RequestConf | None = None
+    ) -> LocalExitGate:
+        """自建出口（专线）闸门：未冷却 + 拿到独立 QPS 配额才放行。
+
+        闸门按顺序判定（任一不通过就返回 ``proxy=None`` + 原因，由调用方决定兜底 / 快速失败）：
+
+        1. 本任务内已经失败过（或其前缀失败过）→ 不再重试，同段换地址没有意义；
+        2. 前缀处于风控冷却（412/352 记在 /64 上）→ 冷却期内一律不用，
+           **但 ``ignore_risk_cooldown`` 的请求跳过这一道**（冷却只对业务通道有意义）；
+        3. 独立通道 QPS 配额（专线独占走 ``local_exit_only_qps``，业务走 ``local_ipv6_qps``）。
+        """
+        cfg = CONFIG.proxy_health
+        channel, qps = self._local_exit_quota(request_conf)
         local_addr = (CONFIG.my_ipv6_addr or "").strip()
         if not local_addr:
-            return None
+            return LocalExitGate(
+                reason="自建出口未配置（CONFIG.my_ipv6_addr 为空）",
+                channel=channel,
+                qps=qps,
+            )
         proxy = self._local_ipv6_proxy()
         proxy_key = to_proxy_key(proxy.proxy) or local_addr
         prefix = proxy_prefix_of(proxy_key)
@@ -183,25 +231,41 @@ class RequestWithProxy:
             prefix and prefix in {proxy_prefix_of(key) for key in excluded}
         ):
             self.log.debug(f"自建出口（前缀 {prefix}）本任务内已失败过，本次不再重试")
-            return None
+            return LocalExitGate(
+                reason=f"自建出口（前缀 {prefix}）本任务内已失败过",
+                channel=channel,
+                qps=qps,
+            )
 
-        if prefix and await proxy_health_store.is_prefix_cooling(prefix):
+        if (
+            prefix
+            and self._check_risk_cooldown(request_conf)
+            and await proxy_health_store.is_prefix_cooling(prefix)
+        ):
             self._warn_local_gate(
                 f"自建出口前缀 {prefix} 处于风控冷却中，本次不使用"
                 f"（不换地址绕 412/352，等冷却自然到期）"
             )
-            return None
+            return LocalExitGate(
+                reason=f"自建出口前缀 {prefix} 处于风控冷却中",
+                channel=channel,
+                qps=qps,
+            )
 
         if not await proxy_health_store.acquire_qps(
-            cfg.local_ipv6_channel,
-            cfg.local_ipv6_qps,
+            channel,
+            qps,
             cfg.local_ipv6_qps_wait,
         ):
             self._warn_local_gate(
-                f"自建出口超出 QPS 配额（{cfg.local_ipv6_qps} req/s），本次不使用"
+                f"自建出口超出 QPS 配额（通道 {channel}，{qps} req/s），本次不使用"
             )
-            return None
-        return proxy
+            return LocalExitGate(
+                reason=f"自建出口通道 {channel} 超出 QPS 配额（{qps} req/s）",
+                channel=channel,
+                qps=qps,
+            )
+        return LocalExitGate(proxy=proxy, channel=channel, qps=qps)
 
     async def _pool_proxy(self, tier: ProxyTier) -> ProxyTab | None:
         """从代理池按档位取一条（池内已按前缀去重 / 配额）。"""
@@ -258,6 +322,43 @@ class RequestWithProxy:
             message, tier=tier.value, reason=reason
         )
 
+    @staticmethod
+    def _local_exit_tag(request_conf: RequestConf) -> str:
+        """专线独占请求的失败标记（非专线独占返回空串）。
+
+        只做可观测性：日志 / 异常里带上 ``reason=local_exit_only`` 与出口地址，
+        便于线上直接判断「是自建出口挂了还是本任务把它去重掉了」，
+        不需要再去翻代理池的健康统计。
+        """
+        if not request_conf.local_exit_only:
+            return ""
+        exit_addr = (CONFIG.my_ipv6_addr or "").strip() or "<未配置>"
+        return (
+            f"（reason={RequestProxyUnavailableError.REASON_LOCAL_EXIT_ONLY}，"
+            f"出口={exit_addr}，未降级到公共池 / 直连）"
+        )
+
+    def _local_exit_only_error(
+        self, tier: ProxyTier, gate: LocalExitGate
+    ) -> RequestProxyUnavailableError:
+        """专线独占请求取不到自建出口：明确报错，**绝不**降级到代理池 / 直连。
+
+        文案带上 reason=local_exit_only 与出口地址，便于线上直接判断该修出口还是改配置；
+        告警沿用 ``_warn_local_gate`` 限流，避免冷却 / 超配额期间每个请求刷一行。
+        """
+        exit_addr = (CONFIG.my_ipv6_addr or "").strip() or "<未配置>"
+        reason = RequestProxyUnavailableError.REASON_LOCAL_EXIT_ONLY
+        message = (
+            f"专线独占请求且自建出口不可用（reason={reason}，tier={tier.value}，"
+            f"出口={exit_addr}，通道={gate.channel}，配额 {gate.qps} req/s）："
+            f"{gate.reason}；按 local_exit_only 语义不降级到代理池、也不直连，"
+            f"交由上层重建 / 重新入队"
+        )
+        self._warn_local_gate(message)
+        return RequestProxyUnavailableError(
+            message, tier=tier.value, reason=reason
+        )
+
     async def _select_proxy(
         self, request_conf: RequestConf, tier: ProxyTier
     ) -> tuple[ProxyTab, bool]:
@@ -271,15 +372,20 @@ class RequestWithProxy:
           池内按前缀去重 / 在途配额（见 ``select_random_proxy``）。
 
         ``is_use_custom_proxy`` 的请求强制走专线；池子空时才用专线兜底（同样受限流约束）。
+        ``local_exit_only`` 是更强的语义：**只走自建出口**，闸门不通过就直接
+        ``RequestProxyUnavailableError(reason=local_exit_only)``，不走池、也不直连
+        （``local_ipv6_cooling_pool_fallback`` 对它无效）。
         池里没有合格代理时**不在请求里现场抓一轮**（那会把 worker 挂住几分钟）：
         抛 ``RequestProxyUnavailableError`` 让上层快速失败 / 延迟重入队，后台补池照常进行。
         """
         cfg = CONFIG.proxy_health
 
-        if request_conf.is_use_custom_proxy:
-            proxy = await self._acquire_local_exit(tier)
-            if proxy is not None:
-                return proxy, True
+        if request_conf.is_use_custom_proxy or request_conf.local_exit_only:
+            gate = await self._acquire_local_exit(tier, request_conf)
+            if gate.proxy is not None:
+                return gate.proxy, True
+            if request_conf.local_exit_only:
+                raise self._local_exit_only_error(tier, gate)
             if not cfg.local_ipv6_cooling_pool_fallback:
                 raise await self._unavailable_error(
                     tier,
@@ -302,21 +408,21 @@ class RequestWithProxy:
             k=1,
         )[0]
         if use_local:
-            proxy = await self._acquire_local_exit(tier)
-            if proxy is not None:
-                return proxy, True
+            gate = await self._acquire_local_exit(tier, request_conf)
+            if gate.proxy is not None:
+                return gate.proxy, True
 
         proxy = await self._pool_proxy(tier)
         if proxy is not None:
             return proxy, False
 
-        fallback = await self._acquire_local_exit(tier)
-        if fallback is not None:
+        fallback = await self._acquire_local_exit(tier, request_conf)
+        if fallback.proxy is not None:
             self._warn_local_gate(
                 f"代理池无符合 tier={tier.value} 的代理，本次使用自建出口兜底"
-                f"（配额 {cfg.local_ipv6_qps} req/s）"
+                f"（配额 {fallback.qps} req/s）"
             )
-            return fallback, True
+            return fallback.proxy, True
         raise await self._unavailable_error(tier, local_tried=True)
 
     # endregion
@@ -382,7 +488,14 @@ class RequestWithProxy:
         )
         # 自建出口同样参与健康记账：它是「专线」，健康度记在所在 /64 前缀上
         # （MySQL 侧仍是 no-op，因为它不是 proxy_tab 成员）。
+        # 例外：**专线独占请求**（cookie / metadata 激活）不写池健康 / 前缀冷却 ——
+        # 它们的 412/352 不代表公共池网段质量，写进去只会污染池子，
+        # 还把自建前缀打进 2h 冷却、连带拖累业务通道。
+        # 「本任务内已失败」去重（note_failed_proxy）仍然保留，只影响本次任务的后续重试。
+        account_health = not request_conf.local_exit_only
         pool_proxy = proxy
+        # 专线独占请求的失败标记：日志 / 异常里能直接 grep 到 reason=local_exit_only 与出口地址
+        local_tag = self._local_exit_tag(request_conf)
 
         try:
             # 双保险：既把超时透传给 curl_cffi，又在外层用 asyncio.timeout 兜底，
@@ -400,7 +513,7 @@ class RequestWithProxy:
             # 407 = 代理需要认证：HTTP 层是「成功」的，但代理不可用，必须当作网络层失败
             if getattr(req, "status_code", None) == _PROXY_AUTH_FAILED_STATUS:
                 raise RequestProxyNetworkError(
-                    f"代理返回 407（需要认证，该代理不可用）\n{proxy.proxy}\n{kwargs}",
+                    f"代理返回 407（需要认证，该代理不可用）\n{proxy.proxy}\n{kwargs}{local_tag}",
                     -407,
                     proxy_key=proxy_key,
                     curl_code=_PROXY_AUTH_FAILED_STATUS,
@@ -414,11 +527,11 @@ class RequestWithProxy:
                 '<div class="txt-item err-text">由于触发哔哩哔哩安全风控策略，该次访问请求被拒绝。</div>'
                 in req_text
             ):
-                raise Request412Error(req_text, -412)
+                raise Request412Error(req_text + local_tag, -412)
             if not is_return_raw_response:
                 req_dict = req.json()
                 if type(req_dict) is list:
-                    if proxy:
+                    if account_health and proxy:
                         await handle_proxy_succ(
                             proxy_tab=proxy,
                         )
@@ -457,6 +570,7 @@ class RequestWithProxy:
                         f"{response_brief(req_dict)}\t"
                         f"{mask_text(_clip(str(kwargs), 500))}\t"
                         f"{mask_text(_clip(str(req.headers), 300))}"
+                        f"{local_tag}"
                     )
                     if req_dict.get("code") == 65539:
                         pass
@@ -485,7 +599,7 @@ class RequestWithProxy:
                         raise Request352Error(err_msg, -352)
                     raise Request412Error(err_msg, req_dict.get("code"))
         except (Request412Error, Request352Error) as _err:
-            if pool_proxy:
+            if account_health and pool_proxy:
                 match _err.code:
                     case -412:
                         await handle_proxy_412(
@@ -503,7 +617,7 @@ class RequestWithProxy:
                         await handle_proxy_request_fail(
                             proxy_tab=pool_proxy,
                         )
-                note_failed_proxy(proxy_key)
+            note_failed_proxy(proxy_key)
             raise _err
         except curl_cffi.requests.exceptions.ImpersonateError as _err:
             # 客户端指纹（impersonate）问题：异常在 set_curl_options 阶段抛出，
@@ -549,35 +663,35 @@ class RequestWithProxy:
                 f"\n代理：{str(proxy)}\n请求时发生网络错误（{kind.value}）："
                 f"{type(_err)}\n{_err}"
             )
-            if pool_proxy:
+            if account_health and pool_proxy:
                 await handle_proxy_request_fail(proxy_tab=pool_proxy, kind=kind)
-                note_failed_proxy(proxy_key)
+            note_failed_proxy(proxy_key)
             raise RequestProxyNetworkError(
-                f"{type(_err).__name__}: {_err}",
+                f"{type(_err).__name__}: {_err}{local_tag}",
                 -1,
                 proxy_key=proxy_key,
                 curl_code=_curl_code_of(_err),
             )
         except AttributeError as _err:
-            self.log.exception(f"\n代理：{str(proxy)}\n请求时出错，一般错误：{_err}")
-            if pool_proxy:
+            self.log.exception(f"\n代理：{str(proxy)}\n请求时出错，一般错误：{_err}{local_tag}")
+            if account_health and pool_proxy:
                 await handle_proxy_request_fail(proxy_tab=pool_proxy)
-                note_failed_proxy(proxy_key)
-            raise RequestUnknownError(_err)
+            note_failed_proxy(proxy_key)
+            raise RequestUnknownError(f"{_err}{local_tag}")
         except Exception as _err:
             self.log.exception(
                 f"\n代理：{str(proxy)}\n未知请求错误！请求：\n{kwargs}"
                 f"\n结束，报错了！"
                 f"\n{type(_err)}"
-                f"\n{_err}\n{req_text}"
+                f"\n{_err}\n{req_text}{local_tag}"
             )
-            if pool_proxy:
+            if account_health and pool_proxy:
                 await handle_proxy_request_fail(proxy_tab=pool_proxy)
-                note_failed_proxy(proxy_key)
-            raise RequestUnknownError(_err)
+            note_failed_proxy(proxy_key)
+            raise RequestUnknownError(f"{_err}{local_tag}")
         if req_dict is False and is_return_raw_response is False:
             raise ValueError("请求返回的req_dict是False")
-        if proxy:
+        if account_health and proxy:
             # self.log.critical(
             #     f'获取请求成功代理：{proxy.proxy}\n{kwargs.get("url")}')
             await handle_proxy_succ(

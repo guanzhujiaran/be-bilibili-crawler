@@ -450,7 +450,13 @@ async def resource_abtest_abserver(
     ticket,
     brand,
     request_conf: RequestConf = RequestConf(
-        is_use_custom_proxy=True, is_use_available_proxy=False, is_use_cookie=False
+        is_use_custom_proxy=True,
+        # metadata 激活与 cookie 生成是同一条链路：专线独占（不降级到公共池）
+        # 且不因前缀风控冷却被拒；这条链路只允许出现自建出口地址。
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
+        is_use_available_proxy=False,
+        is_use_cookie=False,
     ),
 ):
     url = URL_ABTEST_ABSERVER

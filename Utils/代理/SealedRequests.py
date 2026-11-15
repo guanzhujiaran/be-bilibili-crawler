@@ -21,6 +21,13 @@ from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
 # curl_cffi 内部实现变动导致探测失败时的兜底目标（别名，会被解析成最新版本）
 _FALLBACK_IMPERSONATE_TARGETS = ("chrome", "edge", "safari", "firefox")
 
+#: 请求库是否读取环境变量（``HTTP_PROXY`` / ``HTTPS_PROXY`` / ``ALL_PROXY`` 等）。
+#: 显式关闭：容器 / 宿主机若设置了这些变量，curl_cffi 会把它当成默认代理，
+#: 从而绕过我们显式传入的出口 —— cookie / metadata 必须固定走自建 IPv6 专线，
+#: 一旦被环境代理截胡，日志里就会出现「目标出口是 host.docker.internal，
+#: 实际请求却走了别的 IP」这类问题。
+TRUST_ENV = False
+
 
 def _probe_impersonate_target(target: str, named_fingerprints: set[str]) -> bool:
     """实测单个 impersonate 目标是否真的可用。
@@ -305,7 +312,7 @@ class MYASYNCHTTPX:
             allow_redirects=True,
             timeout=30,
             verify=True,
-            trust_env=True,
+            trust_env=TRUST_ENV,
             impersonate="chrome",
             http_version=CurlHttpVersion.V2_0,
         ) as s:
@@ -342,7 +349,7 @@ class MYASYNCHTTPX:
             allow_redirects=True,
             timeout=30,
             verify=True,
-            trust_env=True,
+            trust_env=TRUST_ENV,
             impersonate="chrome",
             http_version=CurlHttpVersion.V2_0,
         ) as s:
@@ -411,7 +418,7 @@ class MYASYNCHTTPX:
             allow_redirects=True,
             timeout=30,
             verify=True,
-            trust_env=True,
+            trust_env=TRUST_ENV,
             impersonate="chrome",
             http_version=CurlHttpVersion.V2_0,
         ) as s:

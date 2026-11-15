@@ -15,6 +15,9 @@ from datetime import datetime, timedelta
 
 from CONFIG import CONFIG
 from log.base_log import BiliGrpcApi_logger
+from Service.GrpcModule.Models.CustomRequestErrorModel import (
+    RequestProxyUnavailableError,
+)
 from Service.GrpcModule.Models.GrpcApiBaseModel import MetaDataBasicInfo
 from Utils.GrpcUtils.CONST import (
     MemSizes,
@@ -48,14 +51,45 @@ from Service.GrpcModule.Grpc.GrpcProto.datacenter.hakase.protobuf.android_device
     AndroidDeviceInfo,
 )
 from Utils.GrpcUtils.metadata.device_env import (
+    DIRECT,
     RECENT_REGION_HEADER,
     DeviceEnv,
     encode_metadata_headers,
     gen_trace_id,
     new_device_env,
-    resolve_proxies,
 )
 from Utils.代理.SealedRequests import my_async_httpx
+
+
+def _local_exit_proxies(proxy=None) -> dict[str, str] | None:
+    """cookie / metadata 链路的唯一出口：自建 IPv6 专线（``CONFIG.custom_proxy``）。
+
+    这条链路（buvid3 / buvid4 / web ticket / gaia 激活 / buvid 激活 / bili_ticket /
+    region 领取）必须固定来源 IP，因此：
+
+    - 调用方传进来的任何池代理（``ProxyTab`` / 裸 dict）一律**不采用**，
+      空值也**不再回落成直连**，统一收敛到自建出口；
+    - 只有显式 ``DIRECT`` / ``False``（调试哨兵）原样返回 ``None``；
+    - 自建出口未配置时直接抛 ``RequestProxyUnavailableError(reason=local_exit_only)``，
+      由上层重建 cookie / 重试任务，绝不悄悄走公共池或直连。
+    """
+    if proxy is False or proxy == DIRECT:
+        return None
+    proxies = CONFIG.custom_proxy
+    if not (proxies.get("https") or proxies.get("http")):
+        raise RequestProxyUnavailableError(
+            "cookie / metadata 链路要求固定自建出口，但 CONFIG.my_ipv6_addr"
+            "（环境变量 PROXY_SERVER）未配置；按 local_exit_only 语义不降级到公共池、也不直连",
+            reason=RequestProxyUnavailableError.REASON_LOCAL_EXIT_ONLY,
+        )
+    return proxies
+
+
+def _exit_addr(proxies: dict[str, str] | None) -> str:
+    """日志 / 异常里用的出口地址（自建出口未配置时给出可读占位）。"""
+    if not proxies:
+        return "direct(调试哨兵)"
+    return str(proxies.get("https") or proxies.get("http") or "<未配置>")
 
 
 def gen_random_access_key() -> str:
@@ -126,10 +160,15 @@ async def make_metadata(
     :param build:
     :param channel:
     :param access_key:
-    :param proxy:
+    :param proxy: 仅接受调试哨兵 ``DIRECT`` / ``False``（显式直连）；其它取值一律
+        被忽略 —— 本链路固定走自建 IPv6 出口（``CONFIG.custom_proxy``）
     :return:
     """
-    proxy = {"proxy": {"http": CONFIG.my_ipv6_addr, "https": CONFIG.my_ipv6_addr}}
+    # cookie / metadata 链路**只允许**自建出口：统一收敛到 CONFIG.custom_proxy
+    # （``{"http": ..., "https": ...}``，请求库直接可用）；显式 DIRECT / False 是调试哨兵，
+    # 原样透传。这里不再写死 {"proxy": {"http": ...}} 这种裸 dict，避免两处形状各写一遍。
+    proxies = _local_exit_proxies(proxy)
+    proxy = proxies if proxies is not None else DIRECT
     # 一台设备 = 一个 DeviceEnv：buvid/指纹/guest_id/会话、硬件参数、三套 UA，
     # 以及该设备自己的 region（服务端按 buvid 签发）全都挂在它上面。
     # 传了 device 就复用它（设备池），否则新建一台。
@@ -663,37 +702,38 @@ async def get_bili_ticket(
     data = (
         b"\01" + len(compressed_proto_bytes).to_bytes(4, "big") + compressed_proto_bytes
     )
-    proxies = resolve_proxies(proxy)
-    resp = None
-    while 1:
-        try:
-            resp = await my_async_httpx.request(
-                url="http://app.bilibili.com/bilibili.api.ticket.v1.Ticket/GetTicket",
-                method="POST",
-                data=data,
-                headers=tuple(new_headers),
-                proxies=proxies,
-                verify=False,
+    # 固定自建出口：失败直接抛错（由上层重建 / 重试），不允许回落成直连或空代理
+    proxies = _local_exit_proxies(proxy)
+    try:
+        resp = await my_async_httpx.request(
+            url="http://app.bilibili.com/bilibili.api.ticket.v1.Ticket/GetTicket",
+            method="POST",
+            data=data,
+            headers=tuple(new_headers),
+            proxies=proxies,
+            verify=False,
+        )
+        gresp = GetTicketResponse()
+        if "gzip" in dict(new_headers).get("grpc-encoding"):
+            gresp.ParseFromString(gzip.decompress(resp.content[5:]))
+        else:
+            gresp.ParseFromString(resp.content[5:])
+        # 顺带从响应里学习 region（APK: kntr.base.region.impl.h.b）
+        device.learn_region(resp.headers, getattr(resp, "trailers", None))
+        if not gresp.ticket:
+            BiliGrpcApi_logger.error(
+                f"获取ticket失败（reason=local_exit_only，出口={_exit_addr(proxies)}）！"
+                f"\n{resp.content}\n{resp.headers}"
             )
-            gresp = GetTicketResponse()
-            if "gzip" in dict(new_headers).get("grpc-encoding"):
-                gresp.ParseFromString(gzip.decompress(resp.content[5:]))
-            else:
-                gresp.ParseFromString(resp.content[5:])
-            # 顺带从响应里学习 region（APK: kntr.base.region.impl.h.b）
-            device.learn_region(resp.headers, getattr(resp, "trailers", None))
-            if not gresp.ticket:
-                BiliGrpcApi_logger.error(
-                    f"获取ticket失败！\n{resp.content}\n{resp.headers}"
-                )
-            return gresp
-        except Exception as e:
-            err_resp = None if resp is None else resp.content
-            BiliGrpcApi_logger.exception(
-                f"获取bili_ticket失败！\nproxy：{proxies}\n{err_resp}\n{type(e)}\t{e}"
-            )
-            # 代理与直连互为兜底，因此处会来回切换
-            proxies = None if proxies else CONFIG.custom_proxy
+        return gresp
+    except Exception as e:
+        # 这里刻意**不做**「代理 ↔ 直连」兜底：cookie/meta 必须固定来源 IP，
+        # 换出口等于换身份，会把设备指纹与出口 IP 的绑定关系打散。
+        BiliGrpcApi_logger.exception(
+            f"获取bili_ticket失败（reason=local_exit_only，出口={_exit_addr(proxies)}，"
+            f"不降级到直连 / 公共池）：{type(e).__name__}\t{e}"
+        )
+        raise
 
 
 async def active_buvid(device: DeviceEnv, proxy=None, build=28799195):
@@ -749,12 +789,13 @@ async def active_buvid(device: DeviceEnv, proxy=None, build=28799195):
     )
     headers = encode_metadata_headers(headers)
 
+    # 与 bili_ticket 同一条链路：固定自建出口，取不到就抛错，不回落直连 / 公共池
     req = await my_async_httpx.request(
         url=url,
         method="POST",
         data=signed_data,
         headers=headers,
-        proxies=resolve_proxies(proxy),
+        proxies=_local_exit_proxies(proxy),
         verify=False,
     )
     device.learn_region(req.headers)

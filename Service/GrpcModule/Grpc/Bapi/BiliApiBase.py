@@ -34,6 +34,8 @@ async def get_frontend_finger_spi(
     bili_web_cookie: BiliWebCookie,
     request_conf=RequestConf(
         is_use_custom_proxy=True,
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
         is_use_available_proxy=False,
         is_use_cookie=False,
         is_return_raw_response=False,
@@ -67,6 +69,8 @@ async def gen_web_ticket(
     bili_web_cookie: BiliWebCookie,
     request_conf=RequestConf(
         is_use_custom_proxy=True,
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
         is_use_available_proxy=False,
         is_use_cookie=False,
         is_return_raw_response=False,
@@ -105,6 +109,8 @@ async def get_bili_main_page_raw_resp(
     bili_web_cookie: BiliWebCookie,
     request_conf=RequestConf(
         is_use_custom_proxy=True,
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
         is_use_available_proxy=False,
         is_use_cookie=False,
         is_return_raw_response=True,
@@ -136,6 +142,8 @@ async def gaia_gateway_ExClimbWuzhi(
     payload: str,
     request_conf=RequestConf(
         is_use_custom_proxy=True,
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
         is_use_available_proxy=False,
         is_use_cookie=False,
         is_return_raw_response=False,
@@ -164,6 +172,17 @@ async def gaia_gateway_ExClimbWuzhi(
 
 
 @request_wrapper
-async def gaia_gateway_ExClimbCongling():
-    ...
+async def gaia_gateway_ExClimbCongling(
+    request_conf=RequestConf(
+        is_use_custom_proxy=True,
+        local_exit_only=True,
+        ignore_risk_cooldown=True,
+        is_use_available_proxy=False,
+        is_use_cookie=False,
+        is_return_raw_response=False,
+    ),
+):
     # Todo: 需要破解wasm加密
+    # 实现时直接复用上面的 request_conf：gaia 激活与 cookie 其它步骤同属一条链路，
+    # 必须专线独占（local_exit_only）且不因前缀风控冷却被拒（ignore_risk_cooldown）。
+    ...

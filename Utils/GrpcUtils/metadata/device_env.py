@@ -438,6 +438,10 @@ class DeviceEnv:
         抓包证实该接口的响应头会下发 ``x-bili-metadata-ip-region`` 与
         ``x-bili-metadata-recent-region``（JWT 的 ``iat`` 与响应 ``date`` 同一秒），
         请求参数/请求头按抓包对齐（query 走 appsign 补 appkey/ts/sign）。
+
+        出口：调用方（``make_metadata``）传的是自建 IPv6 专线；不传时
+        ``resolve_proxies(None)`` 同样落回 ``CONFIG.custom_proxy`` ——
+        region 是按出口 IP 签发的，换出口就等于换身份，不能走公共池。
         """
         params = appsign(
             {

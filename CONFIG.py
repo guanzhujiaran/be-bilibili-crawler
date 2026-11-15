@@ -371,7 +371,24 @@ class ProxyHealthConfig(BaseModel):
     local_ipv6_cooling_pool_fallback: bool = Field(
         default=True,
         description="专线冷却 / 超额时，强制专线的请求是否允许降级到代理池"
-        "（False = 直接快速失败交回队列，等专线冷却结束）",
+        "（False = 直接快速失败交回队列，等专线冷却结束）。"
+        "**不作用于 local_exit_only 请求**：专线独占请求永远不降级",
+    )
+    # ---- 专线独占通道（RequestConf.local_exit_only）：独立 QPS，不与业务通道抢额度 ----
+    local_exit_only_channel: str = Field(
+        default="local-ipv6-cookie-meta",
+        description="专线独占请求的通道名：QPS 配额按通道独立计数，"
+        "与业务通道 local_ipv6_channel 完全分开（互不抢占）",
+    )
+    local_exit_only_qps: float = Field(
+        default=10.0,
+        description="专线独占通道的独立 QPS 配额（固定 1 秒窗口；<=0 表示不限）。"
+        "它只约束 cookie / metadata 这类激活请求，不影响业务通道的 local_ipv6_qps",
+    )
+    local_exit_ignore_risk_cooldown: bool = Field(
+        default=True,
+        description="是否允许 RequestConf.ignore_risk_cooldown 生效（跳过自建出口前缀风控冷却）。"
+        "关闭后所有请求都按冷却判定，用于风控异常时的全局回退开关",
     )
 
 
