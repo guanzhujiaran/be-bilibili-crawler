@@ -1,36 +1,61 @@
-"""事件循环阻塞（慢回调）监控。
+"""事件循环阻塞（慢回调）监控 + **卡顿现场取证**。
 
-背景：线上连续 3 次重启都出现「``Application startup complete`` 之后 HTTP 约 4.5 分钟
-无响应、CPU 100%」，但 uvicorn 端口已监听 —— 典型的**事件循环被同步/忙等代码饿死**。
-事后只能靠日志时间戳猜，缺少直接的证据链。
+背景：线上连续多次重启都出现「``Application startup complete`` 之后 HTTP 约 4.5 分钟
+无响应、CPU 100%」，但 uvicorn 端口已监听 —— 典型的**事件循环被同步 / 忙等代码饿死**。
+一开始只能靠日志时间戳猜，后来加了 watchdog 协程，能报出「被卡了多久」，
+却报不出「卡在哪个函数」：协程自己也被卡住，等它恢复时栈早已不在事故现场。
 
-做法（不打开 asyncio debug，避免全量回调开销）：
+本模块用两条独立通道解决这个问题（不打开 ``PYTHONASYNCIODEBUG``，避免全量回调开销）：
 
-- 起一个 watchdog 协程，每 ``interval`` 秒 ``await asyncio.sleep(interval)`` 一次；
-  实际睡眠时间比预期多出来的部分，就是事件循环被单个回调占住的时间；
-- 超过 ``threshold`` 记 warning（带阻塞时长 + 是否发生推送），并**按 ``alert_interval``
-  节流**推送一条告警，避免卡顿持续时刷屏；
-- 同时把 ``loop.slow_callback_duration`` 设成同一阈值：需要更细的回调级堆栈时，
-  打开 ``PYTHONASYNCIODEBUG=1`` 即可由 asyncio 自己记录慢回调（阈值与本模块一致）。
+1. **loop 侧心跳协程**（``run``）：每 ``interval`` 秒更新一次心跳（``time.monotonic()``
+   + 递增计数，纯内存，无文件 IO）。它同时测量自己的 ``asyncio.sleep`` 延迟，
+   超过 ``threshold`` 就记一条 ``event=event_loop_stall blocked=...``（口径与历史一致）。
+2. **独立守护线程**（``_watch``）：按固定节奏检查心跳。心跳超过 ``threshold`` 没更新，
+   说明事件循环**此刻**正被占住 —— 于是从线程里 ``sys._current_frames()`` 取
+   「事件循环所在线程」的**同步调用栈**并 WARNING 落盘（``event=event_loop_stall_stack``）。
+   线程不依赖事件循环，所以卡死期间依然能取证；写入走 loguru 的队列 sink，
+   不在被卡住的线程里做 IO。
+   抓栈按 ``alert_interval`` 节流（默认 10 分钟重新抓一次，持续卡顿也不会刷屏），
+   心跳恢复后再补一条 ``event=event_loop_stall_recovered blocked=...``。
+
+兜底：``faulthandler.dump_traceback_later(repeat=True)`` 默认关闭，置
+``LOOP_MONITOR__FAULTHANDLER_ENABLED=true`` 可额外打开（它连 GIL 被 C 扩展占住的
+情况也能尽力打印，但输出到 stderr 而非业务日志文件，故不作为默认手段）。
+
+线程为 daemon，``stop()`` 通过 ``threading.Event`` 立即唤醒退出，
+协程 ``run`` 的 ``finally`` 保证 cancel（shutdown）时一定停掉线程，不阻止进程退出。
+loop 侧每 60s 巡检一次线程存活（``_ensure_watchdog_alive``），线程意外退出会被重新拉起 ——
+否则「卡顿无人取证」这件事本身也是静默的。
 """
 
 import asyncio
+import faulthandler
+import sys
+import threading
 import time
-from typing import Awaitable, Callable
+import traceback
+from collections.abc import Awaitable, Callable
 
+from CONFIG import CONFIG, LoopMonitorConfig
 from log.base_log import myfastapi_logger
 from Utils.推送.PushMe import a_push_error
 
 #: 单次回调阻塞超过该秒数即视为「卡顿」（默认 1s：HTTP 正常 P99 远小于它）
 DEFAULT_THRESHOLD_SECONDS = 1.0
-#: watchdog 的采样间隔
+#: 心跳采样间隔（loop 侧心跳协程的 sleep，也是线程侧检查节奏的上限）
 DEFAULT_INTERVAL_SECONDS = 0.5
-#: 卡顿告警的最小间隔（秒）：持续卡顿时只保留第一条与周期性的续报
+#: 卡顿告警 / 抓栈的最小间隔（秒）：持续卡顿时只保留第一条与周期性的续报
 DEFAULT_ALERT_INTERVAL_SECONDS = 600.0
+#: 单条栈最多保留的帧数（只保留靠近阻塞点的尾部，避免一次刷出几百行）
+DEFAULT_STACK_MAX_FRAMES = 40
+#: 取证线程的存活自检间隔（秒）
+#: 看门狗自己死掉时没人会发现（loop 侧只写心跳、线程侧只抓栈），
+#: 所以由 loop 侧每 60s 巡检一次，发现线程没了就重新拉起并记一条 WARNING。
+_WATCHDOG_LIVENESS_CHECK_SECONDS = 60.0
 
 
 class EventLoopStallMonitor:
-    """周期性测量事件循环调度延迟；超阈值时记日志并（节流）推送告警。"""
+    """测量事件循环调度延迟；超阈值时**从独立线程**抓主线程同步栈并（节流）告警。"""
 
     def __init__(
         self,
@@ -39,36 +64,145 @@ class EventLoopStallMonitor:
         interval: float = DEFAULT_INTERVAL_SECONDS,
         alert_interval: float = DEFAULT_ALERT_INTERVAL_SECONDS,
         alerter: Callable[[str], Awaitable[None]] | None = None,
+        capture_stack: bool = True,
+        stack_max_frames: int = DEFAULT_STACK_MAX_FRAMES,
+        faulthandler_enabled: bool = False,
+        faulthandler_timeout: float = 30.0,
     ) -> None:
         self.threshold = max(0.05, threshold)
         self.interval = max(0.05, interval)
         self.alert_interval = max(0.0, alert_interval)
+        self.capture_stack = capture_stack
+        self.stack_max_frames = max(5, stack_max_frames)
+        self.faulthandler_enabled = faulthandler_enabled
+        self.faulthandler_timeout = max(1.0, faulthandler_timeout)
         self._alerter = alerter
         self._last_alert_ts = 0.0
         #: 进程内累计的卡顿次数（供接口 / 测试观察）
         self.stall_count = 0
+        #: 进程内累计的「抓栈」次数
+        self.stack_dump_count = 0
+
+        # ---- loop 侧心跳（线程与协程共享，用锁保护一次读写）----
+        self._hb_lock = threading.Lock()
+        self._hb_monotonic = time.monotonic()
+        self._hb_seq = 0
+
+        # ---- 取证线程状态（只在 watchdog 线程里改，除 _loop_thread_ident 外）----
+        self._stop_event = threading.Event()
+        self._watchdog: threading.Thread | None = None
+        self._loop_thread_ident: int | None = None
+        self._loop_thread_name = ""
+        self._stall_started_at: float | None = None
+        self._last_dump_ts = 0.0
+        self._faulthandler_armed = False
+
+    # ------------------------------------------------------------------ 生命周期
+    def start(self) -> None:
+        """启动取证线程（必须在事件循环线程里调用：靠 ``get_ident()`` 认准目标线程）。"""
+        self._loop_thread_ident = threading.get_ident()
+        self._loop_thread_name = threading.current_thread().name
+        self._beat()
+        if self.faulthandler_enabled:
+            try:
+                # repeat=True：持续卡顿时每隔 timeout 秒再 dump 一次（输出到 stderr）
+                faulthandler.dump_traceback_later(
+                    self.faulthandler_timeout, repeat=True
+                )
+                self._faulthandler_armed = True
+            except Exception as e:  # noqa: BLE001 —— 兜底手段失败不能影响主监控
+                myfastapi_logger.warning(f"faulthandler 兜底抓栈开启失败：{e!r}")
+        self._spawn_watchdog()
+        myfastapi_logger.warning(
+            f"事件循环卡顿取证已启动：阈值 {self.threshold:.2f}s，采样 {self.interval:.2f}s，"
+            f"抓栈={'开' if self.capture_stack else '关'}，"
+            f"节流 {self.alert_interval:.0f}s，loop_thread={self._loop_thread_name}"
+            f"({self._loop_thread_ident})"
+        )
+
+    def _spawn_watchdog(self) -> None:
+        """（重新）拉起取证线程。"""
+        self._watchdog = threading.Thread(
+            target=self._watch,
+            name="loop-stall-watchdog",
+            daemon=True,
+        )
+        self._watchdog.start()
+
+    def _ensure_watchdog_alive(self) -> None:
+        """取证线程自愈：它静默死掉时 loop 侧仍能发现并重新拉起。
+
+        为什么需要：两条通道各管一头 —— loop 侧只写心跳、线程侧只抓栈。
+        线程若因未捕获异常退出（例如未来改动引入了 bug），『卡顿无人取证』这件事
+        不会有任何日志，等于又退回只能看时间戳的状态，所以必须自己巡检。
+        """
+        if self._stop_event.is_set() or self.is_watchdog_alive:
+            return
+        myfastapi_logger.warning(
+            "event=event_loop_watchdog_restart 事件循环卡顿取证线程已意外退出，"
+            f"正在重新拉起 dumps={self.stack_dump_count}"
+        )
+        self._spawn_watchdog()
+
+    def stop(self) -> None:
+        """通知取证线程退出并（尽力）等待它结束。可重复调用。"""
+        self._stop_event.set()
+        if self._faulthandler_armed:
+            self._faulthandler_armed = False
+            try:
+                faulthandler.cancel_dump_traceback_later()
+            except Exception:  # noqa: BLE001 —— 退出路径不抛异常
+                pass
+        thread = self._watchdog
+        if thread is None or not thread.is_alive():
+            return
+        if thread is threading.current_thread():
+            return
+        # 正常情况下线程阻塞在 Event.wait(timeout) 上，set() 后立刻返回；
+        # 给 2s 上限只是兜底（shutdown 阶段，不能再让事件循环无限等）。
+        thread.join(timeout=2.0)
+
+    # ------------------------------------------------------------------ loop 侧
+    def _beat(self) -> None:
+        """更新心跳：纯内存操作，绝不做 IO / 绝不 await。"""
+        with self._hb_lock:
+            self._hb_monotonic = time.monotonic()
+            self._hb_seq += 1
+
+    def _read_heartbeat(self) -> tuple[int, float]:
+        with self._hb_lock:
+            return self._hb_seq, self._hb_monotonic
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         # 与 watchdog 阈值保持一致：开启 asyncio debug 时两边口径相同
         loop.slow_callback_duration = self.threshold
-        myfastapi_logger.info(
-            f"事件循环卡顿监控已启动：阈值 {self.threshold:.2f}s，"
-            f"采样 {self.interval:.2f}s"
-        )
-        while True:
-            started = loop.time()
-            await asyncio.sleep(self.interval)
-            delayed = loop.time() - started - self.interval
-            if delayed <= self.threshold:
-                continue
-            self.stall_count += 1
-            myfastapi_logger.warning(
-                f"event=event_loop_stall blocked={delayed:.2f}s "
-                f"threshold={self.threshold:.2f}s count={self.stall_count} "
-                f"（事件循环在此次采样窗口内被占住，HTTP / MQ 处理都会顺延）"
-            )
-            await self._alert(delayed)
+        self.start()
+        next_liveness_check = time.monotonic() + _WATCHDOG_LIVENESS_CHECK_SECONDS
+        try:
+            while True:
+                self._beat()
+                started = loop.time()
+                await asyncio.sleep(self.interval)
+                delayed = loop.time() - started - self.interval
+                if time.monotonic() >= next_liveness_check:
+                    next_liveness_check = (
+                        time.monotonic() + _WATCHDOG_LIVENESS_CHECK_SECONDS
+                    )
+                    self._ensure_watchdog_alive()
+                if delayed <= self.threshold:
+                    continue
+                self.stall_count += 1
+                myfastapi_logger.warning(
+                    f"event=event_loop_stall blocked={delayed:.2f}s "
+                    f"threshold={self.threshold:.2f}s count={self.stall_count} "
+                    f"（事件循环在此次采样窗口内被占住，HTTP / MQ 处理都会顺延；"
+                    f"占住它的同步调用栈见同期的 event=event_loop_stall_stack）"
+                )
+                await self._alert(delayed)
+        finally:
+            # cancel（shutdown）或异常退出都要把取证线程带走，否则进程无法正常退出
+            self.stop()
 
     async def _alert(self, delayed: float) -> None:
         if self._alerter is None:
@@ -85,19 +219,119 @@ class EventLoopStallMonitor:
         except Exception as e:  # noqa: BLE001 —— 告警失败不能影响监控本身
             myfastapi_logger.warning(f"事件循环卡顿告警发送失败：{e!r}")
 
+    # ------------------------------------------------------------------ 取证线程
+    def _watch(self) -> None:
+        """守护线程主循环：只读心跳 + 抓栈 + 打日志，不碰事件循环对象。"""
+        # 检查节奏：不超过 heartbeat 采样间隔，也不超过阈值的一半，
+        # 保证「刚开始卡」就能在一个很小的延迟内被发现。
+        check_interval = max(0.02, min(self.interval, self.threshold / 2.0))
+        while not self._stop_event.wait(check_interval):
+            try:
+                self._check_once()
+            except Exception as e:  # noqa: BLE001 —— 取证线程绝不能因为异常退出
+                myfastapi_logger.warning(f"事件循环卡顿取证线程异常（已忽略）：{e!r}")
+
+    def _check_once(self) -> None:
+        _seq, heartbeat_at = self._read_heartbeat()
+        now = time.monotonic()
+        blocked = now - heartbeat_at
+        if blocked <= self.threshold:
+            if self._stall_started_at is not None:
+                total = now - self._stall_started_at
+                self._stall_started_at = None
+                self._last_dump_ts = 0.0
+                myfastapi_logger.warning(
+                    f"event=event_loop_stall_recovered blocked={total:.2f}s "
+                    f"threshold={self.threshold:.2f}s "
+                    f"（事件循环已恢复调度；期间抓栈 {self.stack_dump_count} 次）"
+                )
+            return
+
+        if self._stall_started_at is None:
+            # 新一轮卡顿：起点取「最后一次有效心跳」的时刻
+            self._stall_started_at = heartbeat_at
+            self._last_dump_ts = 0.0
+        if self._last_dump_ts and now - self._last_dump_ts < self.alert_interval:
+            return
+        self._last_dump_ts = now
+        self._dump_stack(blocked)
+
+    def _dump_stack(self, blocked: float) -> None:
+        """抓事件循环线程的同步调用栈（谁占住了 GIL / 谁在同步阻塞）。"""
+        if not self.capture_stack:
+            return
+        ident = self._loop_thread_ident
+        frames = sys._current_frames()
+        frame = frames.get(ident) if ident is not None else None
+        if frame is None:
+            innermost = "<未取到事件循环线程的栈：线程已退出或 ident 不可用>"
+            stack_text = innermost + "\n"
+        else:
+            # 最内层（正在执行的那一帧）单独点名，便于 grep / 直接定位
+            innermost_frame = traceback.extract_stack(frame)[-1]
+            innermost = (
+                f'File "{innermost_frame.filename}", line {innermost_frame.lineno}, '
+                f"in {innermost_frame.name}"
+            )
+            parts = traceback.format_stack(frame)
+            if len(parts) > self.stack_max_frames:
+                parts = parts[-self.stack_max_frames :]
+            stack_text = "".join(parts)
+        self.stack_dump_count += 1
+        myfastapi_logger.warning(
+            f"event=event_loop_stall_stack blocked={blocked:.2f}s "
+            f"threshold={self.threshold:.2f}s dumps={self.stack_dump_count} "
+            f"loop_thread={self._loop_thread_name}({ident}) innermost=[{innermost}] "
+            f"—— 事件循环线程当前同步调用栈（每次采样都在推进，栈尾部即阻塞点）：\n"
+            f"{stack_text}"
+        )
+
+    # ------------------------------------------------------------------ 观测
+    @property
+    def is_watchdog_alive(self) -> bool:
+        return self._watchdog is not None and self._watchdog.is_alive()
+
 
 def start_event_loop_stall_monitor(
-    *, threshold: float = DEFAULT_THRESHOLD_SECONDS
+    *,
+    threshold: float | None = None,
+    interval: float | None = None,
+    alert_interval: float | None = None,
+    capture_stack: bool | None = None,
+    faulthandler_enabled: bool | None = None,
 ) -> asyncio.Task:
-    """在当前事件循环里启动监控协程，返回 Task（由调用方负责在 shutdown 时 cancel）。"""
+    """在当前事件循环里启动监控协程（含取证线程），返回 Task。
+
+    Task 由调用方负责在 shutdown 时 cancel —— ``run`` 的 ``finally`` 会顺带停掉取证线程。
+    未显式传入的参数取自 ``CONFIG.loop_monitor``（环境变量 ``LOOP_MONITOR__*`` 可覆盖）。
+    """
 
     async def _alert(message: str) -> None:
         await a_push_error(subject="事件循环卡顿", content=message)
 
-    monitor = EventLoopStallMonitor(threshold=threshold, alerter=_alert)
+    cfg = _load_config()
+    monitor = EventLoopStallMonitor(
+        threshold=cfg.threshold if threshold is None else threshold,
+        interval=cfg.interval if interval is None else interval,
+        alert_interval=(
+            cfg.alert_interval if alert_interval is None else alert_interval
+        ),
+        alerter=_alert,
+        capture_stack=cfg.capture_stack if capture_stack is None else capture_stack,
+        stack_max_frames=cfg.stack_max_frames,
+        faulthandler_enabled=(
+            cfg.faulthandler_enabled if faulthandler_enabled is None else faulthandler_enabled
+        ),
+        faulthandler_timeout=cfg.faulthandler_timeout,
+    )
     task = asyncio.get_running_loop().create_task(monitor.run())
     task.set_name("event-loop-stall-monitor")
     return task
+
+
+def _load_config() -> LoopMonitorConfig:
+    """读取 ``CONFIG.loop_monitor``（独立成函数，便于测试时替换 / 取值口径统一）。"""
+    return CONFIG.loop_monitor
 
 
 __all__ = ["EventLoopStallMonitor", "start_event_loop_stall_monitor"]

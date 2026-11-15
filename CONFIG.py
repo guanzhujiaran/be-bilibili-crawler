@@ -503,6 +503,51 @@ class BiliSpaceMonitorConfig(BaseModel):
     )
 
 
+class LoopMonitorConfig(BaseModel):
+    """事件循环卡顿监控 / 取证（见 ``Utils/FastAPI/loop_monitor.py``）。
+
+    全程不打开 ``PYTHONASYNCIODEBUG``：loop 侧只维护一个纯内存心跳，
+    另一个 daemon 线程在心跳停滞时取事件循环线程的同步调用栈落盘。
+
+    env 覆盖（嵌套双下划线，例如彻底关掉噪音）：
+      ``LOOP_MONITOR__ENABLED=false``
+      ``LOOP_MONITOR__THRESHOLD=2.0``
+      ``LOOP_MONITOR__ALERT_INTERVAL=1800``
+    """
+
+    enabled: bool = Field(
+        default=True, description="是否启动卡顿监控（关掉后既不采样也不抓栈）"
+    )
+    threshold: float = Field(
+        default=1.0, description="单次回调阻塞超过该秒数视为卡顿（历史默认值，勿轻易调大）"
+    )
+    interval: float = Field(default=0.5, description="loop 侧心跳采样间隔（秒）")
+    alert_interval: float = Field(
+        default=600.0,
+        description="卡顿告警 / 抓栈的最小间隔（秒）：持续卡顿时只留着第一条 + 周期性续报",
+    )
+    capture_stack: bool = Field(
+        default=True,
+        description="卡顿时是否抓事件循环线程的同步调用栈（取证能力，默认开）",
+    )
+    stack_max_frames: int = Field(
+        default=40, description="单条栈最多保留的帧数（只保留最靠近阻塞点的尾部）"
+    )
+    faulthandler_enabled: bool = Field(
+        default=False,
+        description="是否额外用 faulthandler.dump_traceback_later 兜底（输出到 stderr，"
+        "连 GIL 被 C 扩展占住的场景也能尽力打印；默认关，避免与业务日志重复）",
+    )
+    faulthandler_timeout: float = Field(
+        default=30.0, description="faulthandler 兜底抓栈的超时（秒），repeat=True 周期性重复"
+    )
+    startup_milestones: bool = Field(
+        default=True,
+        description="启动期是否按阶段打 WARNING 里程碑（LOG_LEVEL=WARNING 下也可见，带耗时），"
+        "用于定位「卡在 lifespan 哪一步」",
+    )
+
+
 class ServiceRole(StrEnumAutoDoc):
     """同一份代码承担的服务角色（由环境变量 SERVICE_ROLE 指定）。
 
@@ -718,6 +763,8 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     space_monitor: BiliSpaceMonitorConfig = BiliSpaceMonitorConfig()
     # ===== gRPC 设备池（-352 按「出口前缀 + 设备」记账）=====
     grpc_device: GrpcDeviceConfig = GrpcDeviceConfig()
+    # ===== 事件循环卡顿监控 / 取证（阈值 / 采样 / 抓栈节流）=====
+    loop_monitor: LoopMonitorConfig = LoopMonitorConfig()
 
     # ===== 第三方抽奖动态获取 =====
     get_others_lot: GetOthersLotDynConfig = GetOthersLotDynConfig()
@@ -1100,6 +1147,8 @@ class _CONFIG:
     bili_cookie = settings.bili_cookie
     space_monitor = settings.space_monitor
     grpc_device = settings.grpc_device
+    # 事件循环卡顿监控 / 取证（Utils/FastAPI/loop_monitor.py 读这里）
+    loop_monitor = settings.loop_monitor
     my_ipv6_addr = settings.PROXY_SERVER
     unidbg_addr = f"http://{settings.UNIDBG_HOST}:{settings.UNIDBG_PORT}"
     RabbitMQConfig = RabbitMQConfig()

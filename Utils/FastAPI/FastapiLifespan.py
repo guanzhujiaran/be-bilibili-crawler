@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import re
 import socket
+import time
 
 from fastapi import FastAPI
 import httpx
@@ -28,13 +29,41 @@ from log.base_log import myfastapi_logger
 _DB_CONNECT_TIMEOUT_SECONDS = 10
 
 
+class _StageMarker:
+    """启动 / 关闭阶段里程碑打点（**WARNING 级**）。
+
+    为什么必须 WARNING：生产默认 ``LOG_LEVEL=WARNING``，lifespan 里原来的
+    ``myfastapi_logger.info`` 全都不落盘，于是「卡在哪一步」只能靠时间戳猜。
+    每条带两段耗时：``elapsed``（距上一个里程碑）与 ``since_start``（距 lifespan 进入），
+    一旦某一步吃了几十秒，日志里立刻能看出来是哪一步。
+    """
+
+    def __init__(self) -> None:
+        self._enabled = CONFIG.loop_monitor.startup_milestones
+        self._t0 = time.monotonic()
+        self._last = self._t0
+
+    def mark(self, stage: str, extra: str = "") -> None:
+        if not self._enabled:
+            return
+        now = time.monotonic()
+        myfastapi_logger.warning(
+            f"event=lifespan_milestone stage={stage} "
+            f"elapsed={now - self._last:.2f}s since_start={now - self._t0:.2f}s"
+            f"{f' {extra}' if extra else ''}"
+        )
+        self._last = now
+
+
 @contextlib.asynccontextmanager
 async def life_span(app: FastAPI):
+    stage = _StageMarker()
     # ---- 云端 LLM 配置来源：runtime/llm_apis.json 优先，缺失 / 损坏回退 .env ----
     # 只覆盖 settings.llm_apis（不建实例池、不联网）；文件不存在时保持 .env 原样。
     # 来源会打一行日志（LLM 配置来源: file/env），便于运维确认当前生效的是哪份。
     # 文件 IO（含脱敏 token 自愈写回）放线程池，启动阶段不阻塞事件循环
     await config_store.apply_to_settings_async()
+    stage.mark("llm_config_applied")
 
     if settings.is_api_only:
         # 「只提供接口、不爬取」角色（SERVICE_ROLE=api，本地开发用）：
@@ -43,11 +72,13 @@ async def life_span(app: FastAPI):
         # 这样只起了基础设施的机器也能把接口跑起来（缺库的接口在请求时才报错），
         # 进程启动后不会自动抓任何数据（不依赖 IS_DEV，也不需要 IS_DEV）。
         await probe_database_connections()
+        stage.mark("api_mode_db_probe")
         myfastapi_logger.info(
             "接口服务启动完成（api 模式：只提供接口，无迁移 / 无调度 / 无 MQ 消费 / 不自动爬取）"
         )
         yield
         myfastapi_logger.info("接口服务正在退出")
+        stage.mark("api_mode_exit")
         return
 
     # 测试数据库连接
@@ -58,25 +89,31 @@ async def life_span(app: FastAPI):
             f"数据库（{CONFIG.database.MYSQL._base_url}）连接测试失败: {e}"
         )
         raise e
+    stage.mark("test_database_connections")
     # 测试各个服务的端口和 host 连通性（不包含 be-message-service：它不是本服务的依赖）
     await test_service_ports_and_hosts()
+    stage.mark("test_service_ports_and_hosts")
 
     # ---- 启动期自动执行 alembic upgrade head 增量迁移 ----
     if not await run_alembic_upgrade_head():
         raise RuntimeError("alembic upgrade head 执行失败，请检查数据库连接与迁移脚本")
+    stage.mark("run_alembic_upgrade_head")
 
     # ---- Schema 一致性校验：不一致则拒绝启动 ----
     if not await check_schemas():
         raise RuntimeError(
             "数据库 Schema 与模型不一致，请先手动执行 alembic upgrade head"
         )
+    stage.mark("check_schemas")
 
     # 检查 milvus 数据库集合
     await asyncio.sleep(3)
     myfastapi_logger.info("检查 milvus 数据库集合")
     await milvus_sql_helper.ensure_collection_exists()
+    stage.mark("milvus_ensure_collection_exists")
     myfastapi_logger.info("重试未处理的消息")
     await BiliLotDataPublisher.retry_pending_messages()
+    stage.mark("retry_pending_messages")
     # MQ 消费者由 mq_controller.py 的 @router.subscriber 注册；broker 连接由 FastAPI 通过
     # app.include_router(MqController.router) 自动管理。
     # RPC 只做只读取数（2.70.0）：RPC 服务端已交给 query 角色（query_main.py），
@@ -84,24 +121,41 @@ async def life_span(app: FastAPI):
     myfastapi_logger.info("开启其他服务")
     back_ground_tasks = []
     # 事件循环卡顿监控：任何 >1s 的阻塞都记 warning（并按 10min 节流推送），
+    # 且由独立守护线程抓「占住事件循环的那个同步调用栈」，
     # 让「启动后 HTTP 无响应但端口已监听」这类问题有直接证据，而不是靠时间戳猜。
-    back_ground_tasks.append(start_event_loop_stall_monitor())
+    if CONFIG.loop_monitor.enabled:
+        back_ground_tasks.append(start_event_loop_stall_monitor())
+        stage.mark("loop_monitor_started")
+    else:
+        myfastapi_logger.warning(
+            "事件循环卡顿监控已关闭（LOOP_MONITOR__ENABLED=false）"
+        )
+        stage.mark("loop_monitor_disabled")
     if settings.IS_DEV:
         myfastapi_logger.info("开发环境不启动定时任务喵~")
+        stage.mark("dev_skip_scheduler")
     else:
         show_log = False
         GLOBAL_SCHEDULER.start()
+        stage.mark("global_scheduler_started")
         # extend 而不是赋值：赋值会把上面已经加进去的「事件循环卡顿监控」丢掉，
         # 导致它在 shutdown 时不会被取消。
         back_ground_tasks.extend(
             BackgroundServiceController.start_monitor_tasks(show_log=show_log)
         )
+        stage.mark("monitor_tasks_started")
         back_ground_tasks.append(asyncio.create_task(_warmup_bili_cookie_pool()))
+        stage.mark("cookie_warmup_task_started")
         myfastapi_logger.info("其他服务已开启！可以开启服务了喵~")
+    # 汇总一行：启动到此结束，yield 之后服务对外可用
+    stage.mark("startup_done", extra=f"background_tasks={len(back_ground_tasks)}")
     yield
     myfastapi_logger.info("正在取消其他服务")
+    # 这里 elapsed 就是「服务已运行多久」（上一个里程碑是 startup_done），不是卡顿
+    stage.mark("shutdown_enter", extra="（elapsed=服务运行时长，非卡顿）")
     [x.cancel() for x in back_ground_tasks]
     await asyncio_gather(*back_ground_tasks, log=myfastapi_logger)
+    stage.mark("background_tasks_cancelled")
     myfastapi_logger.info("其他服务已取消")
 
 
