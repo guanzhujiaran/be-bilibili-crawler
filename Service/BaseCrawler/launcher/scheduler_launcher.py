@@ -2,7 +2,7 @@
 import random
 import time
 from datetime import datetime, timedelta
-from typing import Literal, Optional, AsyncGenerator, Any
+from typing import Final, Literal, Optional, AsyncGenerator, Any
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
 from CONFIG import CONFIG
@@ -90,27 +90,43 @@ class CrawlerExecutionInfo:
             return False
 
 
-def _is_high_frequency_cron(cron_expr: str) -> bool:
-    """判断 cron 是否「一天内触发多次」（高频爬虫）。
+#: 首跑策略标签（写进 WARNING 日志，便于一眼区分三类任务）
+POLICY_STARTUP_CATCHUP: Final[str] = "startup_catchup"
+POLICY_HIGH_FREQ_JITTER: Final[str] = "high_freq_jitter"
+POLICY_CRON_ONLY: Final[str] = "cron_only"
+
+
+def _should_run_on_startup_by_cron(cron_expr: str) -> bool:
+    """**默认**是否允许「启动抖动窗内补跑一次」（只按 cron 频率自动判定）。
 
     判据：minute 或 hour 字段带 ``*``（如 ``*/10 * * * *``、``0 */5 * * *``），
-    这类任务一天至少跑几次，重启后补跑一次不影响什么；反过来像 ``0 0 * * *``
-    （每天 0 点）、``30 4 1 * *``（每月 1 号 04:30）这种「某天某点」的日级/月级
-    任务，重启就跑会把全表归档 / 整表重建这类重活压到启动瞬间。
+    即一天触发多次的高频任务 → 默认补跑；像 ``0 0 * * *``、``30 4 1 * *``
+    这种「某天某点」的日级/月级任务 → **默认等 cron 下次触发**。
+
+    ⚠️ 自动判定只是「默认安全值」，不代表业务语义：
+    冷数据归档 / 表空间维护这类重活必须保持默认（或显式 ``run_on_startup=False``）；
+    日级**数据爬取**任务（GET_DYN / GET_TOPIC / SAMSCCLUB ...）重启后需要补跑一次，
+    必须在 ``CrawlerScheduler`` 构造时**显式**传 ``run_on_startup=True``。
+    以后新增日级任务时，若忘了这个显式标记，它会默认等 cron 而不补跑 ——
+    这是刻意的安全侧默认（宁可晚跑，也不要把重活压到启动瞬间）。
+
+    补跑不等于「立即抓取」：任务仍走 ``BaseScheduler.run()`` →
+    ``CrawlerExecutionInfo.is_need_to_execute()``，按 Redis 的 last_exec_time +
+    default_interval_seconds 节流，刚抓过就会被跳过。
     """
     minute, hour, _day, _month, _day_of_week = cron_expr.split()
     return "*" in minute or "*" in hour
 
 
 def _first_run_time(trigger: CronTrigger, run_on_startup: bool) -> datetime:
-    """首次运行时间策略。
+    """首次运行时间策略（只决定「什么时候触发」，不决定「是否真的抓取」）。
 
-    - ``run_on_startup=True``（高频爬虫）：现在 + 0~``startup_jitter_seconds``
-      随机偏移，把启动风暴摊平到 1 分钟内，保持数据新鲜度；
-    - ``run_on_startup=False``（日级/月级长周期任务）：直接用 cron 的
-      **下一次触发时间**，不允许「启动即跑」。2026-11-15 的事故就是每日 0 点的
-      冷数据归档在每次重启时被抖动提前触发，同步 gzip 读回占住事件循环 238.97s，
-      导致 uvicorn 端口已 listen 但 HTTP 全部超时。
+    - ``run_on_startup=True``：现在 + 0~``startup_jitter_seconds`` 随机偏移，
+      把启动风暴摊平到 1 分钟内。用于高频任务与**显式声明要补跑的日级爬虫**；
+      触发后 ``run()`` 仍会按 ``is_need_to_execute()`` 节流，不绕过判断。
+    - ``run_on_startup=False``：直接用 cron 的**下一次触发时间**，不允许启动即跑。
+      2026-11-15 的事故就是每日 0 点的冷数据归档被抖动提前触发，同步 gzip 读回
+      占住事件循环 238.97s，导致 uvicorn 端口已 listen 但 HTTP 全部超时。
     """
     if run_on_startup:
         jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
@@ -124,7 +140,13 @@ def _first_run_time(trigger: CronTrigger, run_on_startup: bool) -> datetime:
 class BaseScheduler:
     """
     定时任务调度器
+
+    ``startup_policy`` 三态（见 ``_should_run_on_startup_by_cron``）：
+    ``high_freq_jitter`` 高频任务启动抖动 / ``startup_catchup`` 日级爬虫显式声明的
+    启动补跑（仍受 ``is_need_to_execute`` 节流）/ ``cron_only`` 重活只等 cron。
     """
+
+    startup_policy: str
 
     def __init__(
         self,
@@ -137,15 +159,27 @@ class BaseScheduler:
     ):
         self.func = func
         self.crawler_asyncio_task = None
+        # 首次触发（启动抖动窗内的补跑 / cron 首跑）单独留痕，便于在 WARNING 日志里
+        # 证明「补跑被 is_need_to_execute 节流跳过」而不是没跑起来
+        self._first_fire = True
         self.cron_expr = cron_expr
         self.job_id = f"crawler_job_{crawler_name}"
         self.logger = logger
-        # None = 按 cron 频率自动判定；显式传值可覆盖（例如某日级爬虫需要启动补跑）
+        # 自动判定的结果单独留一份：日志要区分「高频抖动」与「日级显式补跑」
+        self._cron_default_run_on_startup = _should_run_on_startup_by_cron(cron_expr)
+        # None = 按 cron 频率自动判定（默认只有高频补跑、日级默认等 cron）；
+        # 显式传值可覆盖：日级爬虫要补跑就传 True，归档/维护重活传 False
         self.run_on_startup = (
-            _is_high_frequency_cron(cron_expr)
+            self._cron_default_run_on_startup
             if run_on_startup is None
             else run_on_startup
         )
+        if not self.run_on_startup:
+            self.startup_policy = POLICY_CRON_ONLY
+        elif self._cron_default_run_on_startup:
+            self.startup_policy = POLICY_HIGH_FREQ_JITTER
+        else:
+            self.startup_policy = POLICY_STARTUP_CATCHUP
         # 初始化执行信息管理器
         self.exec_info = CrawlerExecutionInfo(
             crawler_name=crawler_name,
@@ -169,7 +203,7 @@ class BaseScheduler:
                 trigger=self.trigger,
             )
         else:
-            # 高频任务走启动抖动；日级/月级任务只按 cron 的下一次触发时间跑
+            # 三态首跑策略：高频抖动 / 日级显式补跑 / 重活等 cron
             first_run = _first_run_time(self.trigger, self.run_on_startup)
             GLOBAL_SCHEDULER.add_job(
                 self.run,
@@ -181,26 +215,36 @@ class BaseScheduler:
                 max_instances=1,  # 同时最多允许一个实例
                 misfire_grace_time=24 * 3600,  # 允许延迟最多 1 天
             )
-            message = (
-                f"[{self.exec_info.info.crawler_name}] 已添加新任务，"
-                f"首次运行时间={first_run:%Y-%m-%d %H:%M:%S}"
+            jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
+            policy_detail = {
+                POLICY_STARTUP_CATCHUP: (
+                    "日级爬虫启动补跑：仍在抖动窗内只触发一次，"
+                    "run() 继续走 is_need_to_execute 节流（不是立即重复抓取）"
+                ),
+                POLICY_HIGH_FREQ_JITTER: (
+                    "高频任务启动抖动：一天多次，摊平启动风暴"
+                ),
+                POLICY_CRON_ONLY: (
+                    "重活等 cron 下次触发：不在启动抖动窗内执行"
+                ),
+            }[self.startup_policy]
+            # 三类策略统一 WARNING 且落 error_fastapi_log.log（LOG_LEVEL=WARNING 可见）：
+            # 只有看到「首次运行时间 = cron 下次触发」+ policy=cron_only，才能确认
+            # 重启没有把归档拉起来；看到 policy=startup_catchup 才能确认日级爬虫会补跑。
+            myfastapi_logger.warning(
+                f"event=crawler_job_added "
+                f"job={self.exec_info.info.crawler_name} "
+                f"policy={self.startup_policy} cron={self.cron_expr} "
+                f"首次运行时间={first_run:%Y-%m-%d %H:%M:%S} "
+                f"jitter={jitter:.0f}s —— {policy_detail}"
             )
-            if self.run_on_startup:
-                self.logger.debug(
-                    message + f"（高频任务：启动抖动 "
-                    f"{CONFIG.crawler_runtime.startup_jitter_seconds:.0f}s 内随机）"
-                )
-            else:
-                # 生产 LOG_LEVEL=WARNING，且必须落到 error_fastapi_log.log：
-                # 只有看到「首次运行 = cron 下次触发」，才能确认重启没有把归档拉起来。
-                myfastapi_logger.warning(
-                    message + "（长周期任务：不在启动抖动窗内执行，等 cron 下次触发）"
-                )
 
     @async_pushme_try_catch_decorator
     async def run(self):
         # 定时任务每次触发都会走到这里，属于正常调度流程，用 debug 记录即可，
         # 避免污染 CRITICAL 级别（只应保留真正的严重故障）。
+        is_first_fire = self._first_fire
+        self._first_fire = False
         self.logger.debug(
             f"[{self.exec_info.info.crawler_name}] 定时任务被触发，正在检查是否需要执行..."
         )
@@ -240,6 +284,17 @@ class BaseScheduler:
             self.logger.info(
                 f"[{self.exec_info.info.crawler_name}] 当前不满足执行条件，跳过本次任务。"
             )
+            # INFO 在 LOG_LEVEL=WARNING 下不落盘，启动补跑是否真的被节流就无从确认。
+            # 只在「首次触发 + 日级补跑策略」补一条 WARNING 到 error_fastapi_log.log，
+            # 证明补跑走的是 run() → is_need_to_execute()，而不是没被调度起来，
+            # 也不改动任何节流判断本身。
+            if is_first_fire and self.startup_policy == POLICY_STARTUP_CATCHUP:
+                myfastapi_logger.warning(
+                    f"event=crawler_startup_catchup_skipped "
+                    f"job={self.exec_info.info.crawler_name} "
+                    f"interval={self.exec_info.info.default_interval_seconds}s "
+                    "启动补跑被 is_need_to_execute 节流跳过（距上次执行不足间隔，不是漏跑）"
+                )
 
     async def _run_and_save_exec_time(self):
         """在后台执行爬虫任务，完成后保存执行时间。

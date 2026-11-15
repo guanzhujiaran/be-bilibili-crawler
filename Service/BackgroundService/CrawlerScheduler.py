@@ -39,6 +39,15 @@ class BackgroundService:
     GMFLV2_SCHEDULER: GenericCrawlerScheduler | None = None
 
     def __init__(self):
+        # ===== 首跑策略（见 scheduler_launcher._should_run_on_startup_by_cron）=====
+        # 自动判定只作「安全侧默认值」：高频（minute/hour 带 *）默认启动抖动，
+        # 「某天某点」的日级/月级任务默认等 cron 下次触发。
+        # - 重活（冷数据归档 / 表空间维护）：显式 False，绝不启动即跑；
+        # - 日级数据爬取：必须显式 True，重启后仍在抖动窗内补跑一次，避免数据
+        #   新鲜度最坏延迟近 24h。补跑仍走 run() → is_need_to_execute()，按 Redis
+        #   last_exec_time + default_interval_seconds 节流，刚抓过会被跳过；
+        # - 高频任务：不传，保持默认 high_freq_jitter。
+        # 以后新增日级爬虫请照这里显式声明，否则会默认等 cron 而不补跑。
         self.STUCK_CHECK_SCHEDULER = BaseScheduler(
             func=crawler_stuck_checker.check_and_report_stuck,
             cron_expr="*/10 * * * *",  # 每10分钟检查一次爬虫是否卡住
@@ -72,65 +81,76 @@ class BackgroundService:
             default_interval_seconds=12 * 3600,
             crawler_name=BackgroundServiceName.GET_PROXY_METHODS_SCHEDULER.value,
         )
+        # ===== 日级数据爬取：显式 run_on_startup=True（重启后补跑，受节流）=====
         self.SAMSCCLUB_SCHEDULER = GenericCrawlerScheduler(
             crawler=sams_club_crawler,
             cron_expr="0 3 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.SAMSCCLUB_SCHEDULER.value,
+            run_on_startup=True,
         )
         self.SAMSCCLUB_SPU_DETAIL_SCHEDULER = GenericCrawlerScheduler(
             crawler=sams_club_SPU_detail_crawler,
             cron_expr="0 4 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.SAMSCCLUB_SPU_DETAIL_SCHEDULER.value,
+            run_on_startup=True,
         )
         self.GET_RESERVE_INFO = GenericCrawlerScheduler(
             crawler=reserve_robot,
             cron_expr="0 1 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.GET_RESERVE_INFO.value,
+            run_on_startup=True,
         )
         self.GET_DYN = GenericCrawlerScheduler(
             crawler=dyn_detail_scrapy,
             cron_expr="0 2 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.GET_DYN.value,
+            run_on_startup=True,
         )
         self.GET_TOPIC = GenericCrawlerScheduler(
             crawler=topic_robot,
             cron_expr="0 3 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.GET_TOPIC.value,
+            run_on_startup=True,
         )
         self.GET_OTHERS_LOT_DYN = GenericCrawlerScheduler(
             crawler=get_others_lot_dyn_robot,
             cron_expr="0 8 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.GET_OTHERS_LOT_DYN.value,
+            run_on_startup=True,
         )
         self.REFRESH_BILI_LOTDATA_DATABASE = GenericCrawlerScheduler(
             crawler=refresh_bili_lot_database_crawler,
             cron_expr="0 4 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.REFRESH_BILI_LOTDATA_DATABASE.value,
+            run_on_startup=True,
         )
         self.LOTTERY_API_ROBOT_DYN_SCHEDULER = GenericCrawlerScheduler(
             crawler=LotteryApiRobot(log=official_lot_logger, business_type=2),
             cron_expr="0 5 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.LOTTERY_API_ROBOT_DYN_SCHEDULER.value,
+            run_on_startup=True,
         )
         self.LOTTERY_API_ROBOT_RESERVE_SCHEDULER = GenericCrawlerScheduler(
             crawler=LotteryApiRobot(log=reserve_lot_logger, business_type=10),
             cron_expr="0 6 * * *",
             default_interval_seconds=15 * 3600,
             crawler_name=BackgroundServiceName.LOTTERY_API_ROBOT_RESERVE_SCHEDULER.value,
+            run_on_startup=True,
         )
         self.GMFLV2_SCHEDULER = GenericCrawlerScheduler(
             crawler=gmflv2,
             cron_expr="0 7 * * *",
             default_interval_seconds=1,
             crawler_name=BackgroundServiceName.GMFLV2_SCHEDULER.value,
+            run_on_startup=True,
         )
 
 
