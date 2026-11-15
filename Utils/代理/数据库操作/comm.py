@@ -1,6 +1,13 @@
 import re
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 
+#: 每条代理都要跑一次正则，编译一次即可（原先 2000 条/批里会 compile 2000 次）
+_PROXY_IP_PATTERN = re.compile(
+    r"^(?:(http|https|socks[45]|sock[45])://)?"  # 协议部分（可选）
+    r"((?:[0-9]{1,3}\.){3}[0-9]{1,3})"  # 完整的 IP 地址
+    r"(:[0-9]{1,5})?$"  # 端口号部分（可选）
+)
+
 
 def get_scheme_ip_port_form_proxy_dict(proxy_info_dict: ProxyTab.proxy) -> str | None:
     if not proxy_info_dict:
@@ -18,13 +25,8 @@ def format_proxy(proxy_str, protocol: str = None) -> dict | None:
     """
     if type(proxy_str) is str:
         proxy_str = proxy_str.strip()
-    ip_pattern = re.compile(
-        r"^(?:(http|https|socks[45]|sock[45])://)?"  # 协议部分（可选）
-        r"((?:[0-9]{1,3}\.){3}[0-9]{1,3})"  # 完整的 IP 地址
-        r"(:[0-9]{1,5})?$"  # 端口号部分（可选）
-    )
 
-    match = ip_pattern.match(proxy_str)
+    match = _PROXY_IP_PATTERN.match(proxy_str)
     if not match:
         return None
     protocol_in_input = match.group(1)  # 输入中的协议部分，可能为None

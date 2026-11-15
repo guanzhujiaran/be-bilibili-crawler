@@ -14,8 +14,8 @@
   动态明细一次性读进内存（结果行只保留抽奖动态，量级很小）。
 """
 
+import asyncio
 import datetime
-import os
 from typing import ClassVar
 
 from log.base_log import myfastapi_logger
@@ -27,9 +27,10 @@ from Models.database_archive.lot_dyn_info_models import (
 )
 from Service.DataArchive.csv_gz_io import (
     build_monthly_file_path,
+    get_file_size_async,
     iter_recent_months,
-    verify_csv_gz,
-    write_csv_gz_atomic,
+    verify_csv_gz_async,
+    write_csv_gz_atomic_async,
 )
 from Service.DataArchive.lot_dyn_parser import LotDynParser
 from Service.DataArchive.targets import DynDetailArchiveTarget
@@ -40,6 +41,10 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
 
 def _month_str(month_ts: int) -> str:
     return datetime.date.fromtimestamp(month_ts).strftime("%Y_%m")
+
+
+#: 一次交给线程池解析的 dynData 行数（JSON 解析是纯 CPU，不能压在事件循环里）
+_PARSE_BATCH_ROWS = 500
 
 
 class LotDynInfoExportJob:
@@ -123,7 +128,8 @@ class LotDynInfoExportJob:
             return file_result
 
         file_path = build_monthly_file_path(conf.root_dir, self.job_name, month_start)
-        row_count = write_csv_gz_atomic(file_path, self.columns, rows)
+        # gzip 写 + 原子改名整体在线程池，事件循环不在导出期间被压缩占住
+        row_count = await write_csv_gz_atomic_async(file_path, self.columns, rows)
         file_result.file_path = file_path
         file_result.row_count = row_count
         if row_count == 0:
@@ -132,8 +138,9 @@ class LotDynInfoExportJob:
             file_result.skip_reason = "写出 0 行"
             return file_result
 
-        file_result.file_size = os.path.getsize(file_path)
-        is_ok, reason = verify_csv_gz(file_path, row_count)
+        file_result.file_size = await get_file_size_async(file_path)
+        # 回读校验要解压整个包，同样放线程池；失败口径不变（只标记 is_verified=False）
+        is_ok, reason = await verify_csv_gz_async(file_path, row_count)
         file_result.is_verified = is_ok
         if not is_ok:
             self.log.error(f"[{self.job_name}] {month_str} 回读校验失败：{reason}")
@@ -147,15 +154,33 @@ class LotDynInfoExportJob:
     async def _collect_rows(
         self, month_start: int, month_end: int
     ) -> list[list[str]]:
-        """流式读整月 `dynData` 并解析；只有抽奖动态会被收下来，量级很小。"""
+        """流式读整月 `dynData` 并解析；只有抽奖动态会被收下来，量级很小。
+
+        DB 分页读取仍是 async（ORM session 只在事件循环里用），但单页可能连续吐
+        2000 行 `dynData`，逐行 `json.loads` 会长时间占住事件循环，因此攒批后把
+        「JSON 解析 + 结果行组装」丢进线程池，主线程只负责取数与 await。
+        """
         rows: list[list[str]] = []
+        raw_batch: list[str | None] = []
         async for (dyn_data,) in self.target.iter_column_values(
             month_start, month_end, ["dynData"]
         ):
-            lot = self.parser.parse_one(dyn_data)  # type: ignore[arg-type]
+            raw_batch.append(dyn_data)  # type: ignore[arg-type]
+            if len(raw_batch) >= _PARSE_BATCH_ROWS:
+                rows.extend(await asyncio.to_thread(self._parse_rows_sync, raw_batch))
+                raw_batch = []
+        if raw_batch:
+            rows.extend(await asyncio.to_thread(self._parse_rows_sync, raw_batch))
+        return rows
+
+    def _parse_rows_sync(self, raw_batch: list[str | None]) -> list[list[str]]:
+        """纯 CPU 解析（只在线程池执行，不碰 ORM session / asyncio 对象）。"""
+        parsed: list[list[str]] = []
+        for dyn_data in raw_batch:
+            lot = self.parser.parse_one(dyn_data)
             if lot is None:
                 continue
-            rows.append(
+            parsed.append(
                 [
                     lot.author_space,
                     lot.dyn_url,
@@ -172,7 +197,7 @@ class LotDynInfoExportJob:
                     lot.premsg,
                 ]
             )
-        return rows
+        return parsed
 
     @staticmethod
     def _format_periods(periods: list[tuple[int, int]]) -> str:

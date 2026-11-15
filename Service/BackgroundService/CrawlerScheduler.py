@@ -46,22 +46,25 @@ class BackgroundService:
             crawler_name=BackgroundServiceName.STUCK_CHECK_SCHEDULER.value,
         )
         self.DYN_DETAIL_DATABASE_CLEANER = BaseScheduler(
-            # 每日：先导出抽奖信息 csv.gz，再归档冷数据 csv.gz 并删库
+            # 每日：先导出抽奖信息 csv.gz，再归档冷数据 csv.gz 并删库。
+            # 不许「启动即跑」：2026-11-15 每次重启都被抖动提前触发，归档读回
+            # 大 gzip 包同步占住事件循环 238.97s，HTTP 全部超时。
             func=cleaner.run_daily_backup,
             cron_expr="0 0 * * *",
             crawler_name=BackgroundServiceName.DYN_DETAIL_DATABASE_CLEANER.value,
             default_interval_seconds=2 * 3600,
+            run_on_startup=False,
         )
         self.TABLESPACE_MAINTENANCE = BaseScheduler(
             # 每月 1 号 04:30：把上月归档删库后残留的 InnoDB 空洞还给操作系统。
             # 放在 0 点归档任务之后、白天业务前，整表重建（ALTER TABLE ... FORCE）
             # 需要接近表大小的临时磁盘，默认只有空洞够大才真的重建。
-            # 注意：与其他任务一致，服务首次启动会立即执行一次，那一次通常只做
-            # ANALYZE（空洞为 0），不会触发重建。
+            # 同样是月级重活，只在 cron 的下一次触发时间跑，不跟启动抢资源。
             func=run_monthly_maintenance,
             cron_expr="30 4 1 * *",
             crawler_name=BackgroundServiceName.TABLESPACE_MAINTENANCE.value,
             default_interval_seconds=25 * 86400,
+            run_on_startup=False,
         )
         self.GET_PROXY_METHODS_SCHEDULER = GenericCrawlerScheduler(
             crawler=get_proxy_methods,

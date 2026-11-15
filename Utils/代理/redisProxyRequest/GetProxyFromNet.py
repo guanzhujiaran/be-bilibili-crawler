@@ -7,6 +7,7 @@ import inspect
 import json
 import re
 import time
+from collections.abc import Sequence
 from datetime import datetime
 from typing import AsyncGenerator, Literal
 
@@ -589,6 +590,24 @@ def extract_proxy_text(line: str) -> str | None:
     if matched := _PROXY_PREFIX_RE.match(line.strip()):
         return matched.group(1)
     return None
+
+
+def parse_proxy_lines(
+    lines: Sequence[str], protocol: str
+) -> list[dict[str, str]]:
+    """把一批原始文本行解析成代理字典（纯 CPU，供 ``asyncio.to_thread`` 调用）。
+
+    免费源单文件可能 50 万行，逐行 ``re.match`` + ``format_proxy`` 全压在事件循环
+    里会造成 1s 级卡顿；按 2000 行一批丢线程池，主线程只保留网络流与入库的 await。
+    """
+    proxies: list[dict[str, str]] = []
+    for line in lines:
+        proxy_text = extract_proxy_text(line)
+        if not proxy_text:
+            continue
+        if proxy_dict := format_proxy(proxy_text, protocol=protocol):
+            proxies.append(proxy_dict)
+    return proxies
 
 
 class GetProxyMethods:
@@ -2347,7 +2366,8 @@ class GetProxyMethods:
             if not req:
                 self.log.debug(f"补充源 {spec.name} 无数据")
                 return []
-            proxies = parse_supplement_payload(spec, req.text)
+            # geonode JSON / 50 万行级文本解析同样下沉线程池
+            proxies = await asyncio.to_thread(parse_supplement_payload, spec, req.text)
             self.log.debug(f"补充源 {spec.name} 解析到 {len(proxies)} 条")
             return proxies
 
@@ -2400,21 +2420,26 @@ class GetProxyMethods:
         headers = {"user-agent": CONFIG.rand_ua}
         source_proxies = _github_proxy if is_github_source(url) else None
         batch: list[dict] = []
+        lines: list[str] = []
         total = 0
         async for line in my_async_httpx.iter_lines(
             url, headers=headers, proxies=source_proxies
         ):
-            proxy_text = extract_proxy_text(line)
-            if not proxy_text:
+            lines.append(line)
+            if len(lines) < batch_size:
                 continue
-            proxy_dict = format_proxy(proxy_text, protocol=protocol)
-            if not proxy_dict:
-                continue
-            batch.append(proxy_dict)
-            total += 1
+            # 解析（正则 + format_proxy）整批在线程池，事件循环只等结果
+            parsed = await asyncio.to_thread(parse_proxy_lines, lines, protocol)
+            lines = []
+            batch.extend(parsed)
+            total += len(parsed)
             if len(batch) >= batch_size:
                 yield batch
                 batch = []
+        if lines:
+            parsed = await asyncio.to_thread(parse_proxy_lines, lines, protocol)
+            batch.extend(parsed)
+            total += len(parsed)
         if batch:
             yield batch
         self.log.info(f"{url} 共解析到 {total} 个代理")
@@ -2467,7 +2492,8 @@ class GetProxyMethods:
                     )
                 continue
             self._round_stats.raw_total += len(batch)
-            deduped = self._dedup_batch(batch, seen)
+            # 跨源 seen 集合只有这里一个消费者，串行 await 保证不会并发写
+            deduped = await asyncio.to_thread(self._dedup_batch, batch, seen)
             if deduped:
                 await self._ingest_proxies(deduped)
         self._round_stats.dedup_total = len(seen)

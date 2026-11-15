@@ -6,6 +6,7 @@ from typing import Literal, Optional, AsyncGenerator, Any
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
 from CONFIG import CONFIG
+from log.base_log import myfastapi_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable, CustomBaseModel
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import CrawlerConfig
@@ -89,15 +90,35 @@ class CrawlerExecutionInfo:
             return False
 
 
-def _first_run_time() -> datetime:
-    """首次运行时间：现在 + 0~``startup_jitter_seconds`` 随机偏移。
+def _is_high_frequency_cron(cron_expr: str) -> bool:
+    """判断 cron 是否「一天内触发多次」（高频爬虫）。
 
-    重启瞬间如果所有调度器都 ``next_run_time=now``，几十个爬虫会同 时开跑，
-    单核容器会被直接打满（实测 HTTP 4.5 分钟无响应）。加抖动后启动风暴被摊平，
-    每个爬虫的「第一次」仍在启动后 1 分钟内发生，不影响数据新鲜度。
+    判据：minute 或 hour 字段带 ``*``（如 ``*/10 * * * *``、``0 */5 * * *``），
+    这类任务一天至少跑几次，重启后补跑一次不影响什么；反过来像 ``0 0 * * *``
+    （每天 0 点）、``30 4 1 * *``（每月 1 号 04:30）这种「某天某点」的日级/月级
+    任务，重启就跑会把全表归档 / 整表重建这类重活压到启动瞬间。
     """
-    jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
-    return datetime.now() + timedelta(seconds=random.uniform(0, jitter))
+    minute, hour, _day, _month, _day_of_week = cron_expr.split()
+    return "*" in minute or "*" in hour
+
+
+def _first_run_time(trigger: CronTrigger, run_on_startup: bool) -> datetime:
+    """首次运行时间策略。
+
+    - ``run_on_startup=True``（高频爬虫）：现在 + 0~``startup_jitter_seconds``
+      随机偏移，把启动风暴摊平到 1 分钟内，保持数据新鲜度；
+    - ``run_on_startup=False``（日级/月级长周期任务）：直接用 cron 的
+      **下一次触发时间**，不允许「启动即跑」。2026-11-15 的事故就是每日 0 点的
+      冷数据归档在每次重启时被抖动提前触发，同步 gzip 读回占住事件循环 238.97s，
+      导致 uvicorn 端口已 listen 但 HTTP 全部超时。
+    """
+    if run_on_startup:
+        jitter = max(0.0, CONFIG.crawler_runtime.startup_jitter_seconds)
+        return datetime.now() + timedelta(seconds=random.uniform(0, jitter))
+    now = datetime.now(trigger.timezone)
+    next_fire = trigger.get_next_fire_time(None, now)
+    # 理论上 cron 总能算出下一次；兜底避免 next_run_time=None 让任务永远不会跑
+    return next_fire or now + timedelta(days=1)
 
 
 class BaseScheduler:
@@ -112,12 +133,19 @@ class BaseScheduler:
         default_interval_seconds: int = 2 * 3600,
         crawler_name: str = "",
         logger=default_logger,
+        run_on_startup: bool | None = None,
     ):
         self.func = func
         self.crawler_asyncio_task = None
         self.cron_expr = cron_expr
         self.job_id = f"crawler_job_{crawler_name}"
         self.logger = logger
+        # None = 按 cron 频率自动判定；显式传值可覆盖（例如某日级爬虫需要启动补跑）
+        self.run_on_startup = (
+            _is_high_frequency_cron(cron_expr)
+            if run_on_startup is None
+            else run_on_startup
+        )
         # 初始化执行信息管理器
         self.exec_info = CrawlerExecutionInfo(
             crawler_name=crawler_name,
@@ -141,8 +169,8 @@ class BaseScheduler:
                 trigger=self.trigger,
             )
         else:
-            # 首次任务在启动抖动窗内随机执行（见 _first_run_time）
-            first_run = _first_run_time()
+            # 高频任务走启动抖动；日级/月级任务只按 cron 的下一次触发时间跑
+            first_run = _first_run_time(self.trigger, self.run_on_startup)
             GLOBAL_SCHEDULER.add_job(
                 self.run,
                 name=self.job_id,
@@ -153,11 +181,21 @@ class BaseScheduler:
                 max_instances=1,  # 同时最多允许一个实例
                 misfire_grace_time=24 * 3600,  # 允许延迟最多 1 天
             )
-            self.logger.debug(
+            message = (
                 f"[{self.exec_info.info.crawler_name}] 已添加新任务，"
-                f"首次运行时间={first_run:%H:%M:%S}（启动抖动 "
-                f"{CONFIG.crawler_runtime.startup_jitter_seconds:.0f}s 内随机）"
+                f"首次运行时间={first_run:%Y-%m-%d %H:%M:%S}"
             )
+            if self.run_on_startup:
+                self.logger.debug(
+                    message + f"（高频任务：启动抖动 "
+                    f"{CONFIG.crawler_runtime.startup_jitter_seconds:.0f}s 内随机）"
+                )
+            else:
+                # 生产 LOG_LEVEL=WARNING，且必须落到 error_fastapi_log.log：
+                # 只有看到「首次运行 = cron 下次触发」，才能确认重启没有把归档拉起来。
+                myfastapi_logger.warning(
+                    message + "（长周期任务：不在启动抖动窗内执行，等 cron 下次触发）"
+                )
 
     @async_pushme_try_catch_decorator
     async def run(self):
@@ -336,8 +374,8 @@ class BaseScheduler:
                 name=self.job_id,
                 trigger=self.trigger,
                 id=self.job_id,
-                # 与 _add_or_update_job 同一口径：重新挂载时也不允许「立刻开跑」
-                next_run_time=_first_run_time(),
+                # 与 _add_or_update_job 同一口径：重新挂载时也不允许长周期任务「立刻开跑」
+                next_run_time=_first_run_time(self.trigger, self.run_on_startup),
                 coalesce=True,
                 max_instances=1,
                 misfire_grace_time=3600,
@@ -358,6 +396,7 @@ class GenericCrawlerScheduler(BaseScheduler):
         cron_expr: str,
         default_interval_seconds: int = 2 * 3600,
         crawler_name: Optional[str] = None,
+        run_on_startup: bool | None = None,
     ):
         self.crawler = crawler
         # 统一「调度器名 == 爬虫实例名 == 卡住监控名」：
@@ -376,6 +415,7 @@ class GenericCrawlerScheduler(BaseScheduler):
             default_interval_seconds=default_interval_seconds,
             crawler_name=resolved_name,
             logger=self.crawler.log,
+            run_on_startup=run_on_startup,
         )
 
 

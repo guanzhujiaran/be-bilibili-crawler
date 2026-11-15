@@ -9,8 +9,15 @@
   `compresslevel=9` 是体积与速度的常规折中。
 - 写入：先写 `{目标}.new.tmp`，写完再原子改名，避免半截压缩包被当成有效归档。
 - 校验：回读 gzip 数一遍数据行，行数对不上就判定失败（调用方据此决定是否删库）。
+
+**事件循环保护**：gzip 解压 / 压缩是纯 CPU + 同步文件 IO，大归档包一次读回能吃掉
+几百秒事件循环（2026-11-15 线上 blocked=238.97s 就卡在 ``iter_csv_gz_rows``）。
+本模块保留全部同步函数原样（供线程池 / 手工脚本调用），另提供 ``*_async`` 封装，
+统一用 ``asyncio.to_thread`` 把读 / 写 / 校验搬离事件循环；调用方只 await，
+不碰文件句柄，语义与同步版本完全一致。
 """
 
+import asyncio
 import csv
 import datetime
 import gzip
@@ -171,3 +178,85 @@ def verify_csv_gz(file_path: str, expected_rows: int) -> tuple[bool, str]:
     if actual_rows != expected_rows:
         return False, f"行数不一致（期望 {expected_rows} 实际 {actual_rows}）"
     return True, ""
+
+
+# region 异步封装：所有同步文件 IO 都在线程里跑，事件循环只负责 await
+class AsyncCsvGzWriter:
+    """流式写 csv.gz 的异步写入器：``open / writerow / close`` 全部走线程池。
+
+    事件循环侧把 DB 行攒成小批再 ``await write_rows(batch)``，压缩耗 CPU 的那一段
+    不会占住 event loop。同一个实例请串行 await（调用方就是逐批 await 的），
+    这样文件句柄永远只被一个线程访问，不需要额外加锁。
+    """
+
+    def __init__(self, file_path: str, columns: Sequence[str]) -> None:
+        self._file_path = file_path
+        self._columns = list(columns)
+        self._file: IO[str] | None = None
+        self._header_written = False
+        self.row_count = 0
+
+    def _write_rows_sync(self, rows: Sequence[Sequence[object]]) -> int:
+        if not rows:
+            return self.row_count
+        if self._file is None:
+            directory = os.path.dirname(self._file_path)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            self._file = open_csv_gz_write(self._file_path)
+        writer = csv.writer(self._file)
+        if not self._header_written:
+            writer.writerow(self._columns)
+            self._header_written = True
+        for row in rows:
+            writer.writerow([format_csv_value(value) for value in row])
+        self.row_count += len(rows)
+        return self.row_count
+
+    def _close_sync(self) -> None:
+        if self._file is not None:
+            self._file.close()
+            self._file = None
+
+    async def write_rows(self, rows: Sequence[Sequence[object]]) -> int:
+        return await asyncio.to_thread(self._write_rows_sync, rows)
+
+    async def close(self) -> None:
+        await asyncio.to_thread(self._close_sync)
+
+
+async def count_csv_gz_rows_async(file_path: str) -> int:
+    """在线程池里解压并数行（同步版 ``count_csv_gz_rows`` 的异步封装）。"""
+    return await asyncio.to_thread(count_csv_gz_rows, file_path)
+
+
+async def write_csv_gz_atomic_async(
+    file_path: str,
+    columns: Sequence[str],
+    rows: Iterable[Sequence[object]],
+) -> int:
+    """在线程池里完成「写临时文件 → 原子改名」（含 gzip 压缩）。"""
+    return await asyncio.to_thread(write_csv_gz_atomic, file_path, columns, rows)
+
+
+async def verify_csv_gz_async(
+    file_path: str, expected_rows: int
+) -> tuple[bool, str]:
+    """在线程池里回读整个 gzip 包做行数校验；结果口径与同步版完全一致。"""
+    return await asyncio.to_thread(verify_csv_gz, file_path, expected_rows)
+
+
+async def replace_file_async(src: str, dst: str) -> None:
+    """原子改名也放进线程池（与前面的写入串行，避免事件循环里的文件系统调用）。"""
+    await asyncio.to_thread(os.replace, src, dst)
+
+
+async def remove_file_async(file_path: str) -> None:
+    await asyncio.to_thread(os.remove, file_path)
+
+
+async def get_file_size_async(file_path: str) -> int:
+    return await asyncio.to_thread(os.path.getsize, file_path)
+
+
+# endregion

@@ -22,6 +22,7 @@
 - 任意一步失败只影响当月，其他月继续；删库只会发生在该月校验通过之后。
 """
 
+import asyncio
 import csv
 import datetime
 import os
@@ -36,18 +37,22 @@ from Models.database_archive.cold_data_archive_models import (
     TableArchiveResult,
 )
 from Service.DataArchive.csv_gz_io import (
+    AsyncCsvGzWriter,
     build_monthly_file_path,
     count_csv_gz_rows,
-    format_csv_value,
+    get_file_size_async,
     iter_csv_gz_rows,
     iter_month_ranges,
-    open_csv_gz_write,
-    verify_csv_gz,
+    remove_file_async,
+    replace_file_async,
+    verify_csv_gz_async,
     write_csv_gz,
 )
 from Service.DataArchive.targets import BaseColdArchiveTarget, build_default_targets
 
 _SECONDS_PER_DAY = 86400
+#: 事件循环侧攒多少行交给线程池压缩一次（写文件全程不在 loop 里）
+_WRITE_BATCH_ROWS = 1000
 
 
 class ColdDataArchiver:
@@ -186,35 +191,41 @@ class ColdDataArchiver:
             self.conf.root_dir, target.table_name, month_start
         )
         file_result = ArchiveFileResult(period=month_str)
-        is_exists = os.path.exists(file_path)
+        is_exists = await asyncio.to_thread(os.path.exists, file_path)
 
         primary_keys: list[str | int] = []
         pk_index = target.columns.index(target.primary_key_name)
         need_pk = not self.conf.is_dry_run and self.is_delete
         row_count = 0
-        # 先写新行到 .new.tmp：只有确认本次真的读到数据，才会去碰正式文件
+        # 先写新行到 .new.tmp：只有确认本次真的读到数据，才会去碰正式文件。
+        # gzip 压缩/写盘的每一行都是同步 CPU + 文件 IO，因此攒批后整体交给线程池；
+        # 事件循环在此期间仍能处理 HTTP / MQ（历史事故：归档读回卡住 loop 238.97s）。
         new_tmp_path = f"{file_path}.new.tmp"
-        csv_file = None
-        writer = None
+        writer = (
+            AsyncCsvGzWriter(new_tmp_path, target.columns)
+            if not self.conf.is_dry_run
+            else None
+        )
+        batch: list[tuple[object, ...]] = []
         try:
             async for row in target.iter_row_values(month_start, month_end):
-                if writer is None and not self.conf.is_dry_run:
-                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
-                    csv_file = open_csv_gz_write(new_tmp_path)
-                    writer = csv.writer(csv_file)
-                    writer.writerow(target.columns)
-                if writer is not None:
-                    writer.writerow([format_csv_value(value) for value in row])
                 row_count += 1
                 if need_pk:
                     primary_keys.append(row[pk_index])  # type: ignore[arg-type]
+                if writer is not None:
+                    batch.append(row)
+                    if len(batch) >= _WRITE_BATCH_ROWS:
+                        await writer.write_rows(batch)
+                        batch = []
+            if batch and writer is not None:
+                await writer.write_rows(batch)
         finally:
-            if csv_file is not None:
-                csv_file.close()
+            if writer is not None:
+                await writer.close()
 
         if row_count == 0:
-            if os.path.exists(new_tmp_path):
-                os.remove(new_tmp_path)
+            if await asyncio.to_thread(os.path.exists, new_tmp_path):
+                await remove_file_async(new_tmp_path)
             if is_exists:
                 # 历史上已归档过（数据可能上次已删），保留原文件不覆盖
                 self.log.debug(
@@ -233,17 +244,24 @@ class ColdDataArchiver:
         if is_exists:
             # 断点续跑：上次可能「写完归档但删库中断了」，此时库里还剩一部分行。
             # 直接把本次结果覆盖上去会丢掉已删行的归档，所以要把旧归档追加进来。
-            expected_rows = self._merge_into_existing_archive(
-                target, file_path, new_tmp_path, pk_index
+            # 整个「读旧包 + 按主键去重 + 重压缩」是纯同步 IO，整体放线程池，
+            # 方法体一行不改，按主键去重 / 坏包降级重建的语义完全保持。
+            expected_rows = await asyncio.to_thread(
+                self._merge_into_existing_archive,
+                target,
+                file_path,
+                new_tmp_path,
+                pk_index,
             )
         else:
-            os.replace(new_tmp_path, file_path)
+            await replace_file_async(new_tmp_path, file_path)
 
         file_result.file_path = file_path
         file_result.row_count = row_count
         file_result.file_row_count = expected_rows
-        file_result.file_size = os.path.getsize(file_path)
-        is_ok, reason = verify_csv_gz(file_path, expected_rows)
+        file_result.file_size = await get_file_size_async(file_path)
+        # 回读校验要解压整个 gzip 包，必须在线程池做；失败仍按原逻辑抛错不删库
+        is_ok, reason = await verify_csv_gz_async(file_path, expected_rows)
         file_result.is_verified = is_ok
         if not is_ok:
             raise RuntimeError(

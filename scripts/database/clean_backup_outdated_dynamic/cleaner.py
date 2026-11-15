@@ -18,6 +18,9 @@
 （即便当天数据落在保留窗口内不会被删，先导出也能避免「删了才发现没导」）。
 """
 
+import time
+
+from log.base_log import myfastapi_logger
 from Models.database_archive.cold_data_archive_models import (
     ColdArchiveConf,
     TableArchiveResult,
@@ -48,9 +51,30 @@ async def run_daily_backup(
     archive_conf: ColdArchiveConf | None = None,
     lot_dyn_info_conf: LotDynInfoExportConf | None = None,
 ) -> DailyBackupResult:
-    """定时任务主入口：先导出抽奖信息，再做冷数据归档 + 删库。"""
+    """定时任务主入口：先导出抽奖信息，再做冷数据归档 + 删库。
+
+    这里**不能**整体丢进线程池：两个阶段都要用 async ORM session 分页读库，
+    session / asyncio 对象不能跨线程用。改为在阶段内部把一切同步 gzip 读写、
+    回读校验、JSON 解析逐块 ``asyncio.to_thread``（见 ``csv_gz_io`` /
+    ``cold_data_archiver`` / ``lot_dyn_info_export``），事件循环全程可服务 HTTP。
+
+    阶段耗时用 WARNING 打点：生产默认 ``LOG_LEVEL=WARNING``，只有这样才看得出
+    「归档慢」和「事件循环被卡死」是两回事。
+    """
+    started_at = time.monotonic()
+    myfastapi_logger.warning("event=daily_backup stage=start（归档 IO 已全部下沉线程池）")
     lot_dyn_info_result = await do_export_lot_dyn_info(lot_dyn_info_conf)
+    myfastapi_logger.warning(
+        f"event=daily_backup stage=lot_dyn_info_export_done "
+        f"elapsed={time.monotonic() - started_at:.2f}s "
+        f"rows={lot_dyn_info_result.total_rows}"
+    )
     archive_results = await do_clean(archive_conf)
+    myfastapi_logger.warning(
+        f"event=daily_backup stage=cold_archive_done "
+        f"elapsed={time.monotonic() - started_at:.2f}s "
+        f"rows={sum(r.total_rows for r in archive_results)}"
+    )
     return DailyBackupResult(
         lot_dyn_info=lot_dyn_info_result, archive=archive_results
     )
