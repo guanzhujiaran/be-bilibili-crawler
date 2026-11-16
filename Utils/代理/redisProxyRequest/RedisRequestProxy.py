@@ -755,8 +755,10 @@ class RequestWithProxy:
                             f"代理{pool_proxy.proxy} 报错-352 被封禁\n"
                             f"{mask_text(_clip(str(kwargs), 500))}"
                         )
+                        # HTTP 通道沿用既有语义：352 仍写回 status（412/352 的
+                        # 表现与 refresh_proxy 复位节奏不变），只有 gRPC 通道改了记账口径。
                         await handle_proxy_352(
-                            proxy_tab=pool_proxy,
+                            proxy_tab=pool_proxy, mark_db_invalid=True
                         )
                     case _:
                         await handle_proxy_request_fail(

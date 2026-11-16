@@ -1,0 +1,25 @@
+{
+  "path": "/bilibili.app.interface.v1.Search/DefaultWords",
+  "headers": {
+    "accept": "*/*",
+    "accept-encoding": "gzip, deflate, br",
+    "buvid": "XUBB021B6B4B15C7BB7E6D1D1DE0F7DCDE084",
+    "content-type": "application/grpc",
+    "grpc-accept-encoding": "identity, deflate, gzip",
+    "grpc-encoding": "gzip",
+    "grpc-timeout": "7990m",
+    "te": "trailers",
+    "user-agent": "grpc-c++/1.66.2 Dalvik/2.1.0 (Linux; U; Android 11; ONEPLUS A6000 Build/RKQ1.201217.002) 9.19.0 os/android model/ONEPLUS A6000 mobi_app/android build/9190400 channel/oppo innerVer/9190410 osVer/11 network/2 grpc-c/43.0.0 (android; ignet_http)",
+    "x-bili-device-bin": "CAEQgPiwBBolWFVCQjAyMUI2QjRCMTVDN0JCN0U2RDFEMURFMEY3RENERTA4NCIHYW5kcm9pZCoHYW5kcm9pZDoEb3Bwb0IHT25lUGx1c0oNT05FUExVUyBBNjAwMFICMTFaQDVlMjhiZTZjOGY1MzA5ZTM2YTFhOGY2NTRkY2M0MTUyMjAyNjExMTYxMzE2MjcyNGRhY2UxYjQwNGE3MWQ0MTViQDVlMjhiZTZjOGY1MzA5ZTM2YTFhOGY2NTRkY2M0MTUyMjAyNjExMTYxMzE2MjcyNGRhY2UxYjQwNGE3MWQ0MTVqBjkuMTkuMHJANWUyOGJlNmM4ZjUzMDllMzZhMWE4ZjY1NGRjYzQxNTIyMDI2MTExNjEzMTYyNzI0ZGFjZTFiNDA0YTcxZDQxNXijo+rXBoIBDjI3MDgxOTUyMDQ2MzU1",
+    "x-bili-fawkes-req-bin": "CglhbmRyb2lkNjQSBHByb2QaCDgyYjI0YTU5",
+    "x-bili-locale-bin": "Cg4KAnpoEgRIYW5zGgJDThIOCgJ6aBIESGFucxoCQ04iDUFzaWEvU2hhbmdoYWkqBiswODowMA",
+    "x-bili-metadata-bin": "EgdhbmRyb2lkIID4sAQqBG9wcG8yJVhVQkIwMjFCNkI0QjE1QzdCQjdFNkQxRDFERTBGN0RDREUwODQ6B2FuZHJvaWQ",
+    "x-bili-metadata-ip-region": "CN",
+    "x-bili-metadata-recent-region": "eyJhbGciOiJFUzI1NiIsImtpZCI6IlhVaVhRSFo5IiwidHlwIjoiSldUIn0.eyJidXZpZCI6IlhVQkIwMjFCNkI0QjE1QzdCQjdFNkQxRDFERTBGN0RDREUwODQiLCJiciI6IkNOIiwiZXhwIjoxNzk0ODkyNTg5LCJpYXQiOjE3OTQ4MDYxODl9.KHwyf5AqZMrbvuZf00kyr7pW25ZSe83HI_3mn2njuQ2o9NPa05khh1jb3mopS1vIT_TbvrJvZwK6gRx27xpUDA",
+    "x-bili-moss-engine-type": "1",
+    "x-bili-network-bin": "CAEqBQ0AAIC/",
+    "x-bili-restriction-bin": "OBA",
+    "x-bili-ticket": "eyJhbGciOiJIUzI1NiIsImtpZCI6InMwMyIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3OTQ4MzQ5ODYsImlhdCI6MTc5NDgwNTg4NiwiYnV2aWQiOiJYVUJCMDIxQjZCNEIxNUM3QkI3RTZEMUQxREUwRjdEQ0RFMDg0In0.lsiH38tha8cH1Y-Ee5bE7OaWVHP05B9ToHLtOmFEZFw",
+    "x-bili-trace-id": "a8fa3f88a39bdb6ef2f332cbbf6afaa0:f2f332cbbf6afaa0:0:0"
+  }
+}

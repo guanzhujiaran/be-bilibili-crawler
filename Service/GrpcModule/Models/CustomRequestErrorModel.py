@@ -20,8 +20,18 @@ class Request412Error(RequestKnownError):
 
 
 class Request352Error(RequestKnownError):
-    def __init__(self, message="", code=-352):
+    """-352（风控挑战）。
+
+    ``token_acquired`` 用来区分两类完全不同的失败（调用方据此决定是否记设备风险）：
+
+    - True：本次已经拿到 ``x-bili-gaia-vtoken`` 重试，仍被 -352 → 设备/出口本身被标记；
+    - False：极验环节就没拿到 token（服务不可用 / 验证码获取失败）→ 只是挑战没做完，
+      不能据此判定设备有问题（否则验证码服务抖动会把设备池整批清空）。
+    """
+
+    def __init__(self, message="", code=-352, token_acquired: bool = False):
         super().__init__(message, code)
+        self.token_acquired = token_acquired
 
 
 class RequestProxyResponseError(RequestKnownError):

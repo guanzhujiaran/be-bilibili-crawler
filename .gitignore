@@ -56,4 +56,6 @@ Service/GrpcModule/GrpcSrc/监控up动态/data/
 Service/GrpcModule/GrpcSrc/监控up动态grpc获取动态状态/data/
 # 冷数据归档产物（本地直跑时的默认落盘目录，DYN_BACKUP_DIR 未配置时才用）
 scripts/database/dyn_backup/
-BiliReverseEngineering
+BiliReverseEngineering/*
+# APK 逆向工程工作区（APK / dex / 反编译产物 / 第三方工具，不入库）
+BiliReverseEnginnering/

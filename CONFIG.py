@@ -606,6 +606,26 @@ class GrpcDeviceConfig(BaseModel):
     risk_ttl_seconds: int = Field(
         default=6 * 3600, description="-352 前缀记账的保留时长（秒）"
     )
+    max_352_times: int = Field(
+        default=1,
+        description="同一设备累计多少次 -352（已拿到极验 token 仍被拒）就重建 metadata"
+        "（原硬编码 3：实测第一次被拒就是设备/出口已被标记，继续换 IP 只是白跑）",
+    )
+    recreate_device_on_352: bool = Field(
+        default=True,
+        description="-352 后是否立刻丢弃当前 metadata 并重建：352 的第一处置是**换设备**，"
+        "而不是无限换 IP（同一设备换任何出口都会被拒）",
+    )
+    grpc_proxy_schemes: list[str] = Field(
+        default=["http", "https"],
+        description="gRPC 通道允许的代理协议：gRPC 是 HTTP/2 + TLS，只能走 http CONNECT 隧道，"
+        "socks4 / socks5 / 无协议代理必然失败（取到就丢弃重取）",
+    )
+    pool_fail_streak_to_local: int = Field(
+        default=2,
+        description="gRPC 池代理连续多少次**连接失败**后改走专线：免费池对 HTTP/2 经常整片不可用，"
+        "按权重随机（1000:2）永远抽不回专线，每条请求都白等 30s 超时",
+    )
 
 
 class BiliSpaceMonitorConfig(BaseModel):

@@ -25,6 +25,7 @@ import random
 import re
 import time
 import uuid
+from pathlib import Path
 from dataclasses import dataclass, field
 from dataclasses import fields as dc_fields
 from datetime import datetime
@@ -47,6 +48,25 @@ from Utils.代理.SealedRequests import my_async_httpx
 IP_REGION_HEADER = "x-bili-metadata-ip-region"
 LEGAL_REGION_HEADER = "x-bili-metadata-legal-region"
 RECENT_REGION_HEADER = "x-bili-metadata-recent-region"
+
+
+def _load_region_fallback() -> str:
+    """真机样本里的 ip-region 默认值（见 docs/grpc_reverse_evidence）。
+
+    ``recent-region`` 是服务端按 buvid + 出口 IP 签发的 ES256 JWT（约 24h 有效），
+    客户端拿不到私钥，**无法本地生成，也不能跨设备共享**。它由
+    :meth:`DeviceEnv.fetch_region` 按每台设备领取，并随设备一起持久化到 Redis 设备池；
+    因此这里只保留 ip-region 默认值，recent-region 始终取自设备自身状态。
+    """
+    path = Path(__file__).with_name("region_fallback.json")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return str(payload.get(IP_REGION_HEADER) or "CN")
+    except (OSError, ValueError):
+        return "CN"
+
+
+DEFAULT_IP_REGION = _load_region_fallback()
 
 # recent-region 的 JWT 过期提前量（秒），避免在边界上刚好失效
 _EXPIRE_SKEW = 60
@@ -205,12 +225,12 @@ def _header(headers, name: str) -> str | None:
 class DeviceEnv:
     """一台设备的完整环境：身份 + 硬件 + 请求身份 + region。"""
 
-    # —— 硬件/系统（抓包机型：Redmi 23113RKC6C / Android 12 / 9.13.0 build 9130500）——
-    build: int = 9130500
-    inner_ver: str = "9130510"
+    # —— 硬件/系统（FIRERPA 真机：ONEPLUS A6000 / Android 11 / 9.19.0 build 9190400）——
+    build: int = 9190400
+    inner_ver: str = "9190400"
     device_model: str = "ONEPLUS A6000"
     osver: str = "11"
-    version_name: str = "9.13.0"
+    version_name: str = "9.19.0"
     brand: str = "OnePlus"
     channel: str = field(default_factory=lambda: random.choice(AppChannels))
     # —— 设备身份（一台设备一套，互不共享）——
@@ -228,9 +248,11 @@ class DeviceEnv:
     ua_http: str = ""
     ua_bapi: str = ""
     # —— region：服务端按 buvid 下发，属于这台设备自己 ——
-    ip_region: str | None = None
+    ip_region: str | None = DEFAULT_IP_REGION
     legal_region: str | None = None
     recent_region: str | None = None
+    # ticket 与 region 一样：服务端签发、按设备领取、随设备池持久化、按 exp 刷新
+    ticket: str | None = None
 
     def __post_init__(self) -> None:
         if not self.fp_remote:
@@ -280,6 +302,10 @@ class DeviceEnv:
             self.device_model = model
         if osver:
             self.osver = osver
+
+    def gen_trace_id(self) -> str:
+        """每次请求生成新的 ``x-bili-trace-id``（格式见模块级 :func:`gen_trace_id`）。"""
+        return gen_trace_id()
 
     def gen_ua(self, Dalvik: str | None = None) -> None:
         """生成三套 UA：gRPC(新格式) / buvid·老格式 HTTP / 普通 HTTP API(BiliDroid)。"""
@@ -400,6 +426,15 @@ class DeviceEnv:
             return False
         return True
 
+    def ticket_valid(self) -> bool:
+        """ticket 是否存在且未过期（过期即清掉），与 recent-region 同一套规则。"""
+        if not self.ticket:
+            return False
+        if is_expired(self.ticket):
+            self.ticket = None
+            return False
+        return True
+
     def learn_region(self, response_headers, trailers=None) -> dict[str, str]:
         """被动学习：从响应里读 region（先响应头、再 gRPC trailer）。
 
@@ -421,11 +456,13 @@ class DeviceEnv:
     def region_headers(self) -> list[tuple[str, str]]:
         """要回带的 region 请求头（顺序照 APK ``h.a``：ip → legal → recent）。
 
-        没学到（或 recent 已过期）就不带该头 —— 与冷启动 buvid/get 抓包一致。
+        - ``ip-region``：默认 CN，每台设备可独立覆盖（按出口 IP 学习）；
+        - ``legal-region``：只在确实学到时带；
+        - ``recent-region``：**只带本设备自己领取的 JWT**。该 token 由服务端按
+          buvid + 出口 IP 签发，无法本地生成也不能跨设备共享；领取/过期刷新走
+          :meth:`fetch_region`，结果随 DeviceEnv 一起进 Redis 设备池复用。
         """
-        headers = []
-        if self.ip_region:
-            headers.append((IP_REGION_HEADER, self.ip_region))
+        headers = [(IP_REGION_HEADER, self.ip_region or DEFAULT_IP_REGION)]
         if self.legal_region:
             headers.append((LEGAL_REGION_HEADER, self.legal_region))
         if self.recent_region_valid():
@@ -495,8 +532,8 @@ class DeviceEnv:
 
 def new_device_env(
     Dalvik: str | None = None,
-    version_name: str = "9.13.0",
-    build: int = 9130500,
+    version_name: str = "9.19.0",
+    build: int = 9190400,
     channel: str | None = None,
     brand: str = "OnePlus",
     ua: str | None = None,
@@ -508,7 +545,7 @@ def new_device_env(
     """
     device = DeviceEnv(
         build=build,
-        inner_ver=str(int(build) + 10),
+        inner_ver=str(int(build)),  # 真机 innerVer/build 相同（9190400）
         version_name=version_name,
         brand=brand,
         channel=channel or random.choice(AppChannels),

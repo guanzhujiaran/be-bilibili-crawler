@@ -2,6 +2,8 @@ import secrets
 import time
 from dataclasses import dataclass, asdict, field
 
+from CONFIG import CONFIG
+
 _352_cd = 30 * 60
 _max_used_times_one_round = 6
 
@@ -46,9 +48,11 @@ class MetaDataWrapper:
         是否需要删除
         :return:
         """
+        # 352 阈值走配置（``GRPC_DEVICE__MAX_352_TIMES``）：默认 1，即第一次被风控
+        # 拒绝就重建 metadata —— 原来的硬编码 3 会让同一台已被标记的设备白白多打两次。
         if (
             self.expire_ts < int(time.time())
-            or self.times_352 >= 3
+            or self.times_352 >= max(1, CONFIG.grpc_device.max_352_times)
             or self.used_times >= _max_used_times_one_round
         ):
             return True

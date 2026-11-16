@@ -43,13 +43,25 @@ async def handle_proxy_succ(proxy_tab: ProxyTab | None):
         await proxy_health_store.record_success(key)
 
 
-async def handle_proxy_352(proxy_tab: ProxyTab | None):
-    """-352（风控挑战）：按临时状态处理，分数仍 +10，健康侧按**前缀级**风控长冷却。"""
+async def handle_proxy_352(
+    proxy_tab: ProxyTab | None, mark_db_invalid: bool = False
+):
+    """-352（风控挑战）：按临时状态处理，健康侧按**前缀级**风控长冷却。
+
+    :param mark_db_invalid: 是否把 ``status=-352`` 写回 MySQL。
+
+        - ``False``（gRPC 通道默认）：352 是**出口风控**而不是「代理坏了」。
+          写回 MySQL 会让该代理永久不满足 ``status==0``（候选查询只取 0），
+          几轮 352 就能把整个池子打空；这里只在 Redis 健康度上做前缀冷却
+          （``ProxyFailureKind.RISK_CONTROL``），代理行本身保持可用。
+        - ``True``：沿用 HTTP 通道既有行为（412/352 都置 -352 并等 ``refresh_proxy`` 复位）。
+    """
     if not proxy_tab:
         sql_log.warning("handle_proxy_352 called with None proxy_tab.")
         return
-    proxy_tab.status = -352
-    await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
+    if mark_db_invalid:
+        proxy_tab.status = -352
+        await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
     key = _pool_proxy_key(proxy_tab)
     if key:
         await proxy_health_store.record_failure(key, ProxyFailureKind.RISK_CONTROL)

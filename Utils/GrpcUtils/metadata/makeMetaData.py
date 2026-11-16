@@ -144,8 +144,8 @@ async def make_metadata(
     access_key,
     brand="OnePlus",
     Dalvik="Dalvik/2.1.0 (Linux; U; Android 11; ONEPLUS A6000 Build/RKQ1.201217.002)",
-    version_name="9.13.0",
-    build=9130500,
+    version_name="9.19.0",
+    build=9190400,
     channel=None,
     proxy=None,
     mid=0,
@@ -189,9 +189,12 @@ async def make_metadata(
         ("content-type", "application/grpc"),
         ("grpc-accept-encoding", "identity, deflate, gzip"),
         ("grpc-encoding", "gzip"),
-        ("grpc-timeout", "8S"),
+        # FIRERPA 真机抓包：7990m（7990 毫秒），不是 8S
+        ("grpc-timeout", "7990m"),
         ("te", "trailers"),
-        ("user-agent", device.ua),
+        # gRPC 的 UA = C-core token + ua_http（见 docs/grpc_reverse_evidence）。
+        # device.ua 是 ignet_http/... ct/1 那套，不能用于这里。
+        ("user-agent", f"grpc-c++/1.66.2 {device.ua_http}"),
         ("x-bili-device-bin", device_info_bytes),
         (
             "x-bili-fawkes-req-bin",
@@ -206,49 +209,36 @@ async def make_metadata(
         ),
         # 引擎标识：抓包中 gRPC over HTTP/2 固定为 1；服务端不校验，可安全省略
         ("x-bili-moss-engine-type", "1"),
-        # 抓包为 WIFI 且不带 oid（oid 仅免流场景下发）；success_rate 是客户端上报的采样值
-        (
-            "x-bili-network-bin",
-            device.network_header(success_rate=random.uniform(0.95, 0.99)),
-        ),
+        # 抓包为 WIFI 且不带 oid；success_rate = -1.0 表示未采样（真机实测值）
+        ("x-bili-network-bin", device.network_header(success_rate=-1.0)),
         ("x-bili-restriction-bin", Restriction(teenagers_age=16).SerializeToString()),
         ("x-bili-ticket", ""),
-        # 抓包未发送 x-bili-trace-id，故不发送（HTTP 侧仍会带）
+        # FIRERPA 抓包 22/22 都带 trace-id：<32hex>:<后16hex>:0:0
+        ("x-bili-trace-id", device.gen_trace_id()),
     )
     try:
         await active_buvid(device, proxy=proxy)
     except Exception as e:
         # 失败不影响后续 ticket 流程，但必须留痕，不能静默吞掉
         BiliGrpcApi_logger.error(f"激活buvid失败：{type(e).__name__}\t{e}")
-    bili_ticket_resp = await get_bili_ticket(
-        device, device_info=device_info_bytes, md=metadata, proxy=proxy
-    )
-    if bili_ticket_resp:
+    # ticket / region 统一走一套：服务端签发 → DeviceEnv 缓存 → 设备池持久化 → 按 exp 刷新。
+    await ensure_credentials(device, device_info_bytes, metadata, proxy=proxy)
+
+    # 回带本设备缓存的凭证：ticket 替换占位，region 按 ip → legal → recent。
+    if device.ticket_valid():
         metadata = tuple(
-            (k, bili_ticket_resp.ticket if k == "x-bili-ticket" else v)
-            for k, v in metadata
+            (k, device.ticket if k == "x-bili-ticket" else v) for k, v in metadata
         )
-    # region 属于设备：没有 recent-region 就让它自己去领一次
-    # （抓包证实由 GET /x/resource/show/tab/v2 的响应头下发）
-    if not device.recent_region_valid():
-        try:
-            learned = await device.fetch_region(proxy=proxy)
-            if learned:
-                BiliGrpcApi_logger.info(f"tab/v2 学到 region：{sorted(learned)}")
-        except Exception as e:
-            # 领不到不影响主流程，但必须留痕
-            BiliGrpcApi_logger.error(
-                f"tab/v2 获取 region 失败：{type(e).__name__}\t{e}"
-            )
-    # 设备回带自己学到的 region 头（ip → legal → recent，没学到就不带）
-    region_headers = device.region_headers()
+    credential_headers = device.region_headers()
     forced_recent = os.environ.get("BILI_RECENT_REGION", "")
-    if forced_recent and not device.recent_region_valid():
-        region_headers = [
-            (k, v) for k, v in region_headers if k != RECENT_REGION_HEADER
-        ] + [(RECENT_REGION_HEADER, forced_recent)]
-    if region_headers:
-        metadata = metadata + tuple(region_headers)
+    if forced_recent:
+        credential_headers = [
+            (k, forced_recent if k == RECENT_REGION_HEADER else v)
+            for k, v in credential_headers
+        ]
+        if not any(k == RECENT_REGION_HEADER for k, _ in credential_headers):
+            credential_headers.append((RECENT_REGION_HEADER, forced_recent))
+    metadata = metadata + tuple(credential_headers)
     if access_key:
         metadata = metadata + (("authorization", f"identify_v1 {access_key}"),)
 
@@ -262,12 +252,12 @@ async def make_metadata(
         app_build=device.build,
         channel=device.channel,
         osver=device.osver,
-        ticket=bili_ticket_resp.ticket if bili_ticket_resp else "",
+        ticket=device.ticket or "",
         brand=device.brand,
         session_id=device.session_id,
         device=device,
     )
-    return metadata, bili_ticket_resp, metadata_basic_info
+    return metadata, GetTicketResponse(ticket=device.ticket or ""), metadata_basic_info
 
 
 def is_useable_Dalvik(Dalvik: str):
@@ -276,8 +266,8 @@ def is_useable_Dalvik(Dalvik: str):
     :param Dalvik:
     :return:
     """
-    device_model = "".join(re.findall("Android.*?\d+; (.*?) (?:Build|MIUI)", Dalvik))
-    osver = "".join(re.findall("Android (.*?[\w]);", Dalvik))
+    device_model = "".join(re.findall(r"Android.*?\d+; (.*?) (?:Build|MIUI)", Dalvik))
+    osver = "".join(re.findall(r"Android (.*?[\w]);", Dalvik))
     if device_model and osver:
         return True
     else:
@@ -734,6 +724,41 @@ async def get_bili_ticket(
             f"不降级到直连 / 公共池）：{type(e).__name__}\t{e}"
         )
         raise
+
+
+async def ensure_credentials(
+    device: DeviceEnv, device_info: bytes, md, proxy=None
+) -> None:
+    """按设备统一领取 ticket 与 region（服务端签发，本地只缓存与回带）。
+
+    ``get_bili_ticket`` 的响应头会顺带下发 region（APK: kntr.base.region.impl.h.b），
+    所以一次 GetTicket 请求通常同时刷新两个凭证；只有它没下发 region 时才回退
+    到 ``tab/v2``。两者都写在 ``DeviceEnv`` 上随设备池持久化，按 JWT 的 ``exp``
+    过期刷新，过期时由 :meth:`DeviceEnv.ticket_valid` / ``recent_region_valid`` 判定。
+    """
+    if not device.ticket_valid():
+        resp = await get_bili_ticket(device, device_info=device_info, md=md, proxy=proxy)
+        if resp and resp.ticket:
+            device.ticket = resp.ticket
+            BiliGrpcApi_logger.info(f"设备 {device.buvid} 领取 ticket 成功")
+        else:
+            BiliGrpcApi_logger.warning(f"设备 {device.buvid} 未领到 ticket")
+
+    if not device.recent_region_valid():
+        try:
+            learned = await device.fetch_region(proxy=proxy)
+            if learned:
+                BiliGrpcApi_logger.info(
+                    f"设备 {device.buvid} 从 tab/v2 补领 region：{sorted(learned)}"
+                )
+            if not device.recent_region_valid():
+                BiliGrpcApi_logger.warning(
+                    f"设备 {device.buvid} 未领到 recent-region，本次请求不带该头"
+                )
+        except Exception as e:
+            BiliGrpcApi_logger.error(
+                f"设备 {device.buvid} tab/v2 补领 region 失败：{type(e).__name__}\t{e}"
+            )
 
 
 async def active_buvid(device: DeviceEnv, proxy=None, build=28799195):
