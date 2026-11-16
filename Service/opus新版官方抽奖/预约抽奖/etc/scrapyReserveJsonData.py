@@ -19,6 +19,7 @@ from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import ReserveScrapyRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus, WorkerModel
+from Service.BaseCrawler.retry_queue import RetryTaskType
 
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info
 from Utils.GrpcUtils.response.check_resp import ReserveRelationInfoResponseError
@@ -66,6 +67,8 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
     Config = ReserveScrapyRobotConfig
     stats_plugin: StatsPlugin | None = None
     null_stop_plugin: SequentialNullStopPlugin | None = None
+    # 至少一次：失败的 sid 必须落 crawl_failed_task，下一轮优先补跑
+    retry_task_type = RetryTaskType.RESERVE_SCRAPY.value
 
     def __init__(self):
         # region 统计类数据
@@ -201,6 +204,12 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
     async def handle_fetch(self, params: ReserveParams) -> WorkerStatus:
         return await self.resolve_reserve(params.reserve_id)
 
+    def retry_business_id(self, params: ReserveParams | None) -> int | None:
+        return params.reserve_id if params is not None else None
+
+    def retry_params(self, business_id: int) -> ReserveParams:
+        return ReserveParams(reserve_id=business_id)
+
     async def write_in_file(self):
         async def my_write(path_name, content_list: list, write_mode="a+"):
             async with aiofiles.open(path_name, mode=write_mode, encoding="utf-8") as f:
@@ -325,7 +334,10 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
                 self._log_and_record(
                     404, dymsg, dymessage, resp_dict, self.list_getfail
                 )
-                return WorkerStatus.fail
+                # 业务码 404 = 该预约不存在（已删除 / 从未创建），属于**终态**而不是
+                # 可重试失败：若按 fail 处理会永远 pending 在重试队列里，把连续水位
+                # 卡在它前面，导致每轮都从这条 sid 重爬整段。
+                return WorkerStatus.nullData
             elif dycode == 500207:
                 self.list_deleted_maybe.append(resp_dict)
                 return WorkerStatus.nullData
@@ -354,7 +366,9 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')}\trid:{sid}\n"
                     f"直播预约[{sid}]获取失败，响应不匹配！{req1_dict}"
                 )
-                return WorkerStatus.fail
+                # code=0 却没回这条 sid：等价于「该预约已不存在」，属终态（同 404），
+                # 不能按可重试失败处理，否则重试队列会永久卡住连续水位。
+                return WorkerStatus.nullData
 
             dynamic_timestamp = list_data.get(sid_str).get("stime")
             if sid > self.dynamic_timestamp.ids and dynamic_timestamp:
@@ -401,6 +415,8 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         )
 
     async def main(self):
+        # 先取「上一轮没写成功」的 sid：它们在任务生成器之前入队，不依赖游标位置
+        retry_params = await self.load_retry_params()
         await self._params_init()
         now_round: TReserveRoundInfo = await self.sqlHelper.get_latest_reserve_round()
         self.round_start_ts = (
@@ -416,7 +432,7 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
         )
         async with self.dynamic_ts_lock:
             self.dynamic_timestamp = DynamicTimestampInfo()
-        await self.run(self.reserve_worker_model.params)
+        await self.run(self.reserve_worker_model.params, pre_params=retry_params)
         # 加上这个才是最终的ids，否则ids并不会改变
         # 注意：stats_plugin.end_params 是接口用的可序列化摘要（params 已被投影），
         # 这里要读原始 WorkerModel 的 params，必须用 end_worker_model。
@@ -428,11 +444,21 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
             < self.EndTimeSeconds
             else -self.null_time_quit
         )
-        finnal_rid = str(
-            self.reserve_worker_model.params.reserve_id
-            - self.rollback_num
-            - self.none_num
-        )
+        # 连续水位：游标只能推进到「最小 pending - 1」。
+        # 旧算法（末尾 sid - rollback - none_num）等价于「按最后成功的 id 起跳」，
+        # 中间任何一条失败都会被越过；现在失败的 sid 一定在重试队列里，
+        # 用它的最小值当闸门即可，无需再靠回滚数量蒙。
+        pending_min = await self.pending_min_business_id()
+        if pending_min is not None:
+            finnal_rid = str(pending_min - 1)
+            reserve_lot_logger.warning(
+                f"重试队列还有未写入成功的 sid（最小 pending={pending_min}），"
+                f"本轮游标回退到 {finnal_rid}，下一轮从该位置继续（不越过失败 sid）"
+            )
+        else:
+            finnal_rid = str(
+                self.reserve_worker_model.params.reserve_id - self.rollback_num
+            )
         reserve_lot_logger.info(
             f"{self.reserve_worker_model}已经达到{self.null_stop_plugin.sequential_null_count}/{self.null_time_quit}条data为null信息或者最近预约时间只剩"
             f"{self.dynamic_timestamp.get_time_str_until_now()}\n"

@@ -10,6 +10,7 @@ from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import TopicRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
+from Service.BaseCrawler.retry_queue import RetryTaskType
 
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_web_topic
 from Service.opus新版官方抽奖.Model.BaseLotModel import BaseSuccCounter
@@ -34,6 +35,12 @@ class TopicParams(CustomBaseModelHashable):
         return hash(self.topic_id)
 
 
+#: 话题接口的**终态**业务码：该话题不存在 / 已删除，重试也不会变。
+#: 只有这些码才记 ``nullData``；其余非 0 码（-352 / -412 / -500 / 超时等）都是
+#: 可重试失败，必须返回 fail，否则会被当成「空数据」直接丢掉（2026-11-16 的教训）。
+TOPIC_TERMINAL_CODES: frozenset[int] = frozenset({404, -404})
+
+
 class SuccCounter(BaseSuccCounter):
     first_topic_id = 0
     latest_succ_topic_id: int = 0  # 最后获取成功的话题id
@@ -47,6 +54,8 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
     Config = TopicRobotConfig
     stats_plugin: StatsPlugin | None = None
     null_stop_plugin: SequentialNullStopPlugin | None = None
+    # 至少一次：失败的话题 id 必须落 crawl_failed_task，下一轮优先补跑
+    retry_task_type = RetryTaskType.TOPIC.value
 
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
@@ -66,6 +75,12 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
 
     async def handle_fetch(self, params: TopicParams) -> WorkerStatus:
         return await self.pipeline(params.topic_id)
+
+    def retry_business_id(self, params: TopicParams | None) -> int | None:
+        return params.topic_id if params is not None else None
+
+    def retry_params(self, business_id: int) -> TopicParams:
+        return TopicParams(topic_id=business_id)
 
     def __init__(self):
         self.sem_limit = 1
@@ -213,7 +228,25 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             if click_area_card:
                 tClickAreaCard = TClickAreaCard(json_data=click_area_card)
         else:
-            return WorkerStatus.nullData
+            # 非 0 应答分两类：
+            # - 话题确实不存在（终态）→ nullData，否则会永久 pending 在重试队列里；
+            # - 其余（风控 / 服务端 5xx / 返回体异常）→ fail，落 crawl_failed_task 重试。
+            code = resp.get("code")
+            try:
+                code_int = int(code)
+            except (TypeError, ValueError):
+                code_int = None
+            if code_int in TOPIC_TERMINAL_CODES:
+                self.log.warning(
+                    f"话题不存在（code={code} message={resp.get('message')}），"
+                    f"按空数据记终态：topic_id:{topic_id}"
+                )
+                return WorkerStatus.nullData
+            self.log.error(
+                f"获取话题失败（code={code} message={resp.get('message')}），"
+                f"按可重试失败处理（会落 crawl_failed_task）：topic_id:{topic_id}"
+            )
+            return WorkerStatus.fail
         await self.sql.add_TTopic(
             tTopic,
             tTopicItem,
@@ -238,10 +271,15 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
 
     async def main(self, start_topic_id=0):
         try:
+            # 先取「上一轮没写成功」的话题 id：它们在任务生成器之前入队
+            retry_params = await self.load_retry_params()
             self.get_failed_topic_ids = await self.sql.get_recent_failed_topic_id(
                 self._max_stop_count + self.sem_limit + 5000
             )
-            await self.run(TopicParams(topic_id=self.get_failed_topic_ids[0]))
+            await self.run(
+                TopicParams(topic_id=self.get_failed_topic_ids[0]),
+                pre_params=retry_params,
+            )
 
             self.has_get_failed_topic_ids = True  # 获取失败的话题完成
             self._cur_stop_times = 0

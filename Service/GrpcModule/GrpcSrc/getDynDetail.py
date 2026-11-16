@@ -15,6 +15,7 @@ from Models.base.custom_pydantic import CustomBaseModelHashable
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import DynDetailScrapyConfig
 from Service.BaseCrawler.model.base import WorkerStatus
+from Service.BaseCrawler.retry_queue import RetryTaskType
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_lot_notice, reserve_relation_info
 from Service.GrpcModule.Grpc.grpc_api import bili_grpc
 from Service.GrpcModule.GrpcSrc.DynObjectClass import dynAllDetail
@@ -61,6 +62,8 @@ class DynDetailParams(CustomBaseModelHashable):
 class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
     Config = DynDetailScrapyConfig
     status_plugin: StatsPlugin | None = None
+    # 至少一次：失败的 rid 必须落 crawl_failed_task，下一轮优先补跑（否则断点会越过它）
+    retry_task_type = RetryTaskType.DYN_DETAIL.value
 
     def __init__(self):
         self.offset = 10  # 每次获取rid的数量，数值最好不要超过10，太大的话传输会出问题
@@ -102,6 +105,12 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         if str(detail.get("dynamic_id")) == "-1":
             return WorkerStatus.nullData
         return WorkerStatus.complete
+
+    def retry_business_id(self, params: DynDetailParams | None) -> int | None:
+        return params.rid if params is not None else None
+
+    def retry_params(self, business_id: int) -> DynDetailParams:
+        return DynDetailParams(rid=business_id)
 
     async def key_params_gen(
         self, latest_params: DynDetailParams = None
@@ -638,6 +647,15 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         """
         now = int(time.time())
         keep_days = self._backfill_days
+        # 连续水位优先：只要重试队列里还有没写成功的 rid，本轮就必须从「最小 pending - 1」
+        # 开始扫，而不是从「最后成功的 id」开始 —— 后者会直接越过失败 rid（丢数据）。
+        pending_min = await self.pending_min_business_id()
+        if pending_min is not None:
+            self.log.warning(
+                f"重试队列还有未写入成功的 rid，本轮从 rid={pending_min - 1} 起重扫"
+                f"（最小 pending={pending_min}），不再从「最后成功 id」起跳"
+            )
+            return pending_min - 1
         breakpoint = await self.Sqlhelper.get_latest_rid_breakpoint()
         if breakpoint is not None and breakpoint.latest_dynamic_ts is not None:
             lag = now - breakpoint.latest_dynamic_ts
@@ -673,6 +691,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
 
     async def main(self):
         try:
+            # 先取「上一轮没写成功」的 rid：它们在任务生成器之前入队，
+            # 不依赖游标位置，代理恢复后一定会被重跑（至少一次）。
+            retry_params = await self.load_retry_params()
             latest_rid = await self._resolve_latest_rid()
             if latest_rid is None:
                 return
@@ -696,7 +717,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             self.succ_counter.is_running = True
             self.log.info("开始执行获取动态详情")
             self.log.debug(f"爬虫，启动！最后的rid为：{latest_rid}\t往前回滚500个rid！")
-            task3 = asyncio.create_task(self.run(DynDetailParams(rid=latest_rid)))
+            task3 = asyncio.create_task(
+                self.run(DynDetailParams(rid=latest_rid), pre_params=retry_params)
+            )
             task_list.append(task3)
             await asyncio_gather(*task_list, log=self.log)
             self.log.error("爬取动态任务全部完成！")

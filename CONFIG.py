@@ -364,6 +364,28 @@ class ProxyHealthConfig(BaseModel):
     fast_max_in_flight: int = 2
     # ---- slow 档探测：按比例掺入 cold / suspect 代理 ----
     cold_probe_ratio: float = 0.15
+    # ---- slow 档（免费池默认车道）取用闸门：整体对齐老版本 select_proxy("rand") ----
+    # 老版本口径是「随机取一条 status 可用的就用」。健康状态机现在只做**记账与排序偏好**
+    # （record_success / record_failure 照常写），下面三个开关决定它是否还要「挡人」：
+    #
+    # - ``slow_skip_cooled_address=True``（默认开）：412/352 冷却仍然生效 —— 刚被风控的
+    #   出口不该立刻再用；但**冷却不能变成空池理由**，候选全在冷却时会回退（见
+    #   ``async_proxy_op_alchemy_mysql_ver._pick_proxy_by_tier_detailed``）；
+    # - 网段冷却 / 段级在途 / dead 默认**不挡**：2026-11-16 事故里 hot 集合 15727 条中
+    #   随机 25 条有 22 条 ewma=0.0、73 个网段在冷却，这三道闸门叠加后 8 小时
+    #   3877 次 ProxyRetryBudgetExhausted(-5)，而池子里明明有大量 status 可用的行。
+    #
+    # 需要更严格（网段冷却也挡）时打开对应开关即可，无需改代码。
+    slow_skip_cooled_address: bool = Field(
+        default=True,
+        description="slow 档是否优先跳过「冷却中」的地址（默认跳，但全命中时回退）",
+    )
+    slow_skip_cooled_prefix: bool = Field(
+        default=False, description="slow 档是否跳过「冷却中 / 段内在途打满」的网段（默认不跳）"
+    )
+    slow_skip_dead: bool = Field(
+        default=False, description="slow 档是否跳过 dead 状态代理（默认不跳，冷却仍由上面两个开关控制）"
+    )
     # ---- 选代理：一次随机主键起点最多取多少候选行（保持 O(1)，禁止 ORDER BY）----
     # 12 条 / 3 次 = 3 次 MySQL 往返（实测 80ms）；32 条 / 2 次 ≈ 34ms 且候选更多，
     # 单条查询的成本主要是往返而不是行数，所以宁可在一次查询里多取几条。
@@ -410,9 +432,10 @@ class ProxyHealthConfig(BaseModel):
     batch_write_lock_wait: float = Field(
         default=2.0, description="抢批量写建议锁的最长等待（秒）：等不到就跳过本轮"
     )
-    # ---- 背压：已验证池（hot + warm）低于阈值时按比例收缩 slow 并发（fast 不受影响）----
-    # 口径不含 cold：cold 只是「还没验证」，把它算成池子不足会把 slow 车道（dyn /
-    # other_space 都跑在这里）压到最低并发，反而拖慢抓取。
+    # ---- 背压参数（**已停用**，2026-11-16 起不再按 hot/warm 收缩并发）----
+    # 取免费池回退到「随机一条 status 可用的就用」后，hot/warm 不再代表「可用量」，
+    # 按它收缩只会误伤正常抓取；老版本也没有这个机制。字段保留是为了 env 兼容
+    # （``PROXY_HEALTH__HOT_LOW_WATERMARK`` 之类不需要再改，但也不再起作用）。
     hot_low_watermark: int = 200
     slow_shrink_min_ratio: float = 0.1
     backpressure_interval: int = 15

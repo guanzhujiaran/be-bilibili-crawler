@@ -36,13 +36,17 @@ async def get_available_proxy(
     tier: ProxyTier | None = None,
     exclude: frozenset[str] | set[str] | None = None,
 ) -> tuple[ProxyTab | None, bool]:
-    """按档位从 MySQL 随机取一条代理；取不到就触发后台补池并立即返回 None。
+    """按档位从 MySQL 随机取一条代理；slow 档口径接近老版本 ``select_proxy("rand")``。
 
-    取代理只有一条路径：``proxy_tab`` 随机（随机主键起点，实测 ~15ms），
-    健康状态（冷却 / EWMA / 在途并发）由 ``select_proxy`` 在候选批里筛选。
+    取代理只有一条路径：``proxy_tab`` 随机（随机主键起点，实测 ~15ms）。
+    slow 档（爬虫默认车道）默认随机取一条 status 可用的就用：地址冷却**优先规避**
+    （412/352 保护，全在冷却时回退，绝不空池），EWMA / 段级冷却 / 段级在途 / dead
+    只记账与排序（见 ``ProxyHealthConfig.slow_skip_*`` 开关）。因此返回 None 的语义
+    只剩「库里真的没有 status 可用的行，或候选全被本任务的失败代理 / 前缀排除」；
+    fast 档仍保留严格准入，需要快速失败时显式启用。
     Redis 代理池（zset_bili_proxy / zset_bili_proxy_fresh）已于 2026-11-10 废弃。
 
-    :param tier: 代理档位；None = 跟随当前爬虫上下文（默认 fast）
+    :param tier: 代理档位；None = 跟随当前上下文的档位（无上下文默认 slow）
     :param exclude: 本次任务内已失败的代理串（换代理用）
     :return: (代理行, 是否来自 available_proxy)；第二个值恒为 False，仅为兼容旧调用签名。
     """
@@ -56,7 +60,12 @@ async def get_available_proxy(
         proxy_tab = None
     if proxy_tab:
         return proxy_tab, False
-    sql_log.debug(f"没有符合条件的代理（tier={effective_tier.value}），已触发后台补池")
+    # slow 档的冷却/EWMA 都会回退，所以走到这里只可能是：池子真空（没有 status 可用行），
+    # 或候选全被本任务内失败的代理 / 前缀排除。
+    sql_log.debug(
+        f"代理池没有 status 可用的行（tier={effective_tier.value}，"
+        f"已排除 {len(exclude or ())} 个本任务失败代理），已触发后台补池"
+    )
     _trigger_proxy_fetch()
     return None, False
 

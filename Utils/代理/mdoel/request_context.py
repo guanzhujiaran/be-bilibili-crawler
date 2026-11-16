@@ -53,7 +53,13 @@ class ProxyAttemptState:
         self._excluded.clear()
 
 
-_tier_ctx: ContextVar[ProxyTier] = ContextVar("proxy_tier_ctx", default=ProxyTier.FAST)
+# 默认档位 = slow（2026-11-16 起）：爬虫由 ``CrawlerConfig.proxy_tier`` 显式设置，
+# 这里影响的是**没有爬虫上下文**的调用（HTTP 路由 / RPC / 脚本直接调 Bapi）。
+# 这些路径以前落到 fast，池子一抖就是「6 次重试 → ProxyRetryBudgetExhausted(-5)」，
+# 与爬虫侧「随机取一条 status 可用的就用」的口径不一致；统一成 slow 后，
+# 拿不到代理会退避等池子恢复，而不是把整条请求打成失败。
+# 需要快速失败的调用方显式传 ``RequestConf(tier=ProxyTier.FAST)`` 或 ``local_exit_only``。
+_tier_ctx: ContextVar[ProxyTier] = ContextVar("proxy_tier_ctx", default=ProxyTier.SLOW)
 _attempt_ctx: ContextVar[ProxyAttemptState | None] = ContextVar(
     "proxy_attempt_ctx", default=None
 )
@@ -79,7 +85,7 @@ def resolve_tier(request_conf: RequestConf | None = None) -> ProxyTier:
     """解析本次请求的代理档位。
 
     优先级：``RequestConf.tier`` > 旧参数 ``is_use_available_proxy``（探测档）
-    > 当前爬虫上下文 > fast。
+    > 当前爬虫上下文 > slow（无上下文时的默认，与爬虫侧口径一致）。
     """
     if request_conf is not None:
         if request_conf.tier is not None:

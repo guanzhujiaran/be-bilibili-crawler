@@ -295,7 +295,7 @@ async def test_fast_tier_accepts_hot_proxy(monkeypatch):
 
 
 async def test_fast_tier_rejects_cooling_and_busy(monkeypatch):
-    """冷却中 / 在途并发打满的代理不能进 fast 档。"""
+    """冷却中 / 在途并发打满的代理不能进 fast 档（fast 仍是严格准入，爬虫默认不用它）。"""
     cooling = _FakeProxyRow(key="http://cooling:1")
     busy = _FakeProxyRow(key="http://busy:1")
     session = _FakeSession([[cooling, busy], [cooling, busy], [cooling, busy]])
@@ -330,9 +330,15 @@ async def test_slow_tier_accepts_cold_proxy(monkeypatch):
     assert await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW) is row
 
 
-async def test_slow_tier_rejects_dead(monkeypatch):
+async def test_slow_tier_dead_state_is_not_a_gate(monkeypatch):
+    """slow 档默认口径（对齐老版本）：``dead`` 只记账不挡人，仍然可取。
+
+    ``dead`` 是健康状态机里的档位（连续失败 18 次），不是 MySQL 的 status；
+    老版本只要 ``proxy_tab.status=0`` 就会用。需要严格时开
+    ``proxy_health.slow_skip_dead`` / ``slow_skip_cooled_address``。
+    """
     row = _FakeProxyRow(key="http://dead:1")
-    session = _FakeSession([[row], [row], [row]])
+    session = _FakeSession([[row] for _ in range(8)])
     _stub_health(
         monkeypatch,
         mapping={
@@ -342,7 +348,59 @@ async def test_slow_tier_rejects_dead(monkeypatch):
     monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
     monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
 
-    assert await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW) is None
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW) is row
+
+
+async def test_slow_tier_prefers_non_cooling_proxy(monkeypatch):
+    """slow 档默认优先规避地址冷却（412/352 保护）：有未冷却候选就不选冷却中的。"""
+    cooling = _FakeProxyRow(key="http://cooling:1")
+    fresh = _FakeProxyRow(key="http://fresh:1", success_times=0, score=10)
+    session = _FakeSession([[cooling, fresh] for _ in range(8)])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://cooling:1": ProxyHealthRecord(
+                state=ProxyHealthState.HOT,
+                ewma_success=1.0,
+                cooldown_until=10**12,
+            ),
+            "http://fresh:1": ProxyHealthRecord(
+                state=ProxyHealthState.COLD, ewma_success=0.0
+            ),
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW) is fresh
+
+
+async def test_slow_tier_falls_back_when_all_candidates_cooling(monkeypatch):
+    """候选全在冷却时**不能空池**：回退到最快解冻的冷却候选（至少一次优先）。"""
+    cooling_a = _FakeProxyRow(key="http://cooling-a:1")
+    cooling_b = _FakeProxyRow(key="http://cooling-b:1")
+    session = _FakeSession([[cooling_a, cooling_b] for _ in range(8)])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://cooling-a:1": ProxyHealthRecord(
+                state=ProxyHealthState.HOT,
+                ewma_success=1.0,
+                cooldown_until=10**12,
+            ),
+            "http://cooling-b:1": ProxyHealthRecord(
+                state=ProxyHealthState.WARM,
+                ewma_success=0.5,
+                cooldown_until=10**12 - 1,
+            ),
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    proxy = await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW)
+
+    assert proxy in (cooling_a, cooling_b)
 
 
 async def test_fast_uses_verified_pool_without_sql_scan(monkeypatch):
@@ -480,8 +538,8 @@ def _prefix_key(ip: str) -> str:
     return proxy_prefix_of(f"http://{ip}:8080")
 
 
-async def test_same_prefix_cooling_blocks_all_addresses(monkeypatch):
-    """同 /24 内一个代理 412 → 整段冷却：同段其它地址也不能再被选中。"""
+async def test_same_prefix_cooling_blocks_all_addresses_for_fast(monkeypatch):
+    """fast 档：同 /24 内一个代理 412 → 整段冷却，同段其它地址也不能再被选中。"""
     from CONFIG import CONFIG
 
     sibling_a = _FakeProxyRow(key="http://45.74.31.7:8080")
@@ -510,6 +568,41 @@ async def test_same_prefix_cooling_blocks_all_addresses(monkeypatch):
     monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
 
     assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
+
+
+async def test_same_prefix_cooling_does_not_empty_pool_for_slow(monkeypatch):
+    """slow 档默认口径：网段冷却只记账，整段冷却时仍从同段返回一条（不空池）。
+
+    前缀冷却继续参与健康记账（``record_failure`` 会给该段降权），但不会把
+    「整段冷却」翻译成「没有可用代理」—— 线上 fast 空池的主因之一。
+    """
+    sibling_a = _FakeProxyRow(key="http://45.74.31.7:8080")
+    sibling_b = _FakeProxyRow(key="http://45.74.31.99:8080")
+    session = _FakeSession([[sibling_a, sibling_b] for _ in range(8)])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            "http://45.74.31.7:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+            "http://45.74.31.99:8080": ProxyHealthRecord(
+                state=ProxyHealthState.HOT, ewma_success=1.0
+            ),
+        },
+        prefix_records={
+            _prefix_key("45.74.31.7"): ProxyPrefixRecord(
+                state=ProxyHealthState.QUARANTINE,
+                cooldown_until=10**12,
+                risk_level=1,
+            )
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    proxy = await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW)
+
+    assert proxy in (sibling_a, sibling_b)
 
 
 async def test_other_prefix_still_selectable_when_one_cools(monkeypatch):
@@ -562,8 +655,8 @@ async def test_failed_proxy_blocks_its_prefix(monkeypatch):
     )
 
 
-async def test_prefix_inflight_limit_blocks_segment(monkeypatch):
-    """同段在途打满（>= prefix_inflight_limit）→ 不再往该段压并发。"""
+async def test_prefix_inflight_limit_blocks_segment_for_fast(monkeypatch):
+    """fast 档仍遵守段级在途上限（同段在途打满不再加压）。"""
     from CONFIG import CONFIG
 
     limit = CONFIG.proxy_health.prefix_inflight_limit
@@ -584,8 +677,8 @@ async def test_prefix_inflight_limit_blocks_segment(monkeypatch):
     assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
 
 
-async def test_verified_pool_respects_prefix_cooling(monkeypatch):
-    """已验证分档取样也要过前缀闸门：hot 里同段整片冷却时不能返回它。"""
+async def test_verified_pool_respects_prefix_cooling_for_fast(monkeypatch):
+    """fast 档的已验证分档取样也要过前缀闸门（hot 里同段整片冷却时不返回）。"""
     row = _FakeProxyRow(key="http://45.74.31.7:8080")
     _stub_health(
         monkeypatch,
@@ -607,6 +700,73 @@ async def test_verified_pool_respects_prefix_cooling(monkeypatch):
     monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
 
     assert await SQLHelper.select_random_proxy(tier=ProxyTier.FAST) is None
+
+
+# ---------------------------------------------------------------------------
+# slow 档默认口径（对齐老版本 select_proxy("rand")，2026-11-16 代理池故障后）
+# ---------------------------------------------------------------------------
+
+
+async def test_slow_tier_returns_proxy_when_all_health_zero(monkeypatch):
+    """线上复现场景：hot 集合里 22/25 条 ewma=0.0 → fast 取不到，slow 必须给代理。"""
+    rows = [
+        _FakeProxyRow(key=f"http://10.0.0.{i}:8080", success_times=0, score=0)
+        for i in range(1, 6)
+    ]
+    session = _FakeSession([rows for _ in range(8)])
+    _stub_health(
+        monkeypatch,
+        mapping={
+            row.computed_proxy_str: ProxyHealthRecord(
+                state=ProxyHealthState.COLD, ewma_success=0.0
+            )
+            for row in rows
+        },
+    )
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    proxy = await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW)
+
+    assert proxy in rows
+
+
+async def test_slow_tier_pick_keeps_random_id_start(monkeypatch):
+    """slow 档取池同样必须 O(1)：随机主键起点 + 升序 LIMIT，禁止 ORDER BY RAND。"""
+    row = _FakeProxyRow(key="http://slow:1", success_times=0, score=0)
+    session = _FakeSession([[row]])
+    _stub_health(monkeypatch)
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert await SQLHelper.select_random_proxy(tier=ProxyTier.SLOW) is row
+
+    compiled = str(
+        session.statements[-1].compile(
+            dialect=mysql_dialect.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    assert "ORDER BY proxy_tab.proxy_id" in compiled
+    assert "RAND" not in compiled.upper()
+    assert "LIMIT" in compiled.upper()
+    # 随机主键起点 = 主键范围下界比较，不是全表扫描
+    assert "proxy_tab.proxy_id >=" in compiled
+
+
+async def test_slow_tier_respects_exclude_prefix(monkeypatch):
+    """slow 档仍然排除「本任务内失败代理的前缀」：同段换地址不重试。"""
+    sibling = _FakeProxyRow(key="http://45.74.31.99:8080")
+    session = _FakeSession([[sibling] for _ in range(8)])
+    _stub_health(monkeypatch)
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    monkeypatch.setattr(SQLHelper, "async_session", lambda: session)
+
+    assert (
+        await SQLHelper.select_random_proxy(
+            tier=ProxyTier.SLOW, exclude=frozenset({"http://45.74.31.7:8080"})
+        )
+        is None
+    )
 
 
 # ---------------------------------------------------------------------------

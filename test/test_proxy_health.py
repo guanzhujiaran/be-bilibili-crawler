@@ -21,7 +21,7 @@ from Utils.代理.数据库操作.ProxyHealth import (
     ProxyHealthStore,
     seed_health_record,
 )
-from Utils.代理.mdoel.RequestConf import RequestRetryPolicy
+from Utils.代理.mdoel.RequestConf import RequestConf, RequestRetryPolicy
 from Utils.代理.mdoel.ProxyTier import ProxyTier
 
 _store = ProxyHealthStore()
@@ -101,9 +101,24 @@ def test_fast_and_slow_eligibility():
     assert _store.is_fast_eligible(hot, CONFIG.proxy_health.fast_max_in_flight, now) is False
     assert _store.is_fast_eligible(low, 0, now) is False
     assert _store.is_fast_eligible(cooling, 0, now) is False
-    # slow 档只看是否冷却（dead 由取代理逻辑单独排除）
+    # slow 档的"未冷却"判据（是否真的挡人由 ProxyHealthConfig.slow_skip_* 决定）
     assert _store.is_slow_eligible(cooling, now) is False
     assert _store.is_slow_eligible(hot, now) is True
+
+
+def test_default_tier_is_slow_without_crawler_context():
+    """没有爬虫上下文时（HTTP / RPC / 脚本）默认走 slow，与爬虫侧口径一致。
+
+    以前默认 fast：池子一抖就是「6 次重试 → -5」，与「随机取一条 status 可用的
+    就用」的口径不一致。需要快速失败的调用方显式传 tier=fast。
+    """
+    from Utils.代理.mdoel.request_context import resolve_tier
+
+    assert CONFIG.proxy_retry.policy_for(ProxyTier.SLOW).max_attempts is None
+    assert resolve_tier() is ProxyTier.SLOW
+    assert resolve_tier(RequestConf()) is ProxyTier.SLOW
+    # 显式档位仍然优先
+    assert resolve_tier(RequestConf(tier=ProxyTier.FAST)) is ProxyTier.FAST
 
 
 # ---------------------------------------------------------------------------

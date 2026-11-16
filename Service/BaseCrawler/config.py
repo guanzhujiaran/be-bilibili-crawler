@@ -92,14 +92,19 @@ class CrawlerConfig(BaseModel):
     # 任务失败后的延迟时间（秒）：None = 跟随
     worker_error_delay: int | None = Field(default=None)
 
-    # ===== 代理档位（只表达优先级，具体行为见 RequestRetryPolicy / ProxyHealth）=====
-    # fast：只用已验证可用的代理，重试预算小、失败快速交回队列；
-    # slow：允许掺入 cold 代理做探测，重试预算大（指数退避封顶 60s）。
+    # ===== 代理档位（只表达排序偏好与重试预算，见 RequestRetryPolicy / ProxyHealth）=====
+    # slow：口径接近老版本 select_proxy("rand") —— 随机取一条 status 可用的就用，
+    #       EWMA / 冷却 / 在途只记账与排序（开关：ProxyHealthConfig.slow_skip_*），
+    #       重试预算大（指数退避封顶 60s）；
+    # fast：严格准入（EWMA + 冷却 + 在途 + 段级闸门），重试预算小（6 次即 -5）。
+    # 默认 slow —— 爬虫全部退出 fast 车道：2026-11-16 代理池故障期间，fast 的
+    # 「ewma>=0.9 + 在途<2 + 段未冷却」多重闸门叠加后 8 小时 3877 次
+    # ProxyRetryBudgetExhausted(-5)，而池子里明明有 1.5 万条 status 可用的行。
     # 这是**每个爬虫自己声明**的语义：本文件不写死任何业务名称。
     proxy_tier: ProxyTier = Field(
-        default=ProxyTier.FAST, description="该爬虫使用的代理档位"
+        default=ProxyTier.SLOW, description="该爬虫使用的代理档位"
     )
-    # slow 车道的基准并发相对 max_sem 的比例（hot 池不足时会在其基础上再收缩）
+    # slow 车道的基准并发相对 max_sem 的比例（不再按 hot/warm 背压收缩）
     slow_lane_ratio: float = Field(
         default=1.0, description="slow 车道基准并发 = max_sem × 本比例"
     )
@@ -129,9 +134,14 @@ class DynDetailScrapyConfig(CrawlerConfig):
     concurrency_key: str = "dyn_detail"
     # 差异：失败也重入队；单条详情最长 300s
     requeue_on_fetch_fail: bool = True
+    # 失败后**无条件立即插回队首**重试（不看退避、不进队尾：队列积压时放队尾等于
+    # 拖到最后，而前面的 rid 缺失会影响后面的结束判断）；
+    # 次数上限 20，实际由 requeue_max_task_seconds=1800s 兜底；
+    # 用尽后任务留在 crawl_failed_task pending，下一轮开头继续 —— 不会丢
+    max_requeue_per_task: int | None = 20
     worker_max_timeout: int | None = 300
-    # 该爬虫的任务量巨大且可容忍等待：走 slow 车道，
-    # 允许用 cold 代理做探测（探测成功率高的代理会被养进 hot 池供 fast 车道使用）。
+    # 该爬虫的任务量巨大且可容忍等待：走 slow 车道（= 老版本免费池口径，
+    # 随机取一条 status 可用的就用；健康度只记账不挡人）。
     proxy_tier: ProxyTier = ProxyTier.SLOW
     logger: Any = official_lot_logger
     plugins: List[PluginConfig] = [
@@ -154,6 +164,10 @@ class ReserveScrapyRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "reserve"
     worker_max_timeout: int | None = 300
+    # 至少一次（马上重试）：失败既落 crawl_failed_task，也**无条件立即插回队首**重试
+    # （不等退避、不进队尾 —— 前面的 id 缺失会影响后面的结束判断）
+    requeue_on_fetch_fail: bool = True
+    max_requeue_per_task: int | None = 20
     logger: Any = reserve_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
@@ -166,6 +180,9 @@ class TopicRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "topic"
     worker_max_timeout: int | None = 300
+    # 至少一次（马上重试）：同上
+    requeue_on_fetch_fail: bool = True
+    max_requeue_per_task: int | None = 20
     logger: Any = topic_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),
@@ -181,6 +198,9 @@ class LotteryApiRobotConfig(CrawlerConfig):
     """
 
     concurrency_key: str = "lottery_api"
+    # 至少一次（马上重试）：官方抽奖动态 / 预约 notice 失败后立刻插回队首重试
+    requeue_on_fetch_fail: bool = True
+    max_requeue_per_task: int | None = 20
     logger: Any = myfastapi_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),

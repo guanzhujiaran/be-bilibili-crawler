@@ -90,8 +90,9 @@ class RequestConf(CustomBaseModel):
     is_return_raw_response: bool = Field(False)
     tier: ProxyTier | None = Field(
         default=None,
-        description="代理取用档位。None = 跟随当前爬虫上下文（默认 fast），"
-        "显式赋值优先级最高",
+        description="代理取用档位。None = 跟随当前爬虫上下文（无上下文时默认 slow，"
+        "与爬虫侧「随机取一条 status 可用的就用」口径一致）；显式赋值优先级最高，"
+        "需要快速失败的调用方显式写 tier=fast",
     )
     retry_policy: RequestRetryPolicy | None = Field(
         default=None, description="显式覆盖重试预算；None = 按 tier 取 CONFIG.proxy_retry"

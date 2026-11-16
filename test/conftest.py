@@ -116,3 +116,45 @@ def anyio_backend():
 def base_pagination():
     """基本分页参数"""
     return {"page_num": 1, "page_size": 10}
+
+
+@pytest.fixture(autouse=True)
+def _stub_crawl_failed_task_dao(monkeypatch):
+    """重试队列（``crawl_failed_task``）在单测里默认是内存 no-op。
+
+    爬虫基类在 ``retry_task_type`` 非空时会往 ``dyndetail.crawl_failed_task`` 记账，
+    单测不该为它起库；占位配置下真实连接还要等超时，会让用例变慢。
+    需要验证记账行为的用例自行 monkeypatch 覆盖（见 ``test_backfill_missing.py``）。
+    """
+    from Service.BaseCrawler.retry_queue import RetryTaskStats, crawl_failed_task_dao
+
+    async def _noop(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _noop_false(*_args: object, **_kwargs: object) -> bool:
+        return False
+
+    async def _noop_empty_list(*_args: object, **_kwargs: object) -> list:
+        return []
+
+    async def _noop_none(*_args: object, **_kwargs: object) -> None:
+        return None
+
+    async def _noop_stats(*_args: object, **_kwargs: object) -> RetryTaskStats:
+        return RetryTaskStats()
+
+    monkeypatch.setattr(crawl_failed_task_dao, "mark_pending", _noop, raising=False)
+    monkeypatch.setattr(
+        crawl_failed_task_dao, "record_retry_failure", _noop, raising=False
+    )
+    monkeypatch.setattr(
+        crawl_failed_task_dao, "mark_done", _noop_false, raising=False
+    )
+    monkeypatch.setattr(
+        crawl_failed_task_dao, "fetch_pending", _noop_empty_list, raising=False
+    )
+    monkeypatch.setattr(
+        crawl_failed_task_dao, "min_pending_business_id", _noop_none, raising=False
+    )
+    monkeypatch.setattr(crawl_failed_task_dao, "get_stats", _noop_stats, raising=False)
+    yield

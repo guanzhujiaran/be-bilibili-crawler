@@ -26,7 +26,8 @@ class BaseCrawler(ABC, Generic[ParamsType]):
         #   代理 hot 池低于阈值时按比例收缩（见 UnlimitedCrawler 的背压循环）。
         # 爬虫用哪条车道由 CrawlerConfig.proxy_tier 声明；两条车道都建好，
         # 但只有声明的那条会真正挂 worker（另一条留空，不浪费协程）。
-        self.proxy_tier: ProxyTier = ProxyTier.FAST
+        # 这里只是占位初始值，实际由 UnlimitedCrawler 用 Config 覆盖（默认 slow）。
+        self.proxy_tier: ProxyTier = ProxyTier.SLOW
         self.fast_queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
         self.slow_queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
         # task_queue 保留为「当前生效车道的队列」别名，兼容既有引用

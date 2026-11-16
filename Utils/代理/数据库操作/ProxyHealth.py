@@ -275,12 +275,24 @@ class ProxySelectionState(CustomBaseModel):
         default_factory=frozenset, description="本任务内已失败代理所在的前缀（同段不再换地址重试）"
     )
 
-    def prefix_allows(self, prefix: str, now: int | None = None) -> bool:
-        """该前缀是否放行（冷却 / 在途配额 / 本任务排除，三者任一命中即拒）。"""
+    def prefix_allows(
+        self,
+        prefix: str,
+        now: int | None = None,
+        enforce_health: bool = True,
+    ) -> bool:
+        """该前缀是否放行（冷却 / 在途配额 / 本任务排除，三者任一命中即拒）。
+
+        :param enforce_health: ``False`` 时只保留「本任务内已失败网段」这一条排除，
+            不看段级冷却与段级在途。slow 档默认就是这个口径（对齐老版本
+            ``select_proxy("rand")``：网段冷却/在途只记账，不当闸门）。
+        """
         if not prefix:
             return True
         if prefix in self.excluded_prefixes:
             return False
+        if not enforce_health:
+            return True
         return proxy_health_store.is_prefix_eligible(
             self.prefixes.get(prefix), self.prefix_in_flight.get(prefix), now
         )

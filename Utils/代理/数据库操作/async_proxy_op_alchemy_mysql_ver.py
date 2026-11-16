@@ -372,13 +372,17 @@ class SQLHelperClass(SqlHelperBase):
     ) -> ProxyPickResult:
         """在一批候选行里按档位挑一条，并返回诊断信息。
 
-        - **前缀闸门（先过）**：同 /64、/24 在冷却 / 在途打满 / 本任务已失败过 → 整段不取；
+        - **前缀闸门（先过）**：fast 档看「同 /64、/24 冷却 / 在途打满」；
+          slow 档只排除「本任务已失败过的网段」（段级冷却/在途只记账）；
         - ``fast``：优先「未冷却 + EWMA 达标 + 在途未打满」；取不到时**分级降级**
           （warm → cold 探测），而不是直接抛「没有可用代理」——
           线上 24h 里 176 次 fast 空池，绝大多数是「自建出口 -352 冷却 + 可用网段被
           前缀冷却压到接近 0」，此时用 warm/cold 兜底远比让整条车道停摆划算；
-        - ``slow``：未冷却即可用，并按 ``cold_probe_ratio`` 掺入 cold / suspect 代理做探测，
-          dead 一律不取（只有等冷却过期后由成功请求救回）。
+        - ``slow``（免费池默认车道）：默认口径对齐老版本 ``select_proxy("rand")`` ——
+          随机取一条 status 可用的就用。地址冷却**优先规避但不空池**（全在冷却时回退到
+          最快解冻的候选），EWMA / 段级冷却 / 段级在途 / dead 只记账与排序
+          （开关见 ``ProxyHealthConfig.slow_skip_*``）；
+          仍按 hot → warm → cold 排序偏好、并按 ``cold_probe_ratio`` 掺入探测。
         """
         keys = [self._proxy_key_of(row) for row in rows]
         prefixes = [proxy_prefix_of(key) for key in keys]
@@ -387,11 +391,17 @@ class SQLHelperClass(SqlHelperBase):
         )
         now = int(time.time())
         cfg = CONFIG.proxy_health
+        # fast 档必须过段级闸门；slow 档默认只排除「本任务内失败过的网段」
+        enforce_prefix_health = (
+            tier is ProxyTier.FAST or cfg.slow_skip_cooled_prefix
+        )
 
         scored: list[tuple[ProxyTab, str, ProxyHealthRecord, int]] = []
         blocked_by_prefix = 0
         for row, key, prefix in zip(rows, keys, prefixes):
-            if not snapshot.prefix_allows(prefix, now):
+            if not snapshot.prefix_allows(
+                prefix, now, enforce_health=enforce_prefix_health
+            ):
                 blocked_by_prefix += 1
                 continue
             record = snapshot.address.records.get(key) or seed_health_record(
@@ -436,12 +446,31 @@ class SQLHelperClass(SqlHelperBase):
                 blocked_by_prefix=blocked_by_prefix,
             )
 
-        usable = [
+        # slow 档（默认口径 = 老版本 select_proxy("rand")）：status 可用就用。
+        # 地址冷却默认**优先规避**（412/352 保护），但绝不因为「全在冷却」而空池：
+        # 冷却候选会被留作兜底，宁可慢一点也要取到代理。
+        # EWMA / 段级冷却 / 段级在途 / dead 只记账与排序，不参与过滤。
+        fresh = [
             item
             for item in scored
-            if proxy_health_store.is_slow_eligible(item[2], now)
-            and item[2].state is not ProxyHealthState.DEAD
+            if not (cfg.slow_skip_cooled_address and item[2].is_cooling(now))
+            and not (cfg.slow_skip_dead and item[2].state is ProxyHealthState.DEAD)
         ]
+        usable = fresh
+        if not usable and scored:
+            # 回退时优先「最快解冻」的候选（dead 排最后），避免反复挑到还要冷却几小时的
+            usable = sorted(
+                scored,
+                key=lambda item: (
+                    item[2].state is ProxyHealthState.DEAD,
+                    item[2].remaining_cooldown(now),
+                ),
+            )[:3]
+            sql_log.debug(
+                f"slow 档候选 {len(scored)} 条全部在冷却 / dead，回退使用其中"
+                f"{len(usable)} 条最快解冻的候选（取到代理优先于规避冷却；"
+                f"tier={tier.value}）"
+            )
         if not usable:
             return ProxyPickResult(
                 proxy=None,
@@ -537,10 +566,13 @@ class SQLHelperClass(SqlHelperBase):
     ) -> ProxyTab | None:
         """按档位从 MySQL 随机取一条可用代理（随机主键起点，禁止 ORDER BY / 全表扫）。
 
-        :param tier: ``fast`` 只取已证明可用的代理；``slow`` 允许掺入 cold 代理做探测
-        :param exclude: 本次任务已失败的代理串（换代理用）。注意 ``fast`` 档在候选不足时
-            宁可返回 None 也不放宽条件，否则又会回到「反复命中同一个坏代理」的老问题。
-            这里会**按其前缀归并**：同 /64、/24 内换地址不重试（风控按段聚合）。
+        :param tier: ``slow``（爬虫默认车道）口径对齐老版本 ``select_proxy("rand")``：
+            随机取一条 status 可用的就用。地址冷却优先规避、但全在冷却时回退（不空池），
+            EWMA / 段级冷却 / 段级在途 / dead 只记账与排序
+            （见 ``ProxyHealthConfig.slow_skip_*``），取不到只剩「池子真空 / 候选全被
+            本任务失败前缀排除」两种可能；``fast`` 保持严格准入（EWMA + 冷却 + 在途）。
+        :param exclude: 本次任务已失败的代理串（换代理用）。这里会**按其前缀归并**：
+            同 /64、/24 内换地址不重试（风控按段聚合）。两个档位都会排除它。
 
         随机点落在最后一条可用行之后会取空，此时最后一次尝试回退到「从头取」，
         保证有结果；取到的行在 id 上略有偏差（空洞后面的行更容易被选中），
@@ -643,8 +675,13 @@ class SQLHelperClass(SqlHelperBase):
 
         另外按**前缀**再过一遍：hot 集合里常有几十条落在同一个 `/24` 上，
         整段被风控时它们会一起失效（实测单 /24 最多 108 条），必须按段去重。
+        段级闸门只对 fast 档强制（或 slow 显式打开 ``slow_skip_cooled_prefix``）；
+        slow 档默认只排除「本任务内失败过的网段」，与老版本口径一致。
         """
         cfg = CONFIG.proxy_health
+        enforce_prefix_health = (
+            tier is ProxyTier.FAST or cfg.slow_skip_cooled_prefix
+        )
         states = (ProxyHealthState.HOT, ProxyHealthState.WARM)
         keys = await proxy_health_store.sample_state_keys(states, max(1, cfg.verified_sample))
         if exclude:
@@ -659,25 +696,38 @@ class SQLHelperClass(SqlHelperBase):
         now = int(time.time())
         stale: list[str] = []
         candidates: list[tuple[str, ProxyHealthRecord]] = []
+        cooling: list[tuple[str, ProxyHealthRecord]] = []
         for key, prefix in zip(keys, prefixes):
             record = snapshot.address.records.get(key)
             if record is None:
                 # 分档集合里有、明细已过期：属于残留，清掉
                 stale.append(key)
                 continue
-            if not snapshot.prefix_allows(prefix, now):
+            if not snapshot.prefix_allows(
+                prefix, now, enforce_health=enforce_prefix_health
+            ):
                 continue
             if tier is ProxyTier.FAST:
                 if not proxy_health_store.is_fast_eligible(
                     record, snapshot.address_in_flight.get(key), now
                 ):
                     continue
-            elif not proxy_health_store.is_slow_eligible(record, now):
+            elif cfg.slow_skip_cooled_address and not proxy_health_store.is_slow_eligible(
+                record, now
+            ):
+                # slow 档默认优先规避冷却，但全命中时不空池（见下面的回退）
+                cooling.append((key, record))
                 continue
             candidates.append((key, record))
         if stale:
             await asyncio_gather(
                 *[proxy_health_store.forget_state(key) for key in stale], log=sql_log
+            )
+        if not candidates and cooling and tier is not ProxyTier.FAST:
+            candidates = sorted(cooling, key=lambda item: item[1].remaining_cooldown(now))[:3]
+            sql_log.debug(
+                f"slow 档已验证分档 {len(cooling)} 条全部在冷却，回退使用其中"
+                f"{len(candidates)} 条最快解冻的候选"
             )
         if not candidates:
             return None

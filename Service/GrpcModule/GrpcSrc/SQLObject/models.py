@@ -8,9 +8,10 @@ from sqlalchemy import (
     Index,
     Integer,
     TIMESTAMP,
+    UniqueConstraint,
     text,
 )
-from sqlalchemy.dialects.mysql import LONGTEXT, TEXT, TINYINT, VARCHAR
+from sqlalchemy.dialects.mysql import ENUM, LONGTEXT, TEXT, TINYINT, VARCHAR
 from sqlalchemy.orm import Mapped, declarative_base, mapped_column, relationship
 from sqlalchemy.orm.base import Mapped
 
@@ -232,4 +233,46 @@ class Bilidyndetail(Base):
 
     lot: Mapped[Optional["Lotdata"]] = relationship(
         "Lotdata", back_populates="bilidyndetail"
+    )
+
+
+class CrawlFailedTask(Base):
+    """爬虫「至少一次」失败任务表（业务 id 级别，跨进程 / 跨轮次持久化）。
+
+    为什么需要它：任务队列在内存里，进程重启、调度器「杀旧开新」、代理池故障、
+    重入队次数到上限，任何一条都会让「还没写入成功」的业务 id 直接消失；而断点游标
+    （``lotdata`` 水位 / ``bilidyndetail`` 最大 rid / Redis 里的 reserve 游标）只记
+    「最后成功的 id」，失败 id 会被后续成功越过，永久缺口。
+
+    口径：
+    - ``status=pending``：该 id 还没成功写入，必须重试（**永不因为 attempts 超限置 dead**）；
+    - ``status=done``：已成功写入（幂等 upsert 成功），可以安全推进游标；
+    - ``status=dead``：只保留给人工确认，代码里不会自动写入；
+    - ``task_type`` 与各爬虫声明的 ``retry_task_type`` 一致（见 ``Service/BaseCrawler/retry_queue.py``），
+      游标推进时用它按爬虫过滤。
+
+    放在 dyndetail 库：它与 ``bilidyndetail`` / ``lotdata`` 同库，游标判定与补数脚本
+    都不需要跨库事务；表本身不带业务外键，任何爬虫都可以写自己的 task_type。
+    """
+
+    __tablename__ = "crawl_failed_task"
+    __table_args__ = (
+        UniqueConstraint("task_type", "business_id", name="uq_crawl_failed_task_business"),
+        Index("idx_crawl_failed_task_status_run", "status", "next_run_at"),
+    )
+
+    id = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    task_type = mapped_column(VARCHAR(32), nullable=False)
+    business_id = mapped_column(BigInteger, nullable=False)
+    status = mapped_column(
+        ENUM("pending", "done", "dead"),
+        nullable=False,
+        server_default=text("'pending'"),
+    )
+    attempts = mapped_column(Integer, nullable=False, server_default=text("'0'"))
+    last_error = mapped_column(TEXT)
+    next_run_at = mapped_column(BigInteger, nullable=False, server_default=text("'0'"))
+    created_at = mapped_column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
+    updated_at = mapped_column(
+        TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
     )

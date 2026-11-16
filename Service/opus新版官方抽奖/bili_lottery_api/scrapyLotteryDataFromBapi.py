@@ -9,6 +9,7 @@ from CONFIG import CONFIG
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import LotteryApiRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
+from Service.BaseCrawler.retry_queue import RetryTaskType
 
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from Service.GrpcModule.Grpc.Bapi.BiliApi import reserve_relation_info, get_lot_notice
@@ -52,6 +53,31 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
 
+    def retry_business_id(self, params: BusinessParams | None) -> int | None:
+        return params.business_id if params is not None else None
+
+    def retry_params(self, business_id: int) -> BusinessParams:
+        """按本实例的业务类型还原参数（2=官方抽奖动态 id / 10=预约 sid）。"""
+        return BusinessParams(
+            business_type=self._LotteryApiRobot__business_type,
+            business_id=business_id,
+        )
+
+    def freeze_cursor(self) -> None:
+        """冻结游标推进（补数脚本用：重跑历史 id 时不能把生产游标拉回去）。"""
+        self._cursor_frozen = True
+
+    async def _advance_cursor(self, redis_map: RedisHelper.RedisMap, business_id: int):
+        """只在「该 id 及之前没有 pending」时推进游标（连续水位）。
+
+        旧实现无条件 ``set_id``：失败 id 被后续成功越过，永远补不回来。
+        """
+        if self._cursor_frozen:
+            return
+        if not await self.can_advance_cursor(business_id):
+            return
+        await self.redis_helper.set_id(redis_map, business_id)
+
     async def key_params_gen(
         self, params: BusinessParams
     ) -> AsyncGenerator[BusinessParams, None]:
@@ -72,6 +98,13 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
 
     def __init__(self, log, business_type: BusinessType):
         self.__business_type: BusinessType = business_type
+        # 同一类两个实例（2=官方抽奖动态 / 10=预约）用不同的 task_type 记账，
+        # 游标与补跑互不干扰；补数脚本的 --task 用同一份字面量。
+        self.retry_task_type = (
+            RetryTaskType.LOTTERY_DYN.value
+            if business_type == 2
+            else RetryTaskType.LOTTERY_RESERVE.value
+        )
         self._injected_log = log
         self.default_dyn_rid = 346492727
         self.default_reserve_sid = 4234284
@@ -79,6 +112,8 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         self.min_dyn_sep_ts = 12 * 3600
         self.__max_stop_times = 5  # 遇到超过时间的次数
         self.redis_helper = RedisHelper()
+        # True = 不推进游标（补数脚本重跑历史 id 时用，见 freeze_cursor）
+        self._cursor_frozen = False
 
         self._cur_stop_times = 0
         self.latest_ts = 0
@@ -93,7 +128,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
             if int(time.time()) - dynamic_ts < self.min_dyn_sep_ts:
                 self._cur_stop_times += 1
                 self.latest_ts = dynamic_ts
-            await self.redis_helper.set_id(self.redis_helper.RedisMap.dyn_rid, rid)
+            await self._advance_cursor(self.redis_helper.RedisMap.dyn_rid, rid)
             return WorkerStatus.complete
         else:
             self.log.error(f"origin dyn data: {data} \n获取动态时间失败！")
@@ -114,7 +149,7 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                     self.latest_ts = stime
             else:
                 self.log.error(f"business_id：{data} 获取预约时间失败：{reserve_resp}")
-            await self.redis_helper.set_id(
+            await self._advance_cursor(
                 self.redis_helper.RedisMap.reserve_sid, reserve_sid_int
             )
             return WorkerStatus.complete
@@ -163,6 +198,9 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
 
     async def main(self):
         try:
+            # 先取「上一轮没写成功」的 business_id：它们在任务生成器之前入队，
+            # 不依赖 Redis 游标位置（游标只在它之前没有 pending 时才会推进）
+            retry_params = await self.load_retry_params()
             match self.__business_type:
                 case 2:
                     await self.run(
@@ -172,7 +210,8 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                                 self.redis_helper.RedisMap.dyn_rid
                             )
                             or self.default_dyn_rid,
-                        )
+                        ),
+                        pre_params=retry_params,
                     )
                 case 10:
                     await self.run(
@@ -182,7 +221,8 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
                                 self.redis_helper.RedisMap.reserve_sid
                             )
                             or self.default_reserve_sid,
-                        )
+                        ),
+                        pre_params=retry_params,
                     )
         except Exception as e:
             self.log.exception(f"[{__name__}] 发生异常！{e}")

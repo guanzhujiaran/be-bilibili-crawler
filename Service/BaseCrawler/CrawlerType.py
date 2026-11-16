@@ -18,6 +18,11 @@ from Service.BaseCrawler.resilience import (
     ProxyCircuitBreaker,
     is_pool_level_error,
 )
+from Service.BaseCrawler.retry_queue import (
+    RETRY_BATCH_LIMIT,
+    CrawlFailedTaskDao,
+    crawl_failed_task_dao,
+)
 from Utils.通用.Common import ConcurrencyLimit, asyncio_gather
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.ProxyTier import ProxyTier
@@ -30,7 +35,7 @@ from Utils.代理.mdoel.request_context import (
     set_proxy_tier,
     reset_proxy_tier,
 )
-from Utils.代理.数据库操作.ProxyHealth import proxy_health_store
+
 
 P = TypeVar("P", bound=CrawlerPlugin)
 
@@ -95,6 +100,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     # 每个爬虫通过覆盖此属性为自己的 CrawlerConfig 子类，
     # 运行时由 CONFIG 集中注入对应配置（见 CONFIG.get_crawler_config）
     Config: ClassVar[type[CrawlerConfig]] = CrawlerConfig
+    # 需要「至少一次」语义的爬虫声明自己的重试任务类型（见 Service/BaseCrawler/retry_queue.py）。
+    # 空串 = 不参与：任务最终失败即丢弃（老行为），不做任何持久化。
+    retry_task_type: ClassVar[str] = ""
 
     def _load_config(self) -> CrawlerConfig:
         """
@@ -183,8 +191,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self._worker_tasks: set[asyncio.Task] = set()
         # 延迟重入队的挂起任务：run() 收尾时要等它们把任务放回队列，否则会漏任务
         self._pending_requeues: set[asyncio.Task] = set()
-        # 代理背压监控任务（只有 slow 车道需要）
-        self._backpressure_task: asyncio.Task | None = None
+        # 挂起任务 → 它携带的 WorkerModel：「杀旧开新」取消它们时要写回重试队列，
+        # 否则这些「已取出、还没执行」的任务会随旧队列一起消失（丢数据）
+        self._pending_requeue_models: dict[asyncio.Task, WorkerModel] = {}
 
         # ===== 故障收敛：代理池熔断 + 失败告警聚合 =====
         # 实例级（不是进程级）：每个爬虫各自熔断，互不牵连；
@@ -377,6 +386,177 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             *[x.on_task_requeue(worker_model) for x in self._plugins], log=self.log
         )
 
+    # ===== 「至少一次」重试队列（机制，不含任何业务判断） =====
+    # 参与条件：子类声明 retry_task_type 并实现 retry_business_id / retry_params /
+    # on_task_final_fail。未声明（空串）的爬虫完全走老行为，不产生任何额外 IO。
+
+    @property
+    def _retry_dao(self) -> CrawlFailedTaskDao:
+        return crawl_failed_task_dao
+
+    def retry_business_id(self, params: ParamsType | Any | None) -> int | None:
+        """从任务参数里取「业务 id」（重试队列的主键之一）。默认不参与。"""
+        return None
+
+    def retry_params(self, business_id: int) -> ParamsType | None:
+        """把重试队列里的业务 id 还原成本爬虫的任务参数。默认不参与。"""
+        return None
+
+    async def on_task_final_fail(self, worker_model: WorkerModel):
+        """任务**最终失败**（判定为不重新入队）时的附加钩子。
+
+        默认空实现。注意：**落库已在基类 ``_settle_retry_task`` 统一完成**
+        （每次失败即 upsert pending），所以这里不需要再写库；
+        需要「最终失败时额外做点什么」（比如单独告警）的爬虫才覆盖它。
+        """
+        return None
+
+    async def _upsert_retry_task(self, worker_model: WorkerModel) -> bool:
+        """把任务写回重试队列（status=pending，立即到期）。返回是否真的写入了。"""
+        if not self.retry_task_type:
+            return False
+        business_id = self.retry_business_id(worker_model.params)
+        if business_id is None:
+            return False
+        await self._retry_dao.mark_pending(
+            self.retry_task_type,
+            business_id,
+            last_error=(
+                f"{self.crawler_name} 失败：status={worker_model.fetchStatus.name} "
+                f"retry_count={worker_model.retry_count}"
+            ),
+        )
+        return True
+
+    async def _settle_retry_task(
+        self, worker_model: WorkerModel, should_requeue: bool
+    ) -> None:
+        """任务结束后同步重试队列状态（成功 done / **失败立即落 pending**）。
+
+        口径（用户明确要求）：**重试发生在本轮**，不是等下一轮。
+        - 成功（complete / nullData）→ ``done``：清掉历史 pending，游标才能推进；
+        - 失败（fail / timeout）→ **先落 pending 再做本轮重入队**：
+          写库只是「进程重启 / 杀旧开新」的持久化兜底，不是重试通道；
+          本轮由 ``_handle_requeue`` 立刻延迟重入队继续试，
+          直到重入队上限（``max_requeue_per_task``）或累计时长上限才真正留给下一轮。
+        - 达上限后库里保持 pending，下一轮 ``load_retry_params`` 接着跑（永不丢弃）。
+
+        先落库再重入队：即使进程在重入队前被杀，库里也有记录。
+        任何 DB 异常只记日志，不影响 worker 本轮重试。
+        """
+        if not self.retry_task_type:
+            return
+        business_id = self.retry_business_id(worker_model.params)
+        if business_id is None:
+            return
+        status = worker_model.fetchStatus
+        try:
+            if status in (WorkerStatus.complete, WorkerStatus.nullData):
+                # 成功写入：清掉历史 pending（补数 / 上一轮遗留），游标才能推进
+                if await self._retry_dao.mark_done(self.retry_task_type, business_id):
+                    self.log.debug(
+                        self.format_log(f"重试任务已完成并从队列摘除：{business_id}")
+                    )
+                return
+            if status in (WorkerStatus.fail, WorkerStatus.timeoutError):
+                # 失败即落库：本轮会继续重试，库里的记录保证「杀旧开新 / 重启」不丢
+                await self._upsert_retry_task(worker_model)
+                if not should_requeue:
+                    self.log.warning(
+                        self.format_log(
+                            f"任务本轮重试用尽（{business_id}），已留在重试队列 pending，"
+                            "下一轮开头继续补跑"
+                        )
+                    )
+                    await self.on_task_final_fail(worker_model)
+        except Exception as e:  # noqa: BLE001 记账失败不能拖垮爬虫主循环
+            self.log.exception(
+                self.format_log(f"同步重试队列失败（不影响本任务）：{e!r}")
+            )
+
+    async def load_retry_params(
+        self, limit: int = RETRY_BATCH_LIMIT
+    ) -> List[ParamsType]:
+        """取**本轮开头**要补跑的任务参数（pending 且到了重试时间，按 task_type 过滤）。
+
+        由各爬虫 ``main()`` 在 ``run()`` 之前调用，并通过 ``run(pre_params=...)``
+        入队执行。语义说明：**本轮内的重试不靠它**（失败后 ``_settle_retry_task``
+        先落库、``_handle_requeue`` 立刻重入队）；这里只负责接上
+        「上一轮用尽 / 进程重启 / 杀旧开新」遗留的 pending。
+        """
+        if not self.retry_task_type:
+            return []
+        try:
+            tasks = await self._retry_dao.fetch_pending(self.retry_task_type, limit=limit)
+            stats = await self._retry_dao.get_stats(self.retry_task_type)
+        except Exception as e:  # noqa: BLE001 读不到队列时按「没有待补任务」处理
+            self.log.exception(
+                self.format_log(f"读取重试队列失败，本轮跳过补跑：{e!r}")
+            )
+            return []
+        params: List[ParamsType] = []
+        for task in tasks:
+            param = self.retry_params(task.business_id)
+            if param is not None:
+                params.append(param)
+        if tasks:
+            self.log.warning(
+                self.format_log(
+                    f"重试队列[{self.retry_task_type}]：本轮补跑 {len(params)} 条"
+                    f"（上限 {limit}）；{stats.to_log_str()}"
+                )
+            )
+            if stats.pending > len(params):
+                self.log.warning(
+                    self.format_log(
+                        f"重试队列仍有 {stats.pending - len(params)} 条待补任务未进本轮，"
+                        "下一轮继续（不会丢弃）"
+                    )
+                )
+        return params
+
+    async def pending_min_business_id(self) -> int | None:
+        """该爬虫最小的待重试业务 id；``None`` = 没有 pending（或未参与 / 读库失败）。
+
+        游标推进必须用它做闸门：只有「最小 pending 也大于当前 id」时才能推进水位，
+        否则失败 id 会被后续成功越过，形成永久缺口（这就是 2026-11-16 丢 8 条 rid
+        的原因：断点只记「最后成功的 id」）。
+        """
+        if not self.retry_task_type:
+            return None
+        try:
+            return await self._retry_dao.min_pending_business_id(self.retry_task_type)
+        except Exception as e:  # noqa: BLE001 读不到时按「无 pending」处理（保守但不阻塞抓取）
+            self.log.exception(
+                self.format_log(f"读取重试队列最小 pending 失败：{e!r}")
+            )
+            return None
+
+    async def can_advance_cursor(self, business_id: int) -> bool:
+        """游标能否推进到 ``business_id``：该 id 及之前没有 pending 才允许。"""
+        pending_min = await self.pending_min_business_id()
+        if pending_min is not None and pending_min <= business_id:
+            self.log.debug(
+                self.format_log(
+                    f"游标暂不推进到 {business_id}：重试队列还有更早的 "
+                    f"pending {pending_min} 未写入成功"
+                )
+            )
+            return False
+        return True
+
+    async def _persist_leftover_worker(self, worker_model: WorkerModel | None) -> bool:
+        """把「已从队列取出但没执行完」的任务写回重试队列（杀旧开新 / 进程重启兜底）。"""
+        if worker_model is None or worker_model.params is None:
+            return False
+        try:
+            return await self._upsert_retry_task(worker_model)
+        except Exception as e:  # noqa: BLE001 兜底失败只记日志
+            self.log.exception(
+                self.format_log(f"残留任务写回重试队列失败：{e!r}")
+            )
+            return False
+
     async def on_worker_start(self, worker_model: WorkerModel):
         """
         Worker 开始处理任务时的回调，触发所有插件的 on_worker_start 方法
@@ -512,12 +692,23 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                     finally:
                         queue.task_done()
 
+                # 至少一次语义：**先落库，再决定本轮重入队**。
+                # 失败 → 立刻 upsert pending（进程被杀也不丢），然后本轮继续重试；
+                # 成功 → done。都放在并发额度之外做 IO，不占 worker 槽位。
+                await self._settle_retry_task(worker_model, should_requeue)
+
                 if should_requeue:
-                    self.log.debug(
-                        self.format_log(f"任务需要重试: {worker_model.params}")
+                    self.log.info(
+                        self.format_log(
+                            f"任务本轮重试（第 {worker_model.retry_count + 1} 次）："
+                            f"{worker_model.params}"
+                        )
                     )
                     await self._handle_requeue(worker_model, queue)
             except asyncio.CancelledError:
+                # 杀旧开新：当前任务已取出但没执行完，写回重试队列（不能静默丢弃）。
+                # shield 保证取消风暴中落库协程仍能跑完；失败只记日志，不阻断取消传播。
+                await asyncio.shield(self._persist_leftover_worker(worker_model))
                 # 取消（如调度器"杀旧开新"）必须向上传播，此时不再触发统计回调，
                 # 否则 await 会立即被二次取消；task_done 已在内层 finally 中保证执行。
                 self.log.debug(self.format_log("worker 被取消，退出任务处理。"))
@@ -532,6 +723,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 )
                 if worker_model.fetchStatus == WorkerStatus.pending:
                     worker_model.fetchStatus = WorkerStatus.fail
+                await self._settle_retry_task(worker_model, should_requeue=False)
             finally:
                 reset_retry_yield(yield_token)
                 reset_attempt_state(attempt_token)
@@ -689,16 +881,20 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         code, text = limit
         total = self._final_fail_tally.add(code)
-        # 每个达标任务只落一条汇总 WARNING（不再无限打回队列 → 不再无限刷屏）
+        # 每个达标任务只落一条汇总 WARNING（不再无限打回队列 → 不再无限刷屏）。
+        # 注意：这里的「用尽」只针对**本轮**——任务已先落 crawl_failed_task pending，
+        # 下一轮开头 load_retry_params 会继续补跑，不会丢。
         self.log.warning(
             self.format_log(
-                f"任务终止重入队（{text}），记为最终失败：{worker_model.params}；"
-                f"本轮累计 {self._final_fail_tally.to_log_str()}"
+                f"任务本轮重试用尽（{text}），已留在重试队列待下一轮补跑："
+                f"{worker_model.params}；本轮累计 {self._final_fail_tally.to_log_str()}"
             )
         )
         if total % 20 == 0:
             self.log.warning(
-                self.format_log(f"最终失败持续增长：{self._final_fail_tally.to_log_str()}")
+                self.format_log(
+                    f"本轮重试用尽的任务持续增长：{self._final_fail_tally.to_log_str()}"
+                )
             )
         return False
 
@@ -749,26 +945,54 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         worker_model: WorkerModel,
         queue: asyncio.Queue[WorkerModel | None] | None = None,
     ):
-        """将任务延迟重新入队（在并发额度之外执行，避免死锁）。
+        """任务失败后重新入队（在并发额度之外执行，避免死锁）。
 
         queue 必须与 worker 处理该任务时使用的是同一个队列实例，
         否则「杀旧开新」后重排的任务会落进新一轮的队列。
-        延迟通过独立 task 实现：不占用 worker 协程，也不占并发额度。
+
+        **「至少一次」爬虫（声明了 ``retry_task_type``）：无条件立即插到队首**，
+        不经过任何退避计算 —— 业务数据有连贯性（前面的 id 缺失会影响后面的结束
+        判断），而且队列可能积压几千条（生产者不限速），放队尾等于「拖到最后」。
+        非「至少一次」的爬虫保留老的「指数退避 + 独立 task」逻辑（防止忙循环）。
         """
         if queue is None:
             queue = self.task_queue
         worker_model.fetchStatus = WorkerStatus.pending
         worker_model.retry_count += 1
         await self.on_task_requeue(worker_model)
+        if self.retry_task_type:
+            # 马上重试：插队首，下一个空闲 worker 立刻取到它
+            self._put_front(queue, worker_model)
+            return
         delay = self._requeue_delay(worker_model.retry_count)
         if delay <= 0:
-            await queue.put(worker_model)
+            self._put_front(queue, worker_model)
             return
         task = asyncio.create_task(
             self._delayed_requeue(queue, worker_model, delay)
         )
         self._pending_requeues.add(task)
+        # 记下它携带的任务：「杀旧开新」取消这些挂起任务时要把 WorkerModel 写回重试队列
+        self._pending_requeue_models[task] = worker_model
         task.add_done_callback(self._pending_requeues.discard)
+        task.add_done_callback(self._pending_requeue_models.pop)
+
+    @staticmethod
+    def _put_front(
+        queue: "asyncio.Queue[WorkerModel | None]", worker_model: WorkerModel
+    ) -> None:
+        """把任务插到队首（``asyncio.Queue`` 没有公开 API，这里直接维护内部状态）。
+
+        与 ``queue.put()`` 等价的部分：入队元素、``_unfinished_tasks += 1``、
+        清掉 ``join()`` 的完成标记、唤醒一个正在 ``get()`` 的 worker。
+        之所以不用「自己实现 deque 队列」：``join()`` / ``task_done()`` /
+        ``_unfinished_tasks`` 的语义在 ``run()`` 收尾逻辑里已经被依赖（见那里的竞态注释），
+        换队列实现的风险远大于用这三个私有字段。
+        """
+        queue._queue.appendleft(worker_model)  # noqa: SLF001 asyncio.Queue 无 put_front
+        queue._unfinished_tasks += 1  # noqa: SLF001
+        queue._finished.clear()  # noqa: SLF001
+        queue._wakeup_next(queue._getters)  # noqa: SLF001
 
     async def _delayed_requeue(
         self,
@@ -777,7 +1001,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         delay: float,
     ):
         await asyncio.sleep(delay)
-        await queue.put(worker_model)
+        # 延迟重试同样优先于「还没执行的新任务」
+        self._put_front(queue, worker_model)
 
     async def _reap_leftover_workers(self):
         """回收上一轮残留的 worker 协程与「延迟重入队」任务。
@@ -788,11 +1013,6 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         """
         leftover = [t for t in self._worker_tasks if not t.done()]
         pending = [t for t in self._pending_requeues if not t.done()]
-        # 上一轮被 cancel 时不会走到 run() 的收尾逻辑，背压监控要在这里一并回收
-        if self._backpressure_task is not None and not self._backpressure_task.done():
-            self._backpressure_task.cancel()
-            await asyncio.gather(self._backpressure_task, return_exceptions=True)
-        self._backpressure_task = None
         if not leftover and not pending:
             return
         if leftover:
@@ -800,82 +1020,74 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 self.format_log(f"发现上一轮残留 worker {len(leftover)} 个，已回收。")
             )
         if pending:
-            # 延迟重入队任务属于上一轮：直接取消，任务本身随旧队列一起丢弃
             self.log.warning(
                 self.format_log(
-                    f"发现上一轮残留的延迟重入队任务 {len(pending)} 个，已取消。"
+                    f"发现上一轮残留的延迟重入队任务 {len(pending)} 个，"
+                    "已取消并写回重试队列。"
                 )
             )
+        # 取消前先取走它们携带的任务：「延迟重入队」里 sleep 的任务还没进队列，
+        # 直接 cancel 就等于丢任务（代理故障期间这里每天都在丢）。
+        leftover_models = [
+            self._pending_requeue_models.get(task) for task in pending
+        ]
         for task in leftover + pending:
             task.cancel()
         await asyncio.gather(*leftover, *pending, return_exceptions=True)
+        for model in leftover_models:
+            await self._persist_leftover_worker(model)
         self._worker_tasks.clear()
         self._pending_requeues.clear()
+        self._pending_requeue_models.clear()
 
     def _slow_lane_base_limit(self) -> int:
         """slow 车道基准并发 = ``max_sem × slow_lane_ratio``（至少 1）。"""
         ratio = self.slow_lane_ratio if self.slow_lane_ratio > 0 else 1.0
         return max(1, int(round(self.max_sem * ratio)))
 
-    async def _proxy_backpressure_loop(
-        self, gate: ConcurrencyLimit, base_limit: int
-    ) -> None:
-        """代理背压：已验证可用池低于阈值时按比例收缩 slow 车道并发。
+    async def _persist_leftover_queue_tasks(self) -> int:
+        """把上一轮队列里**没执行完**的任务写回重试队列，而不是静默丢弃。
 
-        背景：坏代理占满 worker 会让整个 slow 车道「有并发、无产出」。
-        这里用健康状态机的分档计数（Redis，O(1)）判断「已验证可用池」是否够用，
-        不够就按比例收缩 slow 并发，把有限的槽位留给更有希望的探测；
-        **fast 车道用自己的闸，完全不受影响**。
-
-        口径为什么是 ``hot + warm`` 而不是只看 hot：cold 只代表「还没验证」，
-        不代表不可用；只看 hot 会让「池子里全是冷代理」的早期阶段把 slow 并发
-        压到最低（本项目的 dyn / other_space 正是跑在 slow 车道），反而拖慢抓取。
-
-        收缩不会打断在途任务，只限制新的进入；池子恢复后自动回到基准值。
+        背景：调度器「杀旧开新」直接 cancel 上一轮 run()，队列里的任务随旧队列
+        一起消失（2026-11-16 丢数据的直接原因之一）。这里把它们按业务 id
+        upsert 成 pending，下一轮 ``load_retry_params`` 会重新取到并重跑。
+        未声明 ``retry_task_type`` 的爬虫保持老行为（丢弃 + WARNING）。
         """
-        cfg = CONFIG.proxy_health
-        interval = max(5, cfg.backpressure_interval)
-        watermark = max(1, cfg.hot_low_watermark)
-        min_ratio = min(1.0, max(0.0, cfg.slow_shrink_min_ratio))
-        last_limit = base_limit
-        cycle = 0
-        while True:
-            await asyncio.sleep(interval)
-            cycle += 1
-            try:
-                counts = await proxy_health_store.get_counts()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001 背压失败不能拖垮爬虫
-                self.log.warning(
-                    self.format_log(f"读取代理分档失败，本轮不调整并发：{e!r}")
-                )
+        old_queue = self.task_queue
+        models: list[WorkerModel] = []
+        while not old_queue.empty():
+            item = old_queue.get_nowait()
+            old_queue.task_done()
+            if item is None:
                 continue
-            verified = counts.hot + counts.warm
-            if verified >= watermark:
-                target = base_limit
-            else:
-                ratio = max(min_ratio, verified / watermark)
-                target = max(1, int(round(base_limit * ratio)))
-            if await gate.set_limit(target):
-                self.log.warning(
-                    self.format_log(
-                        f"代理背压：slow 并发 {last_limit} → {target}"
-                        f"（已验证池 hot+warm={verified} < 阈值 {watermark}，"
-                        f"fast 车道不受影响）；分档 {counts.to_log_str()}"
-                    )
+            models.append(item)
+        if not models:
+            return 0
+        if not self.retry_task_type:
+            self.log.warning(
+                self.format_log(
+                    f"发现上一轮残留任务 {len(models)} 条，已丢弃并重建队列"
+                    f"（未声明 retry_task_type，无持久化兜底）。"
                 )
-                last_limit = target
-            elif cycle % 20 == 0:
-                # 每 20 个周期（约 5 分钟）留一条分档快照，便于观察池子变化
-                self.log.warning(
-                    self.format_log(
-                        f"代理分档快照：slow 并发 {gate.limit}/{base_limit}"
-                        f"（活跃 {gate.active}）；{counts.to_log_str()}"
-                    )
-                )
+            )
+            return 0
+        persisted = 0
+        for model in models:
+            if await self._persist_leftover_worker(model):
+                persisted += 1
+        self.log.warning(
+            self.format_log(
+                f"发现上一轮残留任务 {len(models)} 条，已写回重试队列 "
+                f"{persisted} 条并重建队列。"
+            )
+        )
+        return persisted
 
-    async def run(self, init_params: ParamsType | None = None):
+    async def run(
+        self,
+        init_params: ParamsType | None = None,
+        pre_params: List[ParamsType] | None = None,
+    ):
         """
         爬虫的主运行方法，负责任务的生成和调度
 
@@ -891,6 +1103,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         Args:
             init_params: 初始任务参数，用于确定从哪里开始生成后续任务
+            pre_params: 本轮要**优先补跑**的任务参数（来自 ``crawl_failed_task`` 的
+                pending 任务，见 ``load_retry_params``）。它们在任务生成器之前入队，
+                失败会继续留在重试队列里，不依赖游标。
 
         关键机制：
         - 任务队列：异步队列，用于在任务生成器和 worker 之间传递任务
@@ -921,11 +1136,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         # 上一轮被中断时队列中可能残留未执行任务、且 unfinished_tasks 计数可能不为 0
         # （cancel 打断在 get() 与 task_done() 之间时），残留会导致本轮统计被污染、
         # 甚至下一轮 join() 永久等待。
-        leftover = self.task_queue.qsize()
-        if leftover:
-            self.log.warning(
-                self.format_log(f"发现上一轮残留任务 {leftover} 条，已丢弃并重建队列。")
-            )
+        # 残留任务**不能静默丢弃**：先按业务 id 写回重试队列，下一轮会重新取到。
+        await self._persist_leftover_queue_tasks()
 
         # 本轮两条车道都重建（并发闸同理）：取消后计数偏差随本轮一起丢弃。
         fast_queue: asyncio.Queue[WorkerModel | None] = asyncio.Queue()
@@ -960,16 +1172,21 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             task.add_done_callback(task_set.discard)
             task.add_done_callback(self._worker_tasks.discard)
 
-        # slow 车道起一个背压监控：hot 池不足时按比例收缩 slow 并发，fast 车道不受影响
-        if self.proxy_tier is ProxyTier.SLOW:
-            self._backpressure_task = asyncio.create_task(
-                self._proxy_backpressure_loop(slow_gate, slow_base_limit)
-            )
+        # 代理背压（按 hot/warm 分档计数收缩 slow 并发）已停用：
+        # 取免费池回退到「随机一条 status 可用」的老语义后，hot/warm 不再代表
+        # 「可用量」，按它收缩并发只会误伤正常抓取（老版本也没有这个机制）。
 
         # 处理初始参数（仅当 init_params 不为 None 时才入队执行）
         if init_params is not None:
             seqId += 1
             await queue.put(worker_model)
+
+        # 先跑「上一轮没写成功」的补跑任务：它们不依赖游标，必须优先执行，
+        # 否则游标会一直停在最小 pending 之前（见各爬虫 retry_task_type 声明）。
+        for param in pre_params or []:
+            self.log.info(self.format_log(f"补跑重试任务: {param}"))
+            await queue.put(WorkerModel(params=param, seqId=seqId))
+            seqId += 1
 
         # 开始循环生成任务
         try:
@@ -1043,12 +1260,6 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                         f"未完成计数 {unfinished}。"
                     )
                 )
-
-        # 收尾：停掉背压监控
-        if self._backpressure_task is not None:
-            self._backpressure_task.cancel()
-            await asyncio.gather(self._backpressure_task, return_exceptions=True)
-            self._backpressure_task = None
 
         # 发送哨兵值通知所有 worker 退出
         # 发送 worker_count 个哨兵值，确保所有 worker 都能收到退出信号

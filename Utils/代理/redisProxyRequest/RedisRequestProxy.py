@@ -416,14 +416,19 @@ class RequestWithProxy:
         """构造「取不到代理」异常：分别写清出口侧与池子侧的原因，并给出 reason 分类。"""
         local_ok, local_reason = await self._local_exit_state()
         counts = await proxy_health_store.get_counts()
+        # 文案口径（2026-11-16 起）：爬虫默认走 slow 档，取免费池的默认口径是
+        # 「随机取一条 status 可用的就用」—— EWMA / 冷却 / 在途只记账，不再是闸门。
+        # 因此能走到这里，只可能是**池子真空**（或候选全被本任务的失败代理/前缀排除），
+        # 不再写「候选均被在途配额 / EWMA 门槛挡掉」这类已经不会发生的措辞，
+        # 那种文案会把运维引向错误的排查方向。
         pool_empty = (counts.prefix_hot + counts.prefix_warm) <= 0
         pool_reason = (
-            "代理池无合格网段（prefix_hot=0、prefix_warm=0）"
+            "代理池真空（prefix_hot=0、prefix_warm=0，且没有 status 可用的行）"
             if pool_empty
             else (
-                f"代理池有 {counts.prefix_hot} 个 hot / {counts.prefix_warm} 个 warm 网段，"
-                f"但当前候选均被在途配额 / EWMA 门槛挡掉"
-                f"（prefix_cooling={counts.prefix_cooling}）"
+                f"代理池分档还有 {counts.prefix_hot} 个 hot / {counts.prefix_warm} 个 warm 网段，"
+                f"但本次随机取到的候选全部被「本任务内已失败的代理 / 前缀」排除"
+                f"（prefix_cooling={counts.prefix_cooling}，仅观测用）"
             )
         )
         if not local_ok and pool_empty:
