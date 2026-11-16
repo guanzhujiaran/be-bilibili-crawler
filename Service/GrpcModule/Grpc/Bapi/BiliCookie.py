@@ -281,28 +281,79 @@ def cookie_pool_size() -> int:
     return len(_prune_cookie_pool())
 
 
-async def warmup_bili_cookie_pool(count: int | None = None) -> int:
-    """启动期预热：串行生成 N 个 cookie，避免首个业务请求撞上「冷启动长链路」。
+#: 预热并发：激活通道 ``local_exit_only_qps`` 默认 10，取 3 留余量（不要超过该配额）。
+_WARMUP_CONCURRENCY = 3
+#: 单个 cookie 生成失败后的重试等待（秒）：重试 1 次仍失败就跳过，不阻塞后续。
+_WARMUP_RETRY_DELAY_SECONDS = 1.0
 
-    失败只记 warning 并立即返回（生成链路的依赖不可用时会由首个请求继续重试），
-    绝不能因为预热失败影响服务启动。
+
+async def _warmup_one_cookie() -> None:
+    """预热专用：生成**全新** cookie 并写入内存池 + Redis。
+
+    不走 ``get_bili_cookie``：它会优先命中 Redis 池，预热时只会反复拿到同一个旧
+    cookie（生成计数在涨，Redis 里的条目数不变，凑不满 ``warmup_count``）。
+    也不复用全局 ``_cookie_iter``：预热是并发的，同一 async 生成器不能并发 anext。
+    """
+    global _cookie_queue_num
+    cfg = CONFIG.bili_cookie
+    gen = _get_cookie_iter()
+    try:
+        ck = await anext(gen)
+    finally:
+        await gen.aclose()
+    cookie_data = CookieWrapper(
+        ck=ck,
+        ua=ck.gen_web_cookie_params.ua,
+        expire_ts=int(time.time() + cfg.ttl_seconds),
+        max_352_prefixes=cfg.max_352_prefixes,
+    )
+    async with _cookie_lock:
+        _cookie_queue_num += 1
+        _remember_cookie(cookie_data)
+    store = get_cookie_store()
+    if store is not None:
+        await store.save(cookie_data)
+
+
+async def warmup_bili_cookie_pool(count: int | None = None) -> int:
+    """启动期预热：并发生成 N 个 cookie，避免首个业务请求撞上「冷启动长链路」。
+
+    单个 cookie 失败重试 1 次后**跳过并继续下一个**（不再整体中断），
+    最终日志打印「生成 n/target」。预热失败绝不影响服务启动（只 warning，不抛）。
     """
     cfg = CONFIG.bili_cookie
     target = cfg.warmup_count if count is None else count
     target = min(max(0, target), max(1, cfg.pool_size))
+    if target <= 0:
+        bapi_log.info("cookie 池预热跳过：目标数量为 0")
+        return 0
+    semaphore = asyncio.Semaphore(max(1, min(_WARMUP_CONCURRENCY, target)))
     generated = 0
-    for index in range(target):
-        try:
-            await get_bili_cookie()
-            generated += 1
-        except Exception as e:  # noqa: BLE001 —— 预热失败不影响启动
-            bapi_log.warning(
-                f"cookie 池预热中断（已生成 {generated}/{target}，第 {index + 1} 个失败）："
-                f"{type(e).__name__}: {e}"
-            )
-            break
+    skipped = 0
+
+    async def _generate(index: int) -> None:
+        nonlocal generated, skipped
+        async with semaphore:
+            for attempt in (1, 2):
+                try:
+                    await _warmup_one_cookie()
+                except Exception as e:  # noqa: BLE001 —— 预热失败不影响启动
+                    if attempt == 1:
+                        await asyncio.sleep(_WARMUP_RETRY_DELAY_SECONDS)
+                        continue
+                    skipped += 1
+                    bapi_log.warning(
+                        f"cookie 池预热跳过第 {index + 1}/{target} 个"
+                        f"（重试 1 次仍失败）：{type(e).__name__}: {e}"
+                    )
+                    return
+                generated += 1
+                return
+
+    await asyncio.gather(*(_generate(i) for i in range(target)))
     bapi_log.info(
-        f"cookie 池预热完成：生成 {generated}/{target} 个，池内现有 {cookie_pool_size()} 个"
+        f"cookie 池预热完成：生成 {generated}/{target} 个"
+        f"（失败跳过 {skipped} 个），池内现有 {cookie_pool_size()} 个"
     )
     return generated
 

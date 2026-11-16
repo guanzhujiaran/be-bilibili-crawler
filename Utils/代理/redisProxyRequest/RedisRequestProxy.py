@@ -299,6 +299,11 @@ class RequestWithProxy:
             self.log.info(message)
 
     @staticmethod
+    def _quota_text(qps: float) -> str:
+        """配额文案：``qps<=0`` 时不显示「0.0 req/s」，避免被读成「零配额」。"""
+        return "配额不限" if qps <= 0 else f"配额 {qps:g} req/s"
+
+    @staticmethod
     def _local_exit_quota(request_conf: RequestConf | None) -> tuple[str, float]:
         """本次请求该用的专线配额：``(通道名, QPS)``。
 
@@ -332,7 +337,9 @@ class RequestWithProxy:
         1. 本任务内已经失败过（或其前缀失败过）→ 不再重试，同段换地址没有意义；
         2. 前缀处于风控冷却（412/352 记在 /64 上）→ 冷却期内一律不用，
            **但 ``ignore_risk_cooldown`` 的请求跳过这一道**（冷却只对业务通道有意义）；
-        3. 独立通道 QPS 配额（专线独占走 ``local_exit_only_qps``，业务走 ``local_ipv6_qps``）。
+        3. 独立通道 QPS 配额（专线独占走 ``local_exit_only_qps``，业务走 ``local_ipv6_qps``；
+           业务通道默认 ``0`` = 不限速，此时直接放行、不做 Redis 计数，也不产生
+           ``blocked_quota`` 统计）。
         """
         cfg = CONFIG.proxy_health
         channel, qps = self._local_exit_quota(request_conf)
@@ -377,17 +384,18 @@ class RequestWithProxy:
                     qps=qps,
                 )
 
-        if not await proxy_health_store.acquire_qps(
+        # qps<=0 = 业务通道不限速：跳过 Redis 计数，也不产生 blocked_quota / 配额告警
+        if qps > 0 and not await proxy_health_store.acquire_qps(
             channel,
             qps,
             cfg.local_ipv6_qps_wait,
         ):
             self._local_gate_stats.blocked_quota += 1
             self._warn_local_gate(
-                f"自建出口超出 QPS 配额（通道 {channel}，{qps} req/s），本次不使用"
+                f"自建出口超出 QPS 配额（通道 {channel}，{qps:g} req/s），本次不使用"
             )
             return LocalExitGate(
-                reason=f"自建出口通道 {channel} 超出 QPS 配额（{qps} req/s）",
+                reason=f"自建出口通道 {channel} 超出 QPS 配额（{self._quota_text(qps)}）",
                 channel=channel,
                 qps=qps,
             )
@@ -414,7 +422,12 @@ class RequestWithProxy:
         prefix = proxy_prefix_of(proxy_key)
         if prefix and await proxy_health_store.is_prefix_cooling(prefix):
             return False, f"自建出口风控冷却中（前缀 {prefix}，冷却期内不换地址绕行）"
-        return True, f"自建出口未取到（QPS 配额 {cfg.local_ipv6_qps}/s 已满或本任务内已失败）"
+        quota = (
+            f"QPS 配额 {cfg.local_ipv6_qps:g}/s 已满"
+            if cfg.local_ipv6_qps > 0
+            else "QPS 配额不限"
+        )
+        return True, f"自建出口未取到（{quota}；本任务内已失败或前缀被排除）"
 
     async def _unavailable_error(
         self, tier: ProxyTier, *, local_tried: bool, extra: str = ""
@@ -481,7 +494,7 @@ class RequestWithProxy:
         reason = RequestProxyUnavailableError.REASON_LOCAL_EXIT_ONLY
         message = (
             f"专线独占请求且自建出口不可用（reason={reason}，tier={tier.value}，"
-            f"出口={exit_addr}，通道={gate.channel}，配额 {gate.qps} req/s）："
+            f"出口={exit_addr}，通道={gate.channel}，{self._quota_text(gate.qps)}）："
             f"{gate.reason}；按 local_exit_only 语义不降级到代理池、也不直连，"
             f"交由上层重建 / 重新入队"
         )
@@ -558,8 +571,11 @@ class RequestWithProxy:
             if fallback is not None:
                 self._local_gate_stats.degraded_to_pool += 1
                 self._local_exit_degraded_in_cooldown += 1
+                reason_text = "风控冷却 / 本任务内已失败"
+                if cfg.local_ipv6_qps > 0:
+                    reason_text += " / 超出 QPS 配额"
                 self._warn_local_gate(
-                    "自建出口不可用（风控冷却 / 超出 QPS 配额），本次降级到代理池"
+                    f"自建出口不可用（{reason_text}），本次降级到代理池"
                 )
                 return fallback, False
             raise await self._unavailable_error(
@@ -584,7 +600,7 @@ class RequestWithProxy:
         if fallback.proxy is not None:
             self._warn_local_gate(
                 f"代理池无符合 tier={tier.value} 的代理，本次使用自建出口兜底"
-                f"（配额 {fallback.qps} req/s）"
+                f"（{self._quota_text(fallback.qps)}）"
             )
             return fallback.proxy, True
         raise await self._unavailable_error(tier, local_tried=True)
@@ -623,8 +639,9 @@ class RequestWithProxy:
         # 在途计数：
         # - 池代理：地址级 + 前缀级都记（fast 档 in_flight<2，
         #   同段 in_flight<prefix_inflight_limit，避免整段并发打满被整段封）；
-        # - 自建出口：并发只由 QPS 配额控制，不记在途 —— 否则 15s 超时 × 3 req/s
-        #   会让 prefix_inflight_limit 常驻打满，把专线自己锁死。
+        # - 自建出口：不记在途 —— 否则 15s 超时 × 低 QPS 配额会让
+        #   prefix_inflight_limit 常驻打满，把专线自己锁死（业务通道默认不限速，
+        #   仍保留此规则，避免回滚 ``local_ipv6_qps=3`` 时重新触发该问题）。
         track_flight = bool(proxy_key) and not is_local
         if track_flight:
             await proxy_health_store.acquire_in_flight(proxy_key)

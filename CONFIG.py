@@ -1,8 +1,9 @@
 from bili_common.models import StrEnumAutoDoc
+import math
 import os
 from dataclasses import dataclass
 from fake_useragent import UserAgent
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import AsyncAdaptedQueuePool
 
@@ -471,11 +472,21 @@ class ProxyHealthConfig(BaseModel):
     local_ipv6_channel: str = Field(
         default="local-ipv6", description="自建出口的通道名（QPS 配额按通道独立计数）"
     )
+    # 默认 0 = 业务通道不限速：2026-11-17 生产排查显示专线本身健康（直测 200 / 87~250ms），
+    # 是 3 req/s 的通道配额把约一半请求挤进了公共池（会话池排队 → 空消息 TimeoutError）。
+    # 字段保留作为回滚开关（``PROXY_HEALTH__LOCAL_IPV6_QPS=3``，改 env + 重启即可，不动代码）。
+    # **风险**：去掉限速后单条固定出口只剩「前缀风控冷却」兜底 —— 412/352 会触发 /64
+    # 冷却 2h / 6h / 24h；若风控命中明显上升，用上面的 env 把配额加回来。
     local_ipv6_qps: float = Field(
-        default=3.0, description="自建出口独立 QPS 配额（固定 1 秒窗口；<=0 表示不限）"
+        default=0.0,
+        description="自建出口**业务通道**的独立 QPS 配额（固定 1 秒窗口；<=0 表示不限）。"
+        "默认不限速，单条固定出口仅靠前缀风控冷却兜底（412/352 → /64 冷却 2h/6h/24h）；"
+        "需要限速时用 PROXY_HEALTH__LOCAL_IPV6_QPS=3 覆盖回滚",
     )
+    # 仅在 local_ipv6_qps > 0 时才会走到等待分支；不限速时本字段不生效。
     local_ipv6_qps_wait: float = Field(
         default=1.0, description="自建出口超出配额时最多等待多久（秒），之后快速失败"
+        "（仅 local_ipv6_qps > 0 时生效）"
     )
     local_ipv6_weight: int = Field(
         default=10, description="非强制场景下抽到自建出口的权重（相对 pool_weight）"
@@ -498,7 +509,8 @@ class ProxyHealthConfig(BaseModel):
     local_exit_only_qps: float = Field(
         default=10.0,
         description="专线独占通道的独立 QPS 配额（固定 1 秒窗口；<=0 表示不限）。"
-        "它只约束 cookie / metadata 这类激活请求，不影响业务通道的 local_ipv6_qps",
+        "它只约束 cookie / metadata 这类激活请求，不影响业务通道"
+        "（业务通道 local_ipv6_qps 默认已不限速）",
     )
     local_exit_ignore_risk_cooldown: bool = Field(
         default=True,
@@ -574,12 +586,16 @@ class BiliCookieConfig(BaseModel):
     env 覆盖（嵌套双下划线）：``BILI_COOKIE__WARMUP_COUNT=4``
     """
 
-    pool_size: int = Field(default=50, description="cookie 池最大容量（超过后挤掉最旧的）")
+    # 池容量必须明显大于 warmup_count：``warmup_bili_cookie_pool`` 里有
+    # ``min(target, pool_size)`` 截断，且内存池是 LRU —— 50:50 会顶满并互相挤掉。
+    pool_size: int = Field(default=100, description="cookie 池最大容量（超过后挤掉最旧的）")
     ttl_seconds: int = Field(
         default=8 * 3600, description="单个 cookie 在池内的有效期（秒）"
     )
+    # 默认 50：与生产并发（lottery_api=20 等）匹配，避免首批请求现场跑完整生成链路；
+    # 预热按 3 路并发生成，单个失败重试 1 次后跳过，不会因为一个失败停在 0~1 个。
     warmup_count: int = Field(
-        default=2,
+        default=50,
         description="启动期预热的 cookie 个数：避免首个请求现场跑完整生成链路",
     )
     warmup_on_startup: bool = Field(
@@ -624,14 +640,19 @@ class WebSessionConfig(BaseModel):
     pool_enabled: bool = Field(
         default=True, description="是否启用 AsyncSession LRU/TTL 池（业务请求复用连接）"
     )
+    # 50 个预热 cookie + 匿名 ``anon:web`` ≈ 51 个会话键，64 太紧：
+    # LRU 会把仍在用的 cookie 会话挤掉重连（会话池意义消失）。
     pool_max_sessions: int = Field(
-        default=64, description="池内最多保留多少个会话（按 LRU 淘汰）"
+        default=128, description="池内最多保留多少个会话（按 LRU 淘汰）"
     )
     pool_ttl_seconds: float = Field(
         default=300.0, description="会话空闲超过该秒数后关闭并从池中移除"
     )
-    pool_max_clients: int = Field(
-        default=10, description="单个 AsyncSession 的 curl 句柄并发上限"
+    # None = 按 ``Settings.web_session_pool_max_clients``（ConcurrencyConfig 汇总）自动计算；
+    # 显式值优先，仍可用 ``WEB_SESSION__POOL_MAX_CLIENTS=20`` 覆盖。
+    pool_max_clients: int | None = Field(
+        default=None,
+        description="单个 AsyncSession 的 curl 句柄并发上限；None = 按爬虫并发自动计算",
     )
 
 
@@ -975,6 +996,39 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     bili_cookie: BiliCookieConfig = BiliCookieConfig()
     # ===== Web 会话复用（按 buvid 固定指纹 + AsyncSession LRU/TTL 池）=====
     web_session: WebSessionConfig = WebSessionConfig()
+
+    @computed_field
+    @property
+    def web_session_pool_max_clients(self) -> int:
+        """单个 AsyncSession 的 curl 句柄并发上限：显式值 > 按爬虫并发计算。
+
+        ``WebSessionConfig`` 是嵌套模型，看不到兄弟字段 ``concurrency``，
+        所以汇总只能放在 ``Settings`` 上（不要读全局单例，避免导入期循环依赖）。
+
+        汇总口径：同一进程内所有爬虫的 worker 并发之和（``space_dyn`` / ``judge_dyn``
+        按阶段切换，取较大者而不是相加），再按 1.2 倍留余量并夹在 [32, 256]。
+        默认值下为 128：20+20+1+1+20+1+1+1+20+1+max(20,20)=106，×1.2≈128。
+        """
+        explicit = self.web_session.pool_max_clients
+        if explicit is not None:
+            return max(1, int(explicit))
+        c = self.concurrency
+        total = (
+            c.dyn_detail
+            + c.rm_following
+            + c.reserve
+            + c.topic
+            + c.lottery_api
+            + c.refresh_lot_db
+            + c.sams_club
+            + c.sams_club_spu
+            + c.bili_live
+            + c.get_others_lot_dyn
+            + max(c.space_dyn, c.judge_dyn)
+        )
+        total = max(total, c.crawler_workers)
+        return min(256, max(32, math.ceil(total * 1.2)))
+
     # ===== 业务请求随机节流 / 浏览路径模拟 =====
     crawler_throttle: CrawlerThrottleConfig = CrawlerThrottleConfig()
     # ===== up 主动态监控（间隔 / 基线条数 / 推送正文截断）=====
@@ -1366,6 +1420,9 @@ class _CONFIG:
     # B 站 web cookie 池 / up 主动态监控 / gRPC 设备池风控参数
     bili_cookie = settings.bili_cookie
     web_session = settings.web_session
+    # 会话池单 session 并发上限：pool_max_clients 为 None 时按 concurrency 汇总计算
+    # （见 Settings.web_session_pool_max_clients），SessionPool 优先读这里。
+    web_session_max_clients = settings.web_session_pool_max_clients
     crawler_throttle = settings.crawler_throttle
     space_monitor = settings.space_monitor
     grpc_device = settings.grpc_device

@@ -98,7 +98,14 @@ class WebSessionPool:
 
     @property
     def max_clients(self) -> int:
-        value = CONFIG.web_session.pool_max_clients if self._max_clients is None else self._max_clients
+        """单 session 并发上限：构造参数 > 全局计算值 > 配置显式值 > 32。"""
+        if self._max_clients is not None:
+            return max(1, int(self._max_clients))
+        value = getattr(CONFIG, "web_session_max_clients", None)
+        if value is None:
+            value = CONFIG.web_session.pool_max_clients
+        if value is None:
+            value = 32
         return max(1, int(value))
 
     @property
