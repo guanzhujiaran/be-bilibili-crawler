@@ -1,5 +1,7 @@
 from typing import List, Any
 from dataclasses import dataclass, field
+import json
+
 from pydantic import Field, ConfigDict
 
 from Models.base.custom_pydantic import CustomBaseModel
@@ -86,6 +88,54 @@ class CookieWrapper:
     @property
     def able(self) -> bool:
         return self.times_352 < max(1, self.max_352_prefixes)
+
+    # ---- Redis 持久化序列化（跨进程 / 重启复用） ----
+    def to_record(self) -> dict:
+        """转成可 JSON 序列化的记录（cookie 字段 + 风控计数）。"""
+        return {
+            "ck": json.loads(self.ck.model_dump_json(by_alias=True)),
+            "ua": self.ua,
+            "expire_ts": self.expire_ts,
+            "times_352": self.times_352,
+            "max_352_prefixes": self.max_352_prefixes,
+            "times_352_by_prefix": dict(self.times_352_by_prefix),
+        }
+
+    @classmethod
+    def from_record(cls, data: dict) -> "CookieWrapper":
+        """从 Redis 记录还原。
+
+        ``GenWebCookieParams.model_post_init`` 会重新生成 payload / buvid_fp
+        （内部含随机 canvas 串），因此这里用序列化时保存的 ``buvid_fp`` 覆盖回去，
+        保证「同一个 cookie 反序列化后指纹不变」，否则服务端会看到同一 buvid
+        对应两套 fp。
+        """
+        ck_payload = dict(data["ck"])
+        params_payload = dict(ck_payload.get("gen_web_cookie_params") or {})
+        saved_buvid_fp = params_payload.get("buvid_fp")
+        # 兼容旧记录：历史指纹库可能把 int/str 字段写成 null
+        for key, default in (
+            ("deviceMemory", 8),
+            ("CPUCoreNum", 8),
+            ("renderer", ""),
+            ("vendor", ""),
+            ("renderer_id", ""),
+        ):
+            if params_payload.get(key) is None:
+                params_payload[key] = default
+        ck_payload["gen_web_cookie_params"] = params_payload
+        ck = BiliWebCookie.model_validate(ck_payload)
+        if saved_buvid_fp:
+            ck.gen_web_cookie_params.buvid_fp = saved_buvid_fp
+            ck.buvid_fp = saved_buvid_fp
+        return cls(
+            ck=ck,
+            ua=data.get("ua") or ck.gen_web_cookie_params.ua,
+            expire_ts=int(data.get("expire_ts") or 0),
+            times_352=int(data.get("times_352") or 0),
+            max_352_prefixes=int(data.get("max_352_prefixes") or 3),
+            times_352_by_prefix=dict(data.get("times_352_by_prefix") or {}),
+        )
 
 
 if __name__ == "__main__":

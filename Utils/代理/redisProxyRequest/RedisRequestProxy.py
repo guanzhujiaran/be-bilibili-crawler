@@ -46,12 +46,18 @@ from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
 from log.base_log import request_with_proxy_logger, Voucher352_logger
 from Models.AntiRisk.Bili.WebCookie import CookieWrapper
 from Utils.代理.SealedRequests import my_async_httpx
+from Utils.代理.BrowsingPacer import browsing_pacer
 from Utils.代理.mdoel.ProxyTier import ProxyTier
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.代理.mdoel.request_context import (
     excluded_proxy_keys,
     note_failed_proxy,
     resolve_tier,
+    retry_sleep,
+)
+from Utils.代理.session_profile import (
+    session_key_from_headers,
+    session_key_of_cookie,
 )
 from Utils.代理.数据库操作.ProxyCommOp import get_available_proxy
 from Utils.代理.数据库操作.ProxyEvent import (
@@ -521,6 +527,21 @@ class RequestWithProxy:
         """
         cfg = CONFIG.proxy_health
 
+        # 只要池、不走自建出口：GetOthersLotDyn 这类必须换 IP 的批量任务。
+        # 池空时明确失败，不回落自建出口（否则又会变成固定出口高频请求）。
+        # 与 local_exit_only / is_use_custom_proxy 同时开启时，显式通道语义优先。
+        if (
+            request_conf.pool_only
+            and not request_conf.local_exit_only
+            and not request_conf.is_use_custom_proxy
+        ):
+            proxy = await self._pool_proxy(tier)
+            if proxy is not None:
+                return proxy, False
+            raise await self._unavailable_error(
+                tier, extra="pool_only 请求且代理池无候选（不回落自建出口）"
+            )
+
         if request_conf.is_use_custom_proxy or request_conf.local_exit_only:
             gate = await self._acquire_local_exit(tier, request_conf)
             if gate.proxy is not None:
@@ -585,6 +606,17 @@ class RequestWithProxy:
         健康度按前缀（IPv6 /64、IPv4 /24）判定，地址级只作日志明细。
         """
         tier = resolve_tier(request_conf)
+        # 业务请求随机节流 / 浏览路径模拟：在选代理之前、重试退避之外。
+        # local_exit_only / skip_throttle 由 pacer 内部豁免（返回 0）。
+        pace_delay = browsing_pacer.delay_for(request_conf)
+        if pace_delay > 0:
+            await retry_sleep(pace_delay)
+        # 会话键决定固定 TLS 指纹 + UA：显式值 > cookie 对象 > Cookie 头 > 匿名
+        session_key = (
+            request_conf.session_key
+            or session_key_of_cookie(cookie_data)
+            or session_key_from_headers(kwargs.get("headers"))
+        )
         proxy, is_local = await self._select_proxy(request_conf, tier)
         proxy_key = to_proxy_key(proxy.proxy) or ""
         prefix = proxy_prefix_of(proxy_key)
@@ -605,6 +637,7 @@ class RequestWithProxy:
                 request_conf=request_conf,
                 cookie_data=cookie_data,
                 is_local=is_local,
+                session_key=session_key,
                 **kwargs,
             )
         finally:
@@ -620,6 +653,7 @@ class RequestWithProxy:
         request_conf: RequestConf,
         cookie_data: CookieWrapper | None = None,
         is_local: bool = False,
+        session_key: str | None = None,
         **kwargs,
     ) -> dict | list[dict] | curl_cffi.requests.models.Request:
         is_use_custom_proxy: bool = request_conf.is_use_custom_proxy
@@ -653,6 +687,10 @@ class RequestWithProxy:
                     **kwargs,
                     timeout=request_timeout,
                     proxies=proxy.proxy,
+                    session_key=session_key,
+                    # 激活链路是一次性握手：不进会话池，用完即关，
+                    # 避免连接跨出口复用（见 SessionPool 文档）
+                    ephemeral=request_conf.local_exit_only,
                 )
             req_text = req.text
             # 407 = 代理需要认证：HTTP 层是「成功」的，但代理不可用，必须当作网络层失败
@@ -707,6 +745,16 @@ class RequestWithProxy:
                     if cookie_data:
                         # 按「出口前缀」去重计数：同一个坏出口连续命中不会把整个 cookie 池废掉
                         cookie_data.note_352(proxy_prefix_of(proxy_key))
+                        # 把计数写回 Redis，跨进程继续生效（失败只降级，不影响本次请求）
+                        from Service.GrpcModule.Grpc.Bapi.BiliCookie import (
+                            persist_cookie_risk,
+                        )
+
+                        persist_task = asyncio.create_task(
+                            persist_cookie_risk(cookie_data)
+                        )
+                        self.task_set.add(persist_task)
+                        persist_task.add_done_callback(self.task_set.discard)
                     # 异常消息会被上层写进 ERROR 日志：只带 code/关键 id 与脱敏后的请求摘要，
                     # 不再拼整个响应体 / 完整 kwargs（里面有 cookie 头）。
                     err_msg = (

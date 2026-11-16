@@ -1,0 +1,73 @@
+{
+  "captured_at": "2026-11-16",
+  "browser_ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/153.0.0.0 Safari/537.36",
+  "pages": [
+    "https://www.bilibili.com/",
+    "https://space.bilibili.com/1/dynamic"
+  ],
+  "total_requests": 229,
+  "wasm_network_requests": 0,
+  "html_contains_wasm_keyword": false,
+  "sdk": {
+    "url": "https://s1.hdslb.com/bfs/seed/jinkela/short/minntaki-wasm-sdk/bili-sc-sdk.umd.js",
+    "sha256": "1358f3b2006add8176f7258fbad44b4188fe48987efc5a8f932ea69a78468f0d",
+    "bytes": 377583,
+    "content_type": "application/javascript",
+    "notes": "WebAssembly 以 base64 内嵌；未单独请求 .wasm"
+  },
+  "inline_wasm": {
+    "sha256": "f28f166985a262a8e2980348c0f25e95f37f1a76e96b6e9474f051bc4483f317",
+    "bytes": 231536,
+    "magic": "0061736d01000000",
+    "exports": ["memory", "encrypt_data", "__wbindgen_export_0", "__wbindgen_export_1", "__wbindgen_export_2", "__wbindgen_add_to_stack_pointer", "__wbindgen_export_3"],
+    "imports_sample": ["wbg.__wbg_getRandomValues_b8f5dbd5f3995a9e", "wbg.__wbg_crypto_574e78ad8b13b65f", "wbg.__wbindgen_memory"],
+    "tooling_note": "REA inspect_wasm_artifact 需要 WABT（REA_WABT_BIN_DIRECTORY），本机未配置；导出/导入表由二进制 section 手工解析"
+  },
+  "steps": [
+    {
+      "name": "ExClimbWuzhi",
+      "method": "POST",
+      "url": "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbWuzhi",
+      "content_type": "application/json;charset=UTF-8",
+      "request_bytes": 5429,
+      "response": "{\"code\":0,\"message\":\"OK\",\"ttl\":1,\"data\":{}}",
+      "initiator": "log-reporter.js:1:42785",
+      "payload_fields": ["3064", "5062", "03bf", "39c8", "34f1", "d402", "654a", "6e7c", "3c43", "54ef", "8b94", "df35", "07a4", "5f45", "db46"]
+    },
+    {
+      "name": "ExGetAxe",
+      "method": "GET",
+      "url": "https://api.bilibili.com/x/internal/gaia-gateway/ExGetAxe",
+      "response_bytes": 915,
+      "response_data": {
+        "version": "v1",
+        "deadline": 2524608000,
+        "public_key_prefix": "-----BEGIN rsa public key-----\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA1SomDTbicibEZdRNTFIf...",
+        "public_key_chars": 807
+      },
+      "initiator": "bili-sc-sdk.umd.js:0:369904"
+    },
+    {
+      "name": "ExClimbCongLing",
+      "method": "POST",
+      "url": "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbCongLing",
+      "content_type": "application/json",
+      "request_bytes": 8261,
+      "response": "{\"code\":0,\"message\":\"OK\",\"ttl\":1,\"data\":{}}",
+      "envelope": {
+        "top_keys": ["header", "encrypt_payload"],
+        "header_keys": ["encode_type", "payload_type", "encoded_aes_key", "ts", "encoded_version"],
+        "encode_type": 2,
+        "payload_type": 4,
+        "encoded_version": "v1",
+        "encoded_aes_key_b64_chars": 684,
+        "encoded_aes_key_raw_bytes": 512,
+        "encrypt_payload_b64_chars": 7448,
+        "encrypt_payload_raw_bytes": 5584,
+        "encrypt_payload_head_hex": "dfe9e6118dbafff9016eddb47b2945d9"
+      },
+      "initiator": "bili-sc-sdk.umd.js:0:369904"
+    }
+  ],
+  "boundary": "encrypt_data 由内联 WASM 生成；无 WASM 执行环境时无法复现 encoded_aes_key / encrypt_payload，代码选择显式跳过而非伪造"
+}

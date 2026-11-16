@@ -164,6 +164,9 @@ class ReserveScrapyRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "reserve"
     worker_max_timeout: int | None = 300
+    # 预约抽奖对时效敏感（预约名额 / 开奖状态变化快）：走 fast 车道，
+    # 只取 hot/warm 已验证代理，拿不到就快速失败交回队列，不占用 worker 慢慢探测。
+    proxy_tier: ProxyTier = ProxyTier.FAST
     # 至少一次（马上重试）：失败既落 crawl_failed_task，也**无条件立即插回队首**重试
     # （不等退避、不进队尾 —— 前面的 id 缺失会影响后面的结束判断）
     requeue_on_fetch_fail: bool = True
@@ -180,6 +183,8 @@ class TopicRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "topic"
     worker_max_timeout: int | None = 300
+    # 话题活动有时间窗口，新话题需要尽快发现：走 fast 车道
+    proxy_tier: ProxyTier = ProxyTier.FAST
     # 至少一次（马上重试）：同上
     requeue_on_fetch_fail: bool = True
     max_requeue_per_task: int | None = 20
@@ -198,6 +203,8 @@ class LotteryApiRobotConfig(CrawlerConfig):
     """
 
     concurrency_key: str = "lottery_api"
+    # 官方抽奖动态 / 预约 notice 有时效性，需要尽快判定：走 fast 车道
+    proxy_tier: ProxyTier = ProxyTier.FAST
     # 至少一次（马上重试）：官方抽奖动态 / 预约 notice 失败后立刻插回队首重试
     requeue_on_fetch_fail: bool = True
     max_requeue_per_task: int | None = 20
@@ -235,6 +242,8 @@ class BiliLiveCrawlerConfig(CrawlerConfig):
     """直播监控爬虫配置（env: BILI_LIVE__*）"""
 
     concurrency_key: str = "bili_live"
+    # 直播抽奖开奖即时性强，需要尽快轮询到新分区/新房间：走 fast 车道
+    proxy_tier: ProxyTier = ProxyTier.FAST
     logger: Any = live_monitor_logger
     plugins: List[PluginConfig] = []
 
@@ -249,8 +258,11 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
     requeue_on_timeout: bool = False
     max_retries: int = 0
     worker_error_delay: int = 0
-    # 空间动态 / 抽奖判定天然依赖「大量不同 IP 低频访问」，走 slow 车道做代理探测
-    proxy_tier: ProxyTier = ProxyTier.SLOW
+    # 抽奖判定对时效有要求（他人刚转发的动态要尽快落库），走 fast 车道：
+    # 只从已验证的 hot/warm 代理里取，避免把时间耗在 cold 代理探测上。
+    # 注：内部空间动态 / 动态详情 / 评论的 RequestConf 显式带 tier=FAST，
+    # 否则历史参数 is_use_available_proxy=True 会把档位重新解析成 slow。
+    proxy_tier: ProxyTier = ProxyTier.FAST
     logger: Any = get_others_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),

@@ -140,6 +140,11 @@ class gen_x_bili_ticket:
         return mac.digest()
 
 
+def order_metadata(metadata: tuple[tuple, ...]) -> tuple[tuple, ...]:
+    """gRPC metadata 按 key 字典序排序（真机抓包 22/22 的顺序）。"""
+    return tuple(sorted(metadata, key=lambda item: item[0]))
+
+
 async def make_metadata(
     access_key,
     brand="OnePlus",
@@ -241,6 +246,10 @@ async def make_metadata(
     metadata = metadata + tuple(credential_headers)
     if access_key:
         metadata = metadata + (("authorization", f"identify_v1 {access_key}"),)
+    # 真机抓包（work/capture/grpc_headers.jsonl）22/22 的业务头均为字典序。
+    # ticket / region / authorization 是后追加的，统一排序后再交给 gRPC，
+    # 保证「代码内组装顺序 == 抓包基线」（HTTP/2 本身不保证 header 顺序）。
+    metadata = order_metadata(metadata)
 
     metadata_basic_info = MetaDataBasicInfo(
         buvid=device.buvid,

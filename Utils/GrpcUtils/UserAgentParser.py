@@ -59,6 +59,17 @@ class UserAgentParser:
         return headers
 
     def get_headers_dict(self, extra_headers_dict: dict | None = None) -> dict:
+        """按 REA 抓包观测到的字典序组装浏览器 XHR 头。
+
+        证据：REA 抓包（Chromium）里 17 个 ``api.bilibili.com`` XHR 的头顺序
+        全部是字典序：``accept, accept-encoding, accept-language, cookie, origin,
+        priority, referer, sec-ch-ua, sec-ch-ua-mobile, sec-ch-ua-platform,
+        sec-fetch-dest, sec-fetch-mode, sec-fetch-site, user-agent``。
+
+        注意：curl_cffi 在发请求时会自行重排 header，这里排序的收益是
+        「代码可审计 + 单测可锁定」，不宣称改变 wire 顺序
+        （见 docs/be-bilibili-crawler-风控对抗加固计划书.md §1.3）。
+        """
         origin_headers = {
             "user-agent": self.user_agent,
             "accept": "*/*",
@@ -71,7 +82,7 @@ class UserAgentParser:
         }
         if extra_headers_dict:
             filtered_headers_dict.update(extra_headers_dict)
-        return filtered_headers_dict
+        return dict(sorted(filtered_headers_dict.items()))
 
     @staticmethod
     def parse_h5_ua(dalvik_ua: str, buvid: str, session_id: str) -> str:

@@ -156,6 +156,12 @@ async def life_span(app: FastAPI):
     [x.cancel() for x in back_ground_tasks]
     await asyncio_gather(*back_ground_tasks, log=myfastapi_logger)
     stage.mark("background_tasks_cancelled")
+    # 关闭 Web 会话池：AsyncSession 的 curl 句柄必须在事件循环结束前显式释放，
+    # 否则进程退出时连接会以「半开」状态留在系统里（容器重启后上游侧仍见到旧连接）。
+    from Utils.代理.SessionPool import web_session_pool
+
+    await web_session_pool.aclose()
+    stage.mark("web_session_pool_closed")
     myfastapi_logger.info("其他服务已取消")
 
 

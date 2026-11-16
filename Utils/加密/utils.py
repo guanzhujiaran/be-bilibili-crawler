@@ -189,10 +189,12 @@ class GenWebCookieParams(CustomBaseModel):
         - renderer 格式为: ANGLE (...) #X...随机ID...
         """
         rand_finger = fingerprint_generator.generate()
-        self.CPUCoreNum = rand_finger.navigator.hardwareConcurrency
-        self.deviceMemory = rand_finger.navigator.deviceMemory
-        self.renderer = rand_finger.videoCard.renderer
-        self.vendor = rand_finger.videoCard.vendor
+        # 指纹库在无头 / 受限环境可能返回 None；字段声明是 int/str，
+        # 直接赋值会绕过校验，导致后续序列化出 null 再反序列化时失败。
+        self.CPUCoreNum = rand_finger.navigator.hardwareConcurrency or 8
+        self.deviceMemory = rand_finger.navigator.deviceMemory or 8
+        self.renderer = rand_finger.videoCard.renderer or ""
+        self.vendor = rand_finger.videoCard.vendor or ""
         self.payload_str = BuvidFp.gen_payload(buvid_payload_params=self)
         self.buvid_fp = BuvidFp.gen(self.payload_str, 31)
 

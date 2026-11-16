@@ -29,6 +29,7 @@ from Service.GetOthersLotDyn.Sql.sql_helper import (
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_reply_main
 from Utils.推送.PushMe import a_pushme
 from Utils.代理.mdoel.RequestConf import RequestConf
+from Utils.代理.mdoel.ProxyTier import ProxyTier
 
 
 @dataclass(slots=True)
@@ -383,7 +384,11 @@ class LotUserPoolService:
                         next_cursor,
                         str(_type),
                         mode=2,
-                        request_conf=RequestConf(is_use_available_proxy=True),
+                        request_conf=RequestConf(
+                            is_use_available_proxy=True,
+                            pool_only=True,
+                            tier=ProxyTier.FAST,
+                        ),
                     )
                     if not reply or reply.get("code") != 0:
                         break

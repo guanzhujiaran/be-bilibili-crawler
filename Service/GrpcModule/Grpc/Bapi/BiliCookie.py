@@ -7,6 +7,7 @@ from urllib.parse import quote
 from CONFIG import CONFIG
 from log.base_log import bapi_log
 from Models.AntiRisk.Bili.WebCookie import BiliWebCookie, CookieWrapper
+from Models.AntiRisk.Bili.CookieRedisStore import CookieRedisStore
 from Service.GrpcModule.Grpc.Bapi.BiliApiBase import (
     get_frontend_finger_spi,
     gen_web_ticket,
@@ -19,7 +20,8 @@ from Service.GrpcModule.Grpc.Bapi.Constants import (
     EXCLIMB_WUZHI_COOKIE_KEYS,
 )
 from Utils.加密.utils import GenWebCookieParams
-from Utils.加密.utils import lsid
+from Utils.加密.utils import lsid, uuidInfoc
+from Utils.代理.session_profile import profile_for_session_key
 
 
 class BiliCookieGenerationError(RuntimeError):
@@ -36,6 +38,28 @@ _fake_cookie_list: list[CookieWrapper] = []
 _cookie_queue_num = 0
 #: 当前使用的 cookie 生成器。默认惰性创建；被取消 / 关闭后可随时重建（见 ``_next_bili_cookie``）。
 _cookie_iter: AsyncGenerator[BiliWebCookie, None] | None = None
+#: Redis 持久化（跨进程 / 重启复用）；Redis 异常时自动降级为进程内存池。
+_cookie_store: CookieRedisStore | None = None
+
+
+def get_cookie_store() -> CookieRedisStore | None:
+    """返回 Redis 池；关闭持久化时返回 None（回退到原内存池）。"""
+    global _cookie_store
+    if not CONFIG.bili_cookie.persist_to_redis:
+        return None
+    if _cookie_store is None:
+        _cookie_store = CookieRedisStore()
+    return _cookie_store
+
+
+async def persist_cookie_risk(cookie_data: CookieWrapper | None) -> None:
+    """把 -352 计数写回 Redis（跨进程继续生效）。
+
+    只在命中风控时调用，不进入正常请求热路径；Redis 失败只降级，不抛异常。
+    """
+    store = get_cookie_store()
+    if store is not None and cookie_data is not None:
+        await store.save(cookie_data)
 
 
 async def _gen_buvid4(cookie: BiliWebCookie) -> None:
@@ -119,11 +143,19 @@ async def _active_gaia_step(cookie: BiliWebCookie) -> None:
 
 
 async def _bili_web_cookie_gen_once() -> BiliWebCookie:
-    """生成单个 BiliWebCookie 实例"""
-    rand_ua = CONFIG.rand_ua
+    """生成单个 BiliWebCookie 实例。
+
+    UA 不再来自 ``CONFIG.rand_ua``：先确定本会话的 ``_uuid``，再用稳定哈希选出
+    Chrome 指纹 + 同主版本 UA（见 ``session_profile``）。这样后续所有请求的
+    TLS 指纹、UA、Client Hints 都与 cookie 会话同源，避免「JA3 说 Chrome、
+    UA 说 Firefox」的交叉校验错位。
+    """
+    session_key = uuidInfoc.gen()
+    profile = profile_for_session_key(session_key)
     cookie = BiliWebCookie(
         gen_web_cookie_params=GenWebCookieParams(
-            ua=rand_ua,
+            uuid=session_key,
+            ua=profile.ua,
             window_h=random.randint(1080, 1440),
             window_w=random.randint(1920, 2560),
             avail_w=random.randint(1920, 2560),
@@ -191,14 +223,37 @@ def _prune_cookie_pool() -> list[CookieWrapper]:
     return alive
 
 
+def _remember_cookie(cookie_data: CookieWrapper) -> None:
+    """把 cookie 记进进程内存池（去重 + 按容量挤掉最旧）。调用方需持有锁。"""
+    uuid = cookie_data.ck.gen_web_cookie_params.uuid
+    if not any(
+        cw.ck.gen_web_cookie_params.uuid == uuid for cw in _fake_cookie_list
+    ):
+        _fake_cookie_list.append(cookie_data)
+    while len(_fake_cookie_list) > max(1, CONFIG.bili_cookie.pool_size):
+        _fake_cookie_list.pop(0)
+
+
 async def get_bili_cookie() -> CookieWrapper:
-    """
-    从池中获取一个可用的 Bilibili Cookie。如果池中 Cookie 不足，则生成新的。
+    """从池中获取一个可用的 Bilibili Cookie。
+
+    优先 Redis（跨进程复用）→ 进程内存池 → 现场生成并回写。
+    Redis 任何异常都只降级为未命中，不阻断业务。
     """
     global _cookie_queue_num
     cfg = CONFIG.bili_cookie
 
     async with _cookie_lock:
+        store = get_cookie_store()
+        if store is not None:
+            remote = await store.random_usable()
+            if remote is not None:
+                bapi_log.debug(
+                    f"cookie 池命中 Redis：{remote.ck.gen_web_cookie_params.uuid}"
+                )
+                _remember_cookie(remote)
+                return remote
+
         usable = _prune_cookie_pool()
         if usable:
             return random.choice(usable)
@@ -215,10 +270,9 @@ async def get_bili_cookie() -> CookieWrapper:
             expire_ts=int(time.time() + cfg.ttl_seconds),
             max_352_prefixes=cfg.max_352_prefixes,
         )
-        _fake_cookie_list.append(cookie_data)
-        # 池子满了就把最旧的一个挤掉（正常路径下池子不会被填满，这里是兜底）
-        while len(_fake_cookie_list) > max(1, cfg.pool_size):
-            _fake_cookie_list.pop(0)
+        _remember_cookie(cookie_data)
+        if store is not None:
+            await store.save(cookie_data)
         return cookie_data
 
 

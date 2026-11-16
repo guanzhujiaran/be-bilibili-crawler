@@ -27,6 +27,7 @@ from Utils.通用.Common import asyncio_gather
 from Utils.通用.Tool import format_duration
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
+from Utils.代理.mdoel.ProxyTier import ProxyTier
 from Utils.通用.dynamic_id_caculate import dynamic_id_2_ts
 from Utils.通用.CommMethods import methods
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
@@ -228,6 +229,11 @@ class BiliSpaceUserItem:
                         RequestConf(
                             is_use_available_proxy=self.is_use_available_proxy,
                             is_use_cookie=True,
+                            # 只走公共代理池的 hot/warm：他人动态需要换 IP，
+                            # 不能用固定自建出口；历史 is_use_available_proxy
+                            # 会优先解析成 slow，因此显式 tier=FAST
+                            pool_only=True,
+                            tier=ProxyTier.FAST,
                         ),
                     )
                 )

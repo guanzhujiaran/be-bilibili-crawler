@@ -1,7 +1,9 @@
+import json
 import time
 
 import curl_cffi
 
+from CONFIG import CONFIG
 from Models.AntiRisk.Bili.WebCookie import BiliWebCookie
 from Service.GrpcModule.Models.ApiResponseModel import (
     FrontendFingerSpiResp,
@@ -13,6 +15,13 @@ from Service.GrpcModule.Grpc.Bapi.Constants import (
     URL_BILI_MAIN_PAGE,
     URL_GEN_WEB_TICKET,
     URL_GAIA_EXCLIMB_WUZHI,
+    URL_GAIA_EXCLIMB_CONGLING,
+)
+from Service.GrpcModule.Grpc.Bapi.GaiaActivation import (
+    GaiaCongLingEnvelope,
+    build_congling_body,
+    log_missing_encryptor,
+    validate_envelope,
 )
 from Service.GrpcModule.Grpc.Bapi.BapiUtils import request_wrapper
 from Utils.代理.mdoel.RequestConf import RequestConf
@@ -173,6 +182,9 @@ async def gaia_gateway_ExClimbWuzhi(
 
 @request_wrapper
 async def gaia_gateway_ExClimbCongling(
+    envelope: GaiaCongLingEnvelope | None = None,
+    cookie_str: str = "",
+    ua: str | None = None,
     request_conf=RequestConf(
         is_use_custom_proxy=True,
         local_exit_only=True,
@@ -182,7 +194,36 @@ async def gaia_gateway_ExClimbCongling(
         is_return_raw_response=False,
     ),
 ):
-    # Todo: 需要破解wasm加密
-    # 实现时直接复用上面的 request_conf：gaia 激活与 cookie 其它步骤同属一条链路，
-    # 必须专线独占（local_exit_only）且不因前缀风控冷却被拒（ignore_risk_cooldown）。
-    ...
+    """ExClimbCongLing：只有拿到 WASM 加密结果（``envelope``）才会真正发送。
+
+    没有加密器时返回 ``None``（不伪造请求体）。schema 与证据见
+    ``Service/GrpcModule/Grpc/Bapi/GaiaActivation.py`` 与 docs/gaia_evidence/。
+    """
+    if envelope is None:
+        log_missing_encryptor()
+        return None
+    if not validate_envelope(envelope):
+        log_missing_encryptor()
+        return None
+
+    headers = {
+        "origin": "https://www.bilibili.com",
+        "referer": URL_BILI_MAIN_PAGE,
+        "accept": "*/*",
+        "content-type": "application/json",
+    }
+    if ua:
+        headers["user-agent"] = ua
+    if cookie_str:
+        headers["cookie"] = cookie_str
+
+    return await request_with_proxy_internal.request_with_proxy(
+        url=URL_GAIA_EXCLIMB_CONGLING,
+        method="POST",
+        data=json.dumps(build_congling_body(envelope), ensure_ascii=False),
+        headers=UserAgentParser(
+            ua or CONFIG.rand_ua, is_mobile=False
+        ).get_headers_dict(extra_headers_dict=headers),
+        request_conf=request_conf,
+        cookie_data=None,
+    )

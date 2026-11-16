@@ -590,6 +590,76 @@ class BiliCookieConfig(BaseModel):
         description="同一个 cookie 被多少个**不同出口前缀**报 -352 后判定不可用。"
         "按前缀去重而不是按次数，避免一个坏出口把整个 cookie 池废掉",
     )
+    # ---- Redis 持久化（跨进程 / 重启复用，见 Models/AntiRisk/Bili/CookieRedisStore.py）----
+    persist_to_redis: bool = Field(
+        default=True,
+        description="是否把 web cookie 池持久化到 Redis。关闭后回到原进程内存池",
+    )
+    redis_key_prefix: str = Field(
+        default="bili:web_cookie:",
+        description="Redis key 前缀：`<prefix><uuid>` 存 cookie，`<prefix>lru` 是淘汰用 zset",
+    )
+    redis_pool_size: int = Field(
+        default=200,
+        description="Redis 池最大条目数（LRU 淘汰）。与内存 pool_size 独立，"
+        "内存池只承载本进程最近用到的那些",
+    )
+    redis_timeout: float = Field(
+        default=2.0,
+        description="Redis 读写超时（秒）：cookie 池是尽力而为，超时立即降级到内存池",
+    )
+
+
+class WebSessionConfig(BaseModel):
+    """Web 会话复用 / 指纹绑定参数（见 Utils/代理/SessionPool.py）。
+
+    env 覆盖（嵌套双下划线）：``WEB_SESSION__POOL_TTL_SECONDS=600``
+    """
+
+    pin_fingerprint: bool = Field(
+        default=True,
+        description="是否按会话键（buvid / _uuid）固定 TLS 指纹与 UA。"
+        "关闭后回退到每请求随机 target（仅用于线上 -352 异常时的回滚开关）",
+    )
+    pool_enabled: bool = Field(
+        default=True, description="是否启用 AsyncSession LRU/TTL 池（业务请求复用连接）"
+    )
+    pool_max_sessions: int = Field(
+        default=64, description="池内最多保留多少个会话（按 LRU 淘汰）"
+    )
+    pool_ttl_seconds: float = Field(
+        default=300.0, description="会话空闲超过该秒数后关闭并从池中移除"
+    )
+    pool_max_clients: int = Field(
+        default=10, description="单个 AsyncSession 的 curl 句柄并发上限"
+    )
+
+
+class CrawlerThrottleConfig(BaseModel):
+    """业务请求随机节流 / 浏览路径模拟（见 Utils/代理/BrowsingPacer.py）。
+
+    env 覆盖：``CRAWLER_THROTTLE__BUSINESS_THROTTLE_MIN_S=0.2``
+    """
+
+    business_throttle_enabled: bool = Field(
+        default=True, description="是否在业务请求之间插入随机短等待"
+    )
+    business_throttle_min_s: float = Field(default=0.1, description="短等待下限（秒）")
+    business_throttle_max_s: float = Field(default=0.5, description="短等待上限（秒）")
+    path_simulation_enabled: bool = Field(
+        default=True,
+        description="是否按低概率插入一次「浏览路径」级别的较长停顿"
+        "（模拟用户看完一条动态再点下一条）",
+    )
+    path_simulation_prob: float = Field(
+        default=0.15, description="每次业务请求触发浏览路径停顿的概率（0~1）"
+    )
+    path_simulation_min_s: float = Field(
+        default=0.8, description="浏览路径停顿下限（秒）"
+    )
+    path_simulation_max_s: float = Field(
+        default=3.0, description="浏览路径停顿上限（秒）"
+    )
 
 
 class GrpcDeviceConfig(BaseModel):
@@ -901,8 +971,12 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     proxy_health: ProxyHealthConfig = ProxyHealthConfig()
     # ===== 代理错误重试预算分级（fast / slow）=====
     proxy_retry: ProxyRetryConfig = ProxyRetryConfig()
-    # ===== B 站 web cookie 池（预热 / 容量 / 352 判定）=====
+    # ===== B 站 web cookie 池（预热 / 容量 / 352 判定 / Redis 持久化）=====
     bili_cookie: BiliCookieConfig = BiliCookieConfig()
+    # ===== Web 会话复用（按 buvid 固定指纹 + AsyncSession LRU/TTL 池）=====
+    web_session: WebSessionConfig = WebSessionConfig()
+    # ===== 业务请求随机节流 / 浏览路径模拟 =====
+    crawler_throttle: CrawlerThrottleConfig = CrawlerThrottleConfig()
     # ===== up 主动态监控（间隔 / 基线条数 / 推送正文截断）=====
     space_monitor: BiliSpaceMonitorConfig = BiliSpaceMonitorConfig()
     # ===== gRPC 设备池（-352 按「出口前缀 + 设备」记账）=====
@@ -1291,6 +1365,8 @@ class _CONFIG:
     proxy_retry = settings.proxy_retry
     # B 站 web cookie 池 / up 主动态监控 / gRPC 设备池风控参数
     bili_cookie = settings.bili_cookie
+    web_session = settings.web_session
+    crawler_throttle = settings.crawler_throttle
     space_monitor = settings.space_monitor
     grpc_device = settings.grpc_device
     # 事件循环卡顿监控 / 取证（Utils/FastAPI/loop_monitor.py 读这里）

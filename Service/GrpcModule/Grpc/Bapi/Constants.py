@@ -46,6 +46,9 @@ URL_GAIA_GET_AXE = (
     "https://api.bilibili.com/x/internal/gaia-gateway/ExGetAxe?web_location=333.1007"
 )
 URL_GAIA_EXCLIMB_WUZHI = "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbWuzhi"
+URL_GAIA_EXCLIMB_CONGLING = (
+    "https://api.bilibili.com/x/internal/gaia-gateway/ExClimbCongLing"
+)
 URL_GEN_WEB_TICKET = (
     "https://api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket"
 )

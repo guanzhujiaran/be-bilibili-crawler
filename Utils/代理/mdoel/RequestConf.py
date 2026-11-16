@@ -81,6 +81,13 @@ class RequestConf(CustomBaseModel):
         "这是「通道选择语义」（走哪条出口），不是站点 / 业务专属判断，"
         "任何需要固定来源 IP 的请求都可以打开它",
     )
+    pool_only: bool = Field(
+        default=False,
+        description="只从公共代理池取（按 tier 取 hot/warm 或 slow 探测），"
+        "不走自建出口、也不在池空时回落自建出口。"
+        "适合「必须换 IP、不希望固定出口」的批量任务。"
+        "与 local_exit_only / is_use_custom_proxy 同时开启时，后者优先",
+    )
     ignore_risk_cooldown: bool = Field(
         default=False,
         description="本次请求不因「自建出口前缀风控冷却」被拒（自建出口的闸门语义，"
@@ -88,6 +95,17 @@ class RequestConf(CustomBaseModel):
         "冷却不适用于它们，但本任务内失败去重与 QPS 限流仍然保留",
     )
     is_return_raw_response: bool = Field(False)
+    session_key: str | None = Field(
+        default=None,
+        description="本次请求所属的 Web 会话键（cookie 的 _uuid / buvid3），"
+        "用于固定 TLS 指纹与 UA。None = 自动从 cookie_data / Cookie 头推导，"
+        "没有 cookie 时退回匿名会话键",
+    )
+    skip_throttle: bool = Field(
+        default=False,
+        description="跳过业务请求随机节流（浏览路径模拟）。探测 / 对时延敏感的调用显式打开；"
+        "local_exit_only 本身就是豁免的，不需要重复设置",
+    )
     tier: ProxyTier | None = Field(
         default=None,
         description="代理取用档位。None = 跟随当前爬虫上下文（无上下文时默认 slow，"

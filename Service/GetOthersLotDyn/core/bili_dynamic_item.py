@@ -20,6 +20,7 @@ from Service.GrpcModule.Grpc.Bapi.BiliApi import (
 )
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
+from Utils.代理.mdoel.ProxyTier import ProxyTier
 from bili_common.core.log_mask import (
     format_full_response,
     full_response_log_enabled,
@@ -230,14 +231,18 @@ class BiliDynamicItem:
                         rid=self.dynamic_rid,
                         dynamic_type=self.dynamic_type,
                         request_conf=RequestConf(
-                            is_use_available_proxy=self.is_use_available_proxy
+                            is_use_available_proxy=self.is_use_available_proxy,
+                            pool_only=True,
+                            tier=ProxyTier.FAST,
                         ),
                     )
                 else:
                     dynamic_req = await get_polymer_web_dynamic_detail(
                         dynamic_id=self.dynamic_id,
                         request_conf=RequestConf(
-                            is_use_available_proxy=self.is_use_available_proxy
+                            is_use_available_proxy=self.is_use_available_proxy,
+                            pool_only=True,
+                            tier=ProxyTier.FAST,
                         ),
                     )
         except Exception as e:
@@ -280,6 +285,11 @@ class BiliDynamicItem:
                     business_type=business_type,
                     business_id=business_id,
                     origin_dynamic_id=dyn_id,
+                    # 他人动态整体走公共池 hot/warm：不带 cookie 的 notice 也不能落到
+                    # 固定自建出口（is_use_custom_proxy 默认 True，必须显式覆盖）
+                    request_conf=RequestConf(
+                        is_use_cookie=True, pool_only=True, tier=ProxyTier.FAST
+                    ),
                 )
                 newly_lot_data = lot_notice.get("data")
             except Exception as e:
