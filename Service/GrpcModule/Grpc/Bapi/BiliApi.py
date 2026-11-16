@@ -19,6 +19,9 @@ from Service.GrpcModule.Grpc.Bapi.Constants import (
     URL_LOTTERY_NOTICE,
     URL_GET_WEB_TOPIC,
     URL_REPLY_MAIN,
+    BILI_WEB_LOCALE_JSON,
+    FEATURES_SPACE_DYNAMIC,
+    FEATURES_DYNAMIC_DETAIL,
 )
 from Service.GrpcModule.Grpc.Bapi.RequestHandler import prepare_request_data
 from Service.GrpcModule.Grpc.Bapi.BapiUtils import (
@@ -30,7 +33,11 @@ from Service.GrpcModule.Grpc.Bapi.models import LatestVersionBuild
 from Utils.推送.PushMe import a_push_error
 from Utils.代理.mdoel.RequestConf import RequestConf
 from Utils.代理.redisProxyRequest.RedisRequestProxy import request_with_proxy_internal
-from Utils.加密.wbi加密 import gen_dm_args, get_wbi_params
+from Utils.加密.wbi加密 import (
+    gen_bili_device_req_json,
+    gen_dm_args,
+    get_wbi_params,
+)
 from Utils.GrpcUtils.response.check_resp import check_reserve_relation_info
 
 # ===== get_lot_notice 的响应码约定 =====
@@ -308,7 +315,7 @@ async def get_space_dynamic_req_with_proxy(
         "host_mid": hostuid,
         "timezone_offset": -480,
         "platform": "web",
-        "features": "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard",
+        "features": FEATURES_SPACE_DYNAMIC,
         "web_location": spm_id,
     }
     dongtaidata = gen_dm_args(
@@ -316,8 +323,9 @@ async def get_space_dynamic_req_with_proxy(
     )  # 先加dm参数
     dongtaidata.update(
         {
-            "x-bili-device-req-json": json.dumps(
-                {"platform": "web", "device": "pc"}, separators=(",", ":")
+            "x-bili-locale-json": BILI_WEB_LOCALE_JSON,
+            "x-bili-device-req-json": gen_bili_device_req_json(
+                spm_id, include_mobi_app=True
             ),
             "x-bili-web-req-json": json.dumps(
                 {"spm_id": spm_id}, separators=(",", ":")
@@ -397,11 +405,9 @@ async def get_polymer_web_dynamic_detail(
             "platform": "web",
             "gaia_source": "main_web",
             "id": dynamic_id,
-            "features": "itemOpusStyle,opusBigCover,onlyfansVote,endFooterHidden,decorationCard,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,editable,opusPrivateVisible,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardVote,eva3CardUser",
+            "features": FEATURES_DYNAMIC_DETAIL,
             "web_location": "333.1368",
-            "x-bili-device-req-json": json.dumps(
-                {"platform": "web", "device": "pc"}, separators=(",", ":")
-            ),
+            "x-bili-device-req-json": gen_bili_device_req_json("333.1368"),
             "x-bili-web-req-json": json.dumps(
                 {"spm_id": "333.1368"}, separators=(",", ":")
             ),
@@ -413,11 +419,9 @@ async def get_polymer_web_dynamic_detail(
             "gaia_source": "main_web",
             "rid": rid,
             "type": dynamic_type,
-            "features": "itemOpusStyle,opusBigCover,onlyfansVote,endFooterHidden,decorationCard,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,editable,opusPrivateVisible,avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,eva3CardComment,eva3CardVote,eva3CardUser",
+            "features": FEATURES_DYNAMIC_DETAIL,
             "web_location": "333.1368",
-            "x-bili-device-req-json": json.dumps(
-                {"platform": "web", "device": "pc"}, separators=(",", ":")
-            ),
+            "x-bili-device-req-json": gen_bili_device_req_json("333.1368"),
             "x-bili-web-req-json": json.dumps(
                 {"spm_id": "333.1368"}, separators=(",", ":")
             ),

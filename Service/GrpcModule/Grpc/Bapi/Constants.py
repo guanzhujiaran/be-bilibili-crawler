@@ -61,3 +61,20 @@ URL_LOTTERY_NOTICE = (
 URL_GET_WEB_TOPIC = "https://app.bilibili.com/x/topic/web/details/top"
 URL_REPLY_MAIN = "https://api.bilibili.com/x/v2/reply/main"
 URL_LATEST_VERSION = "https://app.bilibili.com/x/v2/version"
+
+# Web 接口通用参数（来源：REA 浏览器抓包，见 docs/be-bilibili-crawler-Web接口风控头与参数对齐计划书.md）
+BILI_WEB_LOCALE_JSON = (
+    '{"c_locale":{"language":"zh","script":"Hans"},"always_translate":false}'
+)
+FEATURES_SPACE_DYNAMIC = (
+    "itemOpusStyle,listOnlyfans,opusBigCover,onlyfansVote,forwardListHidden,"
+    "decorationCard,commentsNewVersion,onlyfansAssetsV2,ugcDelete,onlyfansQaCard,"
+    "avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,"
+    "eva3CardComment,eva3CardUser"
+)
+FEATURES_DYNAMIC_DETAIL = (
+    "itemOpusStyle,opusBigCover,onlyfansVote,endFooterHidden,decorationCard,"
+    "onlyfansAssetsV2,ugcDelete,onlyfansQaCard,editable,opusPrivateVisible,"
+    "avatarAutoTheme,sunflowerStyle,cardsEnhance,eva3CardOpus,eva3CardVideo,"
+    "eva3CardComment,eva3CardVote,eva3CardUser"
+)

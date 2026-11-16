@@ -264,6 +264,22 @@ def gen_dm_args(params: dict, gen_bili_web_cookie_params: GenWebCookieParams):
     return params
 
 
+def gen_bili_device_req_json(spm_id: str, *, include_mobi_app: bool = False) -> str:
+    """生成 x-bili-device-req-json，spm_id 必须与当次 web_location 一致。
+
+    浏览器在 space/www 页面还会带 mobi_app=web_cn；t.bilibili.com 的 detail
+    请求不带，由调用方显式决定。
+    """
+    device: dict[str, str] = {
+        "platform": "web",
+        "device": "pc",
+        "spmid": spm_id,
+    }
+    if include_mobi_app:
+        device["mobi_app"] = "web_cn"
+    return json.dumps(device, separators=(",", ":"))
+
+
 if __name__ == "__main__":
     import asyncio
 

@@ -3,11 +3,60 @@ import re
 
 from Utils.GrpcUtils.CONST import ANDROID_VERSIONS
 
+# 顺序即优先级：Edge/Opera 的 UA 里也含 Chrome，必须先匹配。
+_PLATFORM_PATTERNS: tuple[tuple[str, str], ...] = (
+    (r"Windows NT", "Windows"),
+    (r"CrOS", "Chrome OS"),
+    (r"Android", "Android"),
+    (r"iPhone|iPad", "iOS"),
+    (r"Macintosh", "macOS"),
+    (r"Linux", "Linux"),
+)
+
+
+def _client_hints_platform(user_agent: str) -> str | None:
+    for pattern, platform in _PLATFORM_PATTERNS:
+        if re.search(pattern, user_agent, re.IGNORECASE):
+            return platform
+    return None
+
+
+def _client_hints_brands(user_agent: str) -> str | None:
+    """Chromium 系才发 sec-ch-ua；Firefox / Safari 不发，宁缺勿错。"""
+    brand: str | None = None
+    major: str | None = None
+    if m := re.search(r"\bEdg/(\d+)", user_agent):
+        brand, major = "Microsoft Edge", m.group(1)
+    elif m := re.search(r"\bOPR/(\d+)", user_agent):
+        brand, major = "Opera", m.group(1)
+    elif m := re.search(r"\bChrome/(\d+)", user_agent):
+        brand, major = "Google Chrome", m.group(1)
+    if not brand or not major:
+        return None
+    return f'"{brand}";v="{major}", "Chromium";v="{major}", "Not_A Brand";v="8"'
+
 
 class UserAgentParser:
     def __init__(self, user_agent, is_mobile=False):
         self.user_agent = user_agent
         self.is_mobile = is_mobile
+
+    def _fetch_metadata_headers(self) -> dict[str, str]:
+        """浏览器 XHR/fetch 的 Fetch Metadata + Client Hints 头。"""
+        headers: dict[str, str] = {
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-site",
+            "priority": "u=1, i",
+        }
+        brands = _client_hints_brands(self.user_agent)
+        if brands:
+            headers["sec-ch-ua"] = brands
+            headers["sec-ch-ua-mobile"] = "?1" if self.is_mobile else "?0"
+            platform = _client_hints_platform(self.user_agent)
+            if platform:
+                headers["sec-ch-ua-platform"] = f'"{platform}"'
+        return headers
 
     def get_headers_dict(self, extra_headers_dict: dict | None = None) -> dict:
         origin_headers = {
@@ -16,6 +65,7 @@ class UserAgentParser:
             "accept-language": "zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2",
             "accept-encoding": "gzip, deflate, br, zstd",
         }
+        origin_headers.update(self._fetch_metadata_headers())
         filtered_headers_dict = {
             key: value for key, value in origin_headers.items() if value
         }
