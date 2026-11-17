@@ -30,8 +30,13 @@ class CrawlerExecutionInfoModel(CustomBaseModel):
     default_interval_seconds: int
     #: 上一次**成功**执行结束时间（兼容历史 Redis key）
     last_exec_time: datetime | None = None
-    #: 上一次**尝试**执行时间（无论成功 / 失败 / 被 cancel 都更新）
+    #: 上一次**尝试**执行时间（成功 / 失败都推进；被外部中断的一轮会回滚）
     last_attempt_time: datetime | None = None
+
+
+#: 回滚 ``last_attempt_time`` 的 Redis 写超时（秒）。
+#: cancel 分支处于停机路径上，不能被 Redis 卡住，也不能把异常继续往上抛。
+_ATTEMPT_ROLLBACK_TIMEOUT_SECONDS: Final[float] = 2.0
 
 
 class CrawlerExecutionInfo:
@@ -54,28 +59,37 @@ class CrawlerExecutionInfo:
         )
 
     async def load_last_exec_time(self):
-        if self.info.last_exec_time is None:
-            ts_str = await comm_storage_redis_obj.get_val(self._exec_info_redis_key)
-            if ts_str:
-                self.info.last_exec_time = datetime.fromtimestamp(float(ts_str))
-                self.logger.info(
-                    f"[{self.info.crawler_name}] 加载上次执行时间：{self.info.last_exec_time}"
-                )
-            else:
-                self.logger.info(
-                    f"[{self.info.crawler_name}] 未找到上次执行时间，使用默认值。"
-                )
-                self.info.last_exec_time = datetime.fromtimestamp(
-                    86400
-                )  # 默认时间点：1970-01-02 00:00:00
-        if self.info.last_attempt_time is None:
-            ts_str = await comm_storage_redis_obj.get_val(self._attempt_info_redis_key)
-            if ts_str:
-                self.info.last_attempt_time = datetime.fromtimestamp(float(ts_str))
-                self.logger.info(
-                    f"[{self.info.crawler_name}] 加载上次尝试时间："
-                    f"{self.info.last_attempt_time}"
-                )
+        """每次调用都回源 Redis 刷新 ``last_exec_time`` / ``last_attempt_time``。
+
+        10 分钟级的触发频率下两个 GET 的开销可以忽略，换来的是「运维用 redis-cli
+        删掉 / 修改节流键后，运行中的进程下一次判定就能感知」，不需要重启进程。
+
+        注意：键被删除时必须把内存里的旧值一起失效——``last_exec_time`` 回退到
+        默认起点（1970-01-02 00:00:00）、``last_attempt_time`` 回退到 ``None``，
+        否则「删了键却还在用进程内缓存」等于没删。
+        """
+        ts_str = await comm_storage_redis_obj.get_val(self._exec_info_redis_key)
+        if ts_str:
+            self.info.last_exec_time = datetime.fromtimestamp(float(ts_str))
+            self.logger.info(
+                f"[{self.info.crawler_name}] 加载上次执行时间：{self.info.last_exec_time}"
+            )
+        else:
+            self.logger.info(
+                f"[{self.info.crawler_name}] 未找到上次执行时间，使用默认值。"
+            )
+            self.info.last_exec_time = datetime.fromtimestamp(
+                86400
+            )  # 默认时间点：1970-01-02 00:00:00
+        ts_str = await comm_storage_redis_obj.get_val(self._attempt_info_redis_key)
+        if ts_str:
+            self.info.last_attempt_time = datetime.fromtimestamp(float(ts_str))
+            self.logger.info(
+                f"[{self.info.crawler_name}] 加载上次尝试时间："
+                f"{self.info.last_attempt_time}"
+            )
+        else:
+            self.info.last_attempt_time = None
 
     async def save_last_exec_time(self):
         now = datetime.now()
@@ -85,15 +99,54 @@ class CrawlerExecutionInfo:
         )
 
     async def save_last_attempt_time(self):
-        """记录「本轮已尝试」时间：失败 / 被 cancel 也要更新。
+        """记录「本轮已尝试」时间：失败也要更新。
 
         否则失败轮永远不推进 last_exec_time，``is_need_to_execute`` 恒为真，
         任何一次触发都会立刻开跑（线上出现「跑完一轮立刻又开新一轮」）。
+
+        被外部中断（进程重启 / 容器停机 / 部署）的一轮走 ``restore_attempt_time``
+        回滚，不在这里区分。
         """
         now = datetime.now()
         self.info.last_attempt_time = now
         await comm_storage_redis_obj.set_val(
             self._attempt_info_redis_key, str(now.timestamp())
+        )
+
+    async def restore_attempt_time(self, prev: datetime | None):
+        """把 ``last_attempt_time`` 回滚到本轮开跑前的值（用于被外部中断的轮次）。
+
+        进程重启 / 容器停机 / 部署会 cancel 正在执行的一轮，这一轮既没有成功也不是
+        真正的失败，不能推进节流基准：否则重启后 ``is_need_to_execute`` 会拿「本轮
+        开跑时刻」当参考，``delta`` 远小于 ``default_interval_seconds``，
+        启动补跑全部被跳过（线上表现为「重启后该爬虫等同停机」）。
+
+        ``prev is None`` 表示开跑前 Redis 里本来没有尝试记录，此时删除对应键。
+        Redis 写带 ``_ATTEMPT_ROLLBACK_TIMEOUT_SECONDS`` 短超时，失败只打 WARNING，
+        不影响调用方继续传播取消。同进程「杀旧开新」也会走这里，回滚后新任务会重新
+        写一个新的 attempt，节流语义不变。
+        """
+        self.info.last_attempt_time = prev
+        try:
+            if prev is None:
+                await asyncio.wait_for(
+                    comm_storage_redis_obj.del_val(self._attempt_info_redis_key),
+                    timeout=_ATTEMPT_ROLLBACK_TIMEOUT_SECONDS,
+                )
+            else:
+                await asyncio.wait_for(
+                    comm_storage_redis_obj.set_val(
+                        self._attempt_info_redis_key, str(prev.timestamp())
+                    ),
+                    timeout=_ATTEMPT_ROLLBACK_TIMEOUT_SECONDS,
+                )
+        except Exception as e:  # noqa: BLE001 回滚失败只告警，不影响退出流程
+            self.logger.warning(
+                f"[{self.info.crawler_name}] 回滚 last_attempt_time 失败：{e!r}"
+            )
+            return
+        self.logger.info(
+            f"[{self.info.crawler_name}] 已回滚 last_attempt_time：{prev}"
         )
 
     async def is_need_to_execute(self) -> bool:
@@ -341,7 +394,10 @@ class BaseScheduler:
         """
         crawler_name = self.exec_info.info.crawler_name
         start_ts = time.time()
-        # 先记录「已尝试」：失败 / 被 cancel 也推进节流基准，避免 is_need_to_execute 恒为真
+        # 本轮开跑前的 attempt：被外部中断（重启 / 停机 / 部署）时用于回滚
+        prev_attempt = self.exec_info.info.last_attempt_time
+        # 先记录「已尝试」：失败也推进节流基准，避免 is_need_to_execute 恒为真；
+        # 被 cancel 的一轮会在下面的 CancelledError 分支回滚
         try:
             await self.exec_info.save_last_attempt_time()
         except Exception as e:  # noqa: BLE001 记录失败不能阻断本轮执行
@@ -366,6 +422,13 @@ class BaseScheduler:
             self.logger.warning(
                 f"[{self.exec_info.info.crawler_name}] 爬虫任务被终止（杀旧开新）。"
             )
+            # 被外部中断的一轮不是真实失败：回滚 attempt，让重启后的启动补跑仍按
+            # 「上一轮真正的结束时间」判断（否则 15h 内都会被节流跳过）。
+            # 回滚本身也处于停机路径，二次取消 / Redis 超时都不能影响取消传播。
+            try:
+                await self.exec_info.restore_attempt_time(prev_attempt)
+            except asyncio.CancelledError:
+                pass
             await self._push_stage(
                 crawler_name,
                 "end",

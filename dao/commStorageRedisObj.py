@@ -24,6 +24,9 @@ class CommStorageRedisObj(RedisManagerBase):
     async def get_val(self, key_name: RedisMap | str) -> str | None:
         return await self._get(self.to_redis_key(key_name))
 
+    async def del_val(self, key_name: RedisMap | str):
+        return await self._del(self.to_redis_key(key_name))
+
 
 comm_storage_redis_obj = CommStorageRedisObj()
 

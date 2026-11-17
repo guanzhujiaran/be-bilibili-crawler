@@ -21,11 +21,13 @@ import pytest
 from apscheduler.triggers.cron import CronTrigger
 from loguru import logger as default_logger
 
+import Service.BaseCrawler.launcher.scheduler_launcher as scheduler_launcher
 from Service.BaseCrawler.launcher.scheduler_launcher import (
     POLICY_CRON_ONLY,
     POLICY_HIGH_FREQ_JITTER,
     POLICY_STARTUP_CATCHUP,
     BaseScheduler,
+    CrawlerExecutionInfo,
     GenericCrawlerScheduler,
     _first_run_time,
     _should_run_on_startup_by_cron,
@@ -174,7 +176,9 @@ async def test_startup_catchup_still_goes_through_is_need_to_execute():
             self.saved = 0
 
         info = SimpleNamespace(
-            crawler_name="test_throttle", default_interval_seconds=15 * 3600
+            crawler_name="test_throttle",
+            default_interval_seconds=15 * 3600,
+            last_attempt_time=None,
         )
 
         async def is_need_to_execute(self) -> bool:
@@ -227,3 +231,159 @@ async def test_startup_catchup_still_goes_through_is_need_to_execute():
     finally:
         myfastapi_logger.remove(sink_id)
         _remove_job(scheduler.job_id)
+
+
+class _FakeRedis:
+    """只实现节流键读写，避免单测依赖真实 Redis。"""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    async def get_val(self, key_name: str):
+        return self.store.get(key_name)
+
+    async def set_val(self, key_name: str, val: str):
+        self.store[key_name] = val
+
+    async def del_val(self, key_name: str):
+        self.store.pop(key_name, None)
+
+
+@pytest.fixture
+def fake_redis(monkeypatch):
+    fake = _FakeRedis()
+    monkeypatch.setattr(scheduler_launcher, "comm_storage_redis_obj", fake)
+    return fake
+
+
+async def _false_push(crawler_name, stage, content) -> bool:
+    """推送一律「成功」，避免失败分支再走 a_push_error 真实推送链路。"""
+    return True
+
+
+@pytest.mark.asyncio
+async def test_cancel_rolls_back_attempt_so_restart_can_catch_up(fake_redis):
+    """跑到一半被 cancel：回滚 attempt，重启后的启动补跑仍能按上一轮结束时间补跑。"""
+    crawler_name = "test_cancel_rollback"
+    now = datetime.datetime.now()
+    prev_attempt = now - datetime.timedelta(hours=20)
+    last_exec = now - datetime.timedelta(hours=16)
+
+    exec_info = CrawlerExecutionInfo(
+        crawler_name=crawler_name, default_interval_seconds=15 * 3600
+    )
+    fake_redis.store[exec_info._exec_info_redis_key] = str(last_exec.timestamp())
+    fake_redis.store[exec_info._attempt_info_redis_key] = str(
+        prev_attempt.timestamp()
+    )
+
+    started = asyncio.Event()
+
+    async def slow_func() -> None:
+        started.set()
+        await asyncio.sleep(3600)
+
+    scheduler = BaseScheduler(
+        func=slow_func,
+        cron_expr="0 2 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name=crawler_name,
+        run_on_startup=True,
+    )
+    scheduler._push_stage = _false_push
+    try:
+        await scheduler.run()
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await asyncio.wait_for(started.wait(), timeout=2)
+        # 开跑后 attempt 已推进到当前时刻
+        assert abs(
+            float(fake_redis.store[exec_info._attempt_info_redis_key])
+            - now.timestamp()
+        ) < 10
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        # 被 cancel 的一轮必须把 attempt 回滚到开跑前，而不是停在开跑时刻
+        assert abs(
+            float(fake_redis.store[exec_info._attempt_info_redis_key])
+            - prev_attempt.timestamp()
+        ) < 1
+
+        # 模拟进程重启：新的 CrawlerExecutionInfo 从 Redis 重新加载后允许补跑
+        restarted = CrawlerExecutionInfo(
+            crawler_name=crawler_name, default_interval_seconds=15 * 3600
+        )
+        assert await restarted.is_need_to_execute() is True
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_failed_round_still_advances_attempt_and_is_throttled(fake_redis):
+    """执行失败不写 last_exec_time，但仍推进 attempt，重启后 15h 内不得立刻重跑。"""
+    crawler_name = "test_failure_throttle"
+    now = datetime.datetime.now()
+    last_exec = now - datetime.timedelta(days=2)
+
+    exec_info = CrawlerExecutionInfo(
+        crawler_name=crawler_name, default_interval_seconds=15 * 3600
+    )
+    fake_redis.store[exec_info._exec_info_redis_key] = str(last_exec.timestamp())
+
+    async def failing_func() -> None:
+        raise RuntimeError("boom")
+
+    scheduler = BaseScheduler(
+        func=failing_func,
+        cron_expr="0 2 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name=crawler_name,
+        run_on_startup=True,
+    )
+    scheduler._push_stage = _false_push
+    try:
+        await scheduler.run()
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await task  # 失败已被 _run_and_save_exec_time 内部消化，不会向上抛
+
+        # 失败轮推进 attempt
+        assert abs(
+            float(fake_redis.store[exec_info._attempt_info_redis_key])
+            - now.timestamp()
+        ) < 10
+        # 失败轮不推进 last_exec_time（键值原样保留）
+        assert (
+            fake_redis.store[exec_info._exec_info_redis_key]
+            == str(last_exec.timestamp())
+        )
+
+        # 模拟进程重启：失败轮的 attempt 仍在节流窗口内
+        restarted = CrawlerExecutionInfo(
+            crawler_name=crawler_name, default_interval_seconds=15 * 3600
+        )
+        assert await restarted.is_need_to_execute() is False
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_redis_key_deletion_is_visible_without_restart(fake_redis):
+    """运维用 redis-cli 删掉节流键后，运行中的实例下一次判定就能感知。"""
+    crawler_name = "test_redis_delete"
+    now = datetime.datetime.now()
+    exec_info = CrawlerExecutionInfo(
+        crawler_name=crawler_name, default_interval_seconds=15 * 3600
+    )
+    fake_redis.store[exec_info._exec_info_redis_key] = str(now.timestamp())
+    fake_redis.store[exec_info._attempt_info_redis_key] = str(now.timestamp())
+
+    assert await exec_info.is_need_to_execute() is False
+
+    # 等价于 redis-cli DEL 两个节流键；同一实例不得继续使用内存缓存
+    fake_redis.store.pop(exec_info._exec_info_redis_key)
+    fake_redis.store.pop(exec_info._attempt_info_redis_key)
+    assert await exec_info.is_need_to_execute() is True
