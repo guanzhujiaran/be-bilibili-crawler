@@ -104,8 +104,9 @@ def murmur3_x64_128(source: io.IOBase, seed: int) -> Optional[int]:
 
 
 def rotate_left(x: int, k: int) -> int:
-    bin_str = bin(x)[2:].rjust(64, "0")
-    return int(bin_str[k:] + bin_str[:k], base=2)
+    """64 位循环左移（位运算实现，避免每次调用都拼一次 64 字符的 bin 串）。"""
+    k &= 63
+    return ((x << k) | (x >> (64 - k))) & 0xFFFFFFFFFFFFFFFF
 
 
 def fmix64(k: int) -> int:

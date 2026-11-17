@@ -134,27 +134,50 @@ class SqlHelper(SqlHelperBase):
             return data
 
     @log_sql_retry_wrapper(log=log)
-    async def get_recent_failed_topic_id(self, limit=1000) -> Sequence[int]:
+    async def get_recent_failed_topic_id(
+        self, limit=1000, page_size: int = 1000
+    ) -> Sequence[int]:
+        """最近失败（没有话题详情）的 topic_id，按 id 降序，最多 ``limit`` 条。
+
+        一条 SQL 拉 5000+ 行会在单次事件循环轮次里做完整的执行 / 解析 / 拷贝；
+        这里按主键 keyset 分页取（每页 ``page_size`` 条），把开销摊到多次 await 上。
+        返回的顺序、去重与截断口径与单条大查询完全一致。
+        """
+        limit = max(0, int(limit))
+        if limit == 0:
+            return []
+        page_size = max(1, min(int(page_size), limit))
         last_topic_with_detail_subquery = (
             select(func.max(TTopic.topic_id))
             .where(TTopic.topic_detail_id.isnot(None))
             .scalar_subquery()
         )
-        sql = (
-            select(TTopic.topic_id)
-            .where(
-                and_(
-                    TTopic.topic_detail_id.is_(None),
-                    TTopic.topic_id < last_topic_with_detail_subquery,
-                )
+        collected: list[int] = []
+        cursor: int | None = None
+        while len(collected) < limit:
+            conditions = [
+                TTopic.topic_detail_id.is_(None),
+                TTopic.topic_id < last_topic_with_detail_subquery,
+            ]
+            if cursor is not None:
+                conditions.append(TTopic.topic_id < cursor)
+            page_limit = min(page_size, limit - len(collected))
+            sql = (
+                select(TTopic.topic_id)
+                .where(and_(*conditions))
+                .order_by(TTopic.topic_id.desc())
+                .limit(page_limit)
             )
-            .order_by(TTopic.topic_id.desc())
-            .limit(limit)
-        )
-        async with self.async_session() as session:
-            result = await session.execute(sql)
-            data = result.scalars().all()
-            return data
+            async with self.async_session() as session:
+                result = await session.execute(sql)
+                data = result.scalars().all()
+            if not data:
+                break
+            collected.extend(int(topic_id) for topic_id in data)
+            if len(data) < page_limit:
+                break
+            cursor = int(data[-1])
+        return collected
 
     # endregion
 

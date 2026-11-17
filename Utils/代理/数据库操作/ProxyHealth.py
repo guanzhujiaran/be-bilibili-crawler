@@ -84,8 +84,6 @@ _PREFIX_EPISODE_PREFIX = "proxy_health:v1:prefix_episode:"
 _QPS_PREFIX = "proxy_health:v1:qps:"
 #: proxy_tab 批量写的建议锁（Redis SET NX EX）
 _WRITE_LOCK_PREFIX = "proxy_batch_lock:"
-#: 单个前缀的成员集合最多保留多少条（防止异常段无限膨胀）
-_PREFIX_MEMBERS_MAX = 512
 
 
 class ProxyHealthState(StrEnumAutoDoc):
@@ -309,6 +307,22 @@ class ProxySelectionState(CustomBaseModel):
         )
 
 
+class ProxyPersistSnapshot(CustomBaseModel):
+    """``flush_proxy_health`` 一轮心跳所需的 Redis 快照。
+
+    把「地址级冷却集合 + 前缀级冷却集合 + 两者明细 + 前缀成员集合」一次性取回，
+    供落盘阶段在内存里做过滤与拼装，避免逐前缀串行往返。
+    """
+
+    cooling_keys: list[str] = Field(default_factory=list)
+    address: ProxyHealthMap = Field(default_factory=ProxyHealthMap)
+    cooling_prefixes: list[str] = Field(default_factory=list)
+    prefixes: ProxyPrefixMap = Field(default_factory=ProxyPrefixMap)
+    prefix_members: dict[str, list[str]] = Field(
+        default_factory=dict, description="前缀 → 该段下被实际使用过的代理串（全量）"
+    )
+
+
 class PrefixFailurePlan(CustomBaseModel):
     """一次前缀级失败要落地的变更（把「读 → 决策 → 写」拆开，便于单测）。
 
@@ -354,6 +368,9 @@ class ProxyHealthStore:
         # 连接池延迟到首次使用时创建：本模块会被 CONFIG / SQLHelper 间接 import，
         # 模块导入期不应建立任何 socket。
         self._pool: aioredis.ConnectionPool | None = None
+        # 客户端与连接池一起缓存：redis-py 的 asyncio 客户端可并发复用，
+        # 每次调用都 new 一个 Redis 只会给心跳 / 选代理热路径增加无谓开销。
+        self._client: aioredis.Redis | None = None
         self._cfg = cfg
         self._counts_cache: ProxyHealthCounts | None = None
         self._counts_cache_ts: float = 0.0
@@ -368,6 +385,15 @@ class ProxyHealthStore:
         return CONFIG.proxy_health
 
     def _get_client(self) -> aioredis.Redis:
+        """复用同一个 Redis 客户端（连接池仍是首次使用时才创建）。
+
+        redis-py 的 asyncio 客户端本身并发安全（每个命令从连接池取一条连接），
+        旧实现每次调用都 ``Redis(connection_pool=...)`` 新建客户端，
+        抓栈里它出现在每次心跳 / 选代理的热路径上，纯属无谓开销。
+        """
+        client = self._client
+        if client is not None:
+            return client
         if self._pool is None:
             redis_cfg = CONFIG.database.proxyRedis
             cfg = self.cfg
@@ -380,7 +406,8 @@ class ProxyHealthStore:
                 socket_timeout=cfg.redis_timeout,
                 socket_connect_timeout=cfg.redis_timeout,
             )
-        return aioredis.Redis(connection_pool=self._pool)
+        self._client = aioredis.Redis(connection_pool=self._pool)
+        return self._client
 
     def _warn(self, msg: str) -> None:
         """Redis 异常限流告警：热路径上失败一次不能刷屏。"""
@@ -917,18 +944,99 @@ class ProxyHealthStore:
             self._warn(f"读取前缀冷却集合失败：{type(e).__name__} {e}")
             return []
 
-    async def prefix_members(self, prefix: str, limit: int = _PREFIX_MEMBERS_MAX) -> list[str]:
-        """该前缀下被实际使用过的代理串（冷却时据此把整段写回 MySQL）。"""
+    async def prefix_members(self, prefix: str) -> list[str]:
+        """该前缀下被实际使用过的**全部**代理串（冷却时据此把整段写回 MySQL）。
+
+        旧实现用 ``SRANDMEMBER 512`` 随机抽样，语义要求是「整段落盘」时必然漏成员：
+        漏掉的那部分代理不会被标成不可用，refresh 之后还会继续被抽中。
+        """
         if not prefix:
             return []
         try:
             client = self._get_client()
-            return await client.srandmember(
-                self._prefix_members_key(prefix), max(1, limit)
-            ) or []
+            return list(await client.smembers(self._prefix_members_key(prefix)) or [])
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀成员失败：{type(e).__name__} {e}")
             return []
+
+    async def read_persist_snapshot(
+        self, limit: int, scope: str | None = None
+    ) -> ProxyPersistSnapshot:
+        """一轮心跳所需的全部 Redis 数据：**2 次 pipeline** 取回。
+
+        第 1 次：地址级 + 前缀级冷却集合（各自清过期、取未过期的前 ``limit`` 条）；
+        第 2 次：对第 1 次取到的成员批量读明细 + 前缀成员集合（``SMEMBERS`` 全量）。
+
+        旧实现是「1 次取地址级 + 1 次取前缀级 + 每个前缀一次 SRANDMEMBER 串行 await」，
+        187 个前缀就是近 190 次往返 —— 单轮心跳超过 60s 的直接原因。
+        """
+        limit = max(1, int(limit))
+        now = int(time.time())
+        effective_scope = self._effective_scope(scope)
+        prefix_cooling_key = self._prefix_cooling_key(effective_scope)
+        client = self._get_client()
+        try:
+            async with client.pipeline(transaction=False) as pipe:
+                pipe.zremrangebyscore(_COOLING_KEY, "-inf", now)
+                pipe.zrangebyscore(_COOLING_KEY, now, "+inf", start=0, num=limit)
+                pipe.zremrangebyscore(prefix_cooling_key, "-inf", now)
+                pipe.zrangebyscore(
+                    prefix_cooling_key, now, "+inf", start=0, num=limit
+                )
+                _, raw_keys, _, raw_prefixes = await pipe.execute()
+        except Exception as e:  # noqa: BLE001
+            self._warn(f"读取心跳冷却集合失败：{type(e).__name__} {e}")
+            return ProxyPersistSnapshot()
+        cooling_keys = [key for key in (raw_keys or []) if key]
+        cooling_prefixes = [prefix for prefix in (raw_prefixes or []) if prefix]
+        if not cooling_keys and not cooling_prefixes:
+            return ProxyPersistSnapshot()
+        try:
+            async with client.pipeline(transaction=False) as pipe:
+                for key in cooling_keys:
+                    pipe.hgetall(self._detail_key(key))
+                for prefix in cooling_prefixes:
+                    pipe.hgetall(self._prefix_detail_key(prefix, effective_scope))
+                for prefix in cooling_prefixes:
+                    pipe.smembers(self._prefix_members_key(prefix))
+                results = await pipe.execute()
+        except Exception as e:  # noqa: BLE001
+            # 明细读不到：按「仍在冷却」保守处理（与旧的 get_many 降级口径一致）
+            self._warn(f"读取心跳明细失败：{type(e).__name__} {e}")
+            return ProxyPersistSnapshot(
+                cooling_keys=cooling_keys, cooling_prefixes=cooling_prefixes
+            )
+        key_count = len(cooling_keys)
+        prefix_count = len(cooling_prefixes)
+        address = ProxyHealthMap(
+            records={
+                key: self._parse(raw)
+                for key, raw in zip(cooling_keys, results[:key_count])
+                if raw
+            }
+        )
+        prefixes = ProxyPrefixMap(
+            records={
+                prefix: self._parse_prefix(raw)
+                for prefix, raw in zip(
+                    cooling_prefixes, results[key_count : key_count + prefix_count]
+                )
+                if raw
+            }
+        )
+        prefix_members = {
+            prefix: [member for member in (members or []) if member]
+            for prefix, members in zip(
+                cooling_prefixes, results[key_count + prefix_count :]
+            )
+        }
+        return ProxyPersistSnapshot(
+            cooling_keys=cooling_keys,
+            address=address,
+            cooling_prefixes=cooling_prefixes,
+            prefixes=prefixes,
+            prefix_members=prefix_members,
+        )
 
     # endregion
 

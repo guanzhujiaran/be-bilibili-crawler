@@ -31,6 +31,7 @@ from Utils.代理.数据库操作.ProxyHealth import (
     ProxyHealthCounts,
     ProxyHealthRecord,
     ProxyHealthState,
+    ProxyPersistSnapshot,
     proxy_health_store,
     proxy_prefix_of,
     seed_health_record,
@@ -1299,16 +1300,21 @@ class SQLHelperClass(SqlHelperBase):
             await self._release_batch_write_lock(token)
         return
 
-    async def _filter_still_cooling(self, proxy_keys: list[str]) -> list[str]:
+    async def _filter_still_cooling(
+        self, proxy_keys: list[str], health=None
+    ) -> list[str]:
         """从冷却集合里剔除「已经解冻」的代理。
 
         必要性：冷却集合是快照，读出来到写库之间代理可能已经成功（成功会立即清冷却），
         此时若仍把它写成 ``status != 0``，它会在 MySQL 里躺到下一次 refresh（最长 2h）
         才会重新可用 —— 等于把好代理误封 2 小时。
+
+        :param health: 调用方已取回的 ``ProxyHealthMap``；不传则回源一次 pipeline。
         """
         if not proxy_keys:
             return []
-        health = await proxy_health_store.get_many(proxy_keys)
+        if health is None:
+            health = await proxy_health_store.get_many(proxy_keys)
         now = int(time.time())
         still_cooling: list[str] = []
         for key in proxy_keys:
@@ -1367,8 +1373,9 @@ class SQLHelperClass(SqlHelperBase):
     ) -> int:
         """把一批代理置为不可用并刷新 update_ts（不改变 score / success_times 语义）。
 
-        分批更新（每批 200 条）而不是一条大 SQL：``computed_proxy_str`` 是带索引的
-        生成列，分批等值 IN 走索引，单批毫秒级，避免长事务。
+        UPDATE 仍分块（每批 200 个主键）而不是一条大 SQL：避免长事务与超长 IN；
+        但 SELECT 主键改为整批一次（超过 ``_PROXY_KEY_SELECT_CHUNK`` 才拆），
+        不再「每 200 条一次 SELECT」把一轮心跳放大成几十次往返。
 
         **按主键升序加锁**（2026-11 线上 1213 死锁的直接修复）：
         调用方传进来的 key 顺序是「冷却集合 / 前缀成员集合」的遍历顺序，每次都不一样；
@@ -1381,34 +1388,51 @@ class SQLHelperClass(SqlHelperBase):
         if not proxy_keys:
             return 0
         ts = now if now is not None else int(time.time())
+        # 去重：冷却集合与前缀成员集合可能包含同一条代理，重复写同一行只是浪费行锁。
+        unique_keys = list(dict.fromkeys(key for key in proxy_keys if key))
+        if not unique_keys:
+            return 0
+        # 一次 SELECT 取回整批主键，再按 id 升序分块 UPDATE：
+        # 旧实现是「每 200 条一次 SELECT + 一次 UPDATE」，一轮心跳几十次往返；
+        # 现在 SELECT 次数降到 1~几次（超过 _PROXY_KEY_SELECT_CHUNK 才拆），
+        # 加锁顺序仍然全局按主键升序，不会回退成一条大 SQL。
+        id_rows = await self._select_proxy_ids(unique_keys)
+        if not id_rows:
+            return 0
+        # 升序：与 refresh_proxy（按 status 索引扫描、天然按主键顺序）保持同一顺序
+        id_rows.sort(key=lambda item: item[0])
         touched = 0
-        for start in range(0, len(proxy_keys), 200):
-            chunk = proxy_keys[start : start + 200]
-            id_rows = await self._select_proxy_ids(chunk)
-            if not id_rows:
-                continue
-            # 升序：与 refresh_proxy（按 status 索引扫描、天然按主键顺序）保持同一顺序
-            id_rows.sort(key=lambda item: item[0])
-            for id_start in range(0, len(id_rows), 200):
-                ids = [pid for pid, _ in id_rows[id_start : id_start + 200]]
-                stmt = self._build_unavailable_stmt_by_ids(ids, status, ts, min_interval)
-                async with self.async_session() as session:
-                    async with session.begin():
-                        res = await session.execute(stmt)
-                touched += res.rowcount or 0
+        for id_start in range(0, len(id_rows), 200):
+            ids = [pid for pid, _ in id_rows[id_start : id_start + 200]]
+            stmt = self._build_unavailable_stmt_by_ids(ids, status, ts, min_interval)
+            async with self.async_session() as session:
+                async with session.begin():
+                    res = await session.execute(stmt)
+            touched += res.rowcount or 0
         return touched
 
+    #: 按代理串查主键时单条 SELECT 的 IN 上限（避免一次塞进过多字面量）
+    _PROXY_KEY_SELECT_CHUNK = 1000
+
     async def _select_proxy_ids(self, proxy_keys: list[str]) -> list[tuple[int, str]]:
-        """按代理串查主键（``computed_proxy_str`` 有索引，等值 IN 走索引）。"""
-        if not proxy_keys:
+        """按代理串批量查主键（``computed_proxy_str`` 有索引，等值 IN 走索引）。"""
+        keys = [key for key in dict.fromkeys(proxy_keys) if key]
+        if not keys:
             return []
-        sql = select(ProxyTab.proxy_id, ProxyTab.computed_proxy_str).where(
-            ProxyTab.computed_proxy_str.in_(proxy_keys)
-        )
-        async with self.async_session() as session:
-            res = await session.execute(sql)
-        rows = res.all()
-        return [(int(pid), str(key or "")) for pid, key in rows if pid is not None]
+        rows: list[tuple[int, str]] = []
+        for start in range(0, len(keys), self._PROXY_KEY_SELECT_CHUNK):
+            chunk = keys[start : start + self._PROXY_KEY_SELECT_CHUNK]
+            sql = select(ProxyTab.proxy_id, ProxyTab.computed_proxy_str).where(
+                ProxyTab.computed_proxy_str.in_(chunk)
+            )
+            async with self.async_session() as session:
+                res = await session.execute(sql)
+            rows.extend(
+                (int(pid), str(key or ""))
+                for pid, key in res.all()
+                if pid is not None
+            )
+        return rows
 
     @staticmethod
     def _build_unavailable_stmt_by_ids(
@@ -1443,6 +1467,9 @@ class SQLHelperClass(SqlHelperBase):
         前缀级冷却（412/352 记在 /64、/24 上）没有对应的 MySQL 行可写，
         因此按 ``prefix_members``（该段下被实际用过的代理串）把整段一起置为不可用：
         只读「当前冷却中的前缀」，成本与前缀数量同阶，不扫全表。
+
+        整个落盘只发 **2 次 Redis pipeline**（冷却集合 + 明细/成员），
+        不再逐前缀串行读取；MySQL 侧按主键升序分块 UPDATE，保持既有死锁防护。
         """
         # 进程首次执行时先做一次冷启动播种：Redis 空 → fast 车道没有任何候选，
         # 会把「上线 / 清缓存」变成一次全量停摆。
@@ -1458,10 +1485,13 @@ class SQLHelperClass(SqlHelperBase):
             sql_log.debug("proxy_tab 批量写正被 refresh_proxy 占用，本轮心跳跳过")
             return 0
         try:
-            keys = await proxy_health_store.list_cooling_keys(limit=limit)
+            # 地址级 + 前缀级一次性取回（2 次 pipeline），后面的过滤全在内存里做。
+            snapshot = await proxy_health_store.read_persist_snapshot(limit=limit)
             # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
             # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
-            keys = await self._filter_still_cooling(keys)
+            keys = await self._filter_still_cooling(
+                snapshot.cooling_keys, snapshot.address
+            )
             touched = 0
             if keys:
                 touched += await self._mark_proxy_unavailable(
@@ -1472,7 +1502,9 @@ class SQLHelperClass(SqlHelperBase):
                         f"代理冷却落盘：{len(keys)} 条冷却中，回写 {touched} 行"
                     )
 
-            prefix_keys, prefix_touched = await self._flush_prefix_cooling(limit=limit)
+            prefix_keys, prefix_touched = await self._flush_prefix_cooling(
+                limit, snapshot
+            )
             if prefix_touched:
                 sql_log.warning(
                     f"前缀冷却落盘：{prefix_keys} 个网段冷却中，回写 {prefix_touched} 行"
@@ -1482,20 +1514,28 @@ class SQLHelperClass(SqlHelperBase):
         finally:
             await self._release_batch_write_lock(token)
 
-    async def _flush_prefix_cooling(self, limit: int) -> tuple[int, int]:
+    async def _flush_prefix_cooling(
+        self, limit: int, snapshot: ProxyPersistSnapshot | None = None
+    ) -> tuple[int, int]:
         """把「冷却中的前缀」整段写回 MySQL：返回 (前缀数, 回写行数)。
 
         调用方必须已持有批量写建议锁（本方法只被 ``flush_proxy_health`` 调用）。
+        ``snapshot`` 由调用方传入时不再发 Redis 读：一轮心跳共用同一份快照。
         """
-        prefixes = await proxy_health_store.list_prefix_cooling(limit=limit)
+        if snapshot is None:
+            snapshot = await proxy_health_store.read_persist_snapshot(limit=limit)
+        prefixes = snapshot.cooling_prefixes
         if not prefixes:
             return 0, 0
-        prefixes = await self._filter_still_cooling_prefixes(prefixes)
+        prefixes = await self._filter_still_cooling_prefixes(
+            prefixes, snapshot.prefixes
+        )
         if not prefixes:
             return 0, 0
+        # 成员已在快照里批量取回（SMEMBERS 全量），这里只做内存归并。
         members: list[str] = []
         for prefix in prefixes:
-            members.extend(await proxy_health_store.prefix_members(prefix))
+            members.extend(snapshot.prefix_members.get(prefix) or [])
         keys = [key for key in dict.fromkeys(members) if key]
         if not keys:
             return len(prefixes), 0
@@ -1506,11 +1546,17 @@ class SQLHelperClass(SqlHelperBase):
         )
         return len(prefixes), touched
 
-    async def _filter_still_cooling_prefixes(self, prefixes: list[str]) -> list[str]:
-        """剔除「已经解冻」的前缀（同一前缀在冷却集合里但明细已恢复）。"""
+    async def _filter_still_cooling_prefixes(
+        self, prefixes: list[str], prefix_map=None
+    ) -> list[str]:
+        """剔除「已经解冻」的前缀（同一前缀在冷却集合里但明细已恢复）。
+
+        :param prefix_map: 调用方已取回的 ``ProxyPrefixMap``；不传则回源一次 pipeline。
+        """
         if not prefixes:
             return []
-        prefix_map = await proxy_health_store.get_prefixes(prefixes)
+        if prefix_map is None:
+            prefix_map = await proxy_health_store.get_prefixes(prefixes)
         now = int(time.time())
         still: list[str] = []
         for prefix in prefixes:
