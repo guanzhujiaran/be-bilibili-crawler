@@ -47,11 +47,11 @@ class ConcurrencyConfig(BaseModel):
     #   - 该爬虫是「gRPC 拉取 + 大 JSON 解析 + MySQL upsert」的混合负载，
     #     并发上去先打满的是 CPU 而不是带宽，所以不要按「网络 IO 型爬虫」调大；
     #   - 不要和其它爬虫同时调大：所有调度器共享同一个进程与同一次「首次立即执行」。
-    dyn_detail: int = 20
-    rm_following: int = 20  # 取关对象
+    dyn_detail: int = 100
+    rm_following: int = 40  # 取关对象
     reserve: int = 1  # 预约抽奖（串行：接口要求顺序执行）
     topic: int = 1  # 话题抽奖（串行）
-    lottery_api: int = 20  # 抽奖 API（LotteryApiRobot 的 DYN/RESERVE 两个实例共用）
+    lottery_api: int = 1  # 抽奖 API（LotteryApiRobot 的 DYN/RESERVE 两个实例共用）
     refresh_lot_db: int = 1  # 刷新抽奖库（串行，避免与采集抢 DB）
     sams_club: int = 1  # 山姆分类
     sams_club_spu: int = 1  # 山姆 SPU 详情
@@ -59,8 +59,8 @@ class ConcurrencyConfig(BaseModel):
     get_others_lot_dyn: int = 1  # 第三方抽奖动态（初始 1，运行时按阶段切到下面两项）
 
     # ---- 第三方抽奖采集：按阶段切换（GetOthersLotDynRobot._set_concurrency）----
-    space_dyn: int = 20
-    judge_dyn: int = 20
+    space_dyn: int = 40
+    judge_dyn: int = 40
 
     # ---- 代理抓取：同时流式读取的源数量 / 入库并发 / 补充源内部并发 ----
     proxy_source_fetch: int = 32
