@@ -1161,8 +1161,11 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
     # - biliopusdb 的 t_lotdyninfo（rawJsonStr）：第三方抽奖动态，抽奖列表按时间范围查；
     # - biliopusdb 的 t_lotuserspaceresp（spaceRespJson）：用户空间分页响应，只服务
     #   本轮断点续爬，轮次结束后即死数据（体积最大）。
+    # - biliopusdb 的 t_lotdyninfo_raw（rawJsonStr 垂直分表）：只服务爬取去重 /
+    #   评论挖用户，历史 JSON 仅手工回补时才用，窗口刻意比主表短（默认 30 天）。
     COLD_ARCHIVE_KEEP_DAYS_DYNDETAIL: int = 180
     COLD_ARCHIVE_KEEP_DAYS_LOTDYNINFO: int = 180
+    COLD_ARCHIVE_KEEP_DAYS_LOTDYNINFO_RAW: int = 30
     COLD_ARCHIVE_KEEP_DAYS_LOTUSERSPACERESP: int = 180
     # 归档文件校验通过后是否真的删库（0=只归档不删，1=归档后删）。先在 0 观察几轮再开。
     COLD_ARCHIVE_DELETE_AFTER: int = 1

@@ -1,5 +1,5 @@
 """
-从 t_lotdyninfo.rawJsonStr 重新解析并更新所有字段。
+从 t_lotdyninfo_raw.rawJsonStr 重新解析并更新 t_lotdyninfo 的所有字段。
 
 替代原有只回填评论转发数的脚本，本脚本会从 rawJsonStr 中重新提取：
   - 互动数据 (commentCount / repostCount / likeCount)
@@ -48,7 +48,7 @@ from pydantic import BaseModel
 
 from log.base_log import myfastapi_logger
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
-from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
+from Service.GetOthersLotDyn.Sql.models import TLotdyninfo, TLotdyninfoRaw
 from Service.GetOthersLotDyn.parser.dynamic_detail_parser import parse_dynamic_item
 from Service.GetOthersLotDyn.parser.prize_extractor import (
     extract_prize_info_for_biliopusdb,
@@ -373,15 +373,20 @@ async def backfill_dyninfo(limit: int = 0, dry_run: bool = False):
     page = 0
     while True:
         async with SqlHelper.async_session() as session:
+            # rawJsonStr 已垂直拆到 t_lotdyninfo_raw，按 dynId 关联取回原始 JSON
             stmt = (
-                select(TLotdyninfo)
-                .filter(TLotdyninfo.rawJsonStr.isnot(None))
+                select(TLotdyninfo, TLotdyninfoRaw.rawJsonStr.label("raw_json"))
+                .join(TLotdyninfoRaw, TLotdyninfoRaw.dynId == TLotdyninfo.dynId)
                 .order_by(TLotdyninfo.dynId.desc())
                 .offset(page * BATCH_SIZE)
                 .limit(BATCH_SIZE)
             )
             res = await session.execute(stmt)
-            records = res.scalars().all()
+            records = []
+            for dyn, raw_json in res.all():
+                # 复用原有解析逻辑：把分表里的原始 JSON 挂回内存对象（不写回主表）
+                dyn.rawJsonStr = raw_json
+                records.append(dyn)
 
         if not records:
             myfastapi_logger.info("没有更多需要处理的记录")
@@ -414,11 +419,9 @@ async def backfill_dyninfo(limit: int = 0, dry_run: bool = False):
 
 
 async def count_has_rawjson() -> int:
-    """统计有 rawJsonStr 的记录总数"""
+    """统计分表（t_lotdyninfo_raw）中保存了原始 JSON 的记录总数"""
     async with SqlHelper.async_session() as session:
-        stmt = select(func.count(TLotdyninfo.dynId)).filter(
-            TLotdyninfo.rawJsonStr.isnot(None)
-        )
+        stmt = select(func.count(TLotdyninfoRaw.dynId))
         res = await session.execute(stmt)
         return res.scalar() or 0
 

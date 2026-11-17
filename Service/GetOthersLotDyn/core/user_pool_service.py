@@ -362,12 +362,16 @@ class LotUserPoolService:
 
         result: list[TargetUserItem] = []
         seen: set[int] = set(exclude_uids) if exclude_uids else set()
+        # rawJsonStr 已拆到 t_lotdyninfo_raw：一次主键 IN 批量取，避免逐行 N+1
+        raw_json_map = await SqlHelper.get_raw_json_by_dyn_ids(
+            [dyn.dynId for dyn in hot_dyns]
+        )
 
         for dyn in hot_dyns:
             dyn_id = str(dyn.dynId)
             rid = None
             _type = None
-            raw_json = dyn.rawJsonStr
+            raw_json = raw_json_map.get(int(dyn.dynId))
             if raw_json:
                 basic = raw_json.get("basic") or {}
                 rid = basic.get("comment_id_str")

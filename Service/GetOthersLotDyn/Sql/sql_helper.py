@@ -9,7 +9,7 @@ from typing import List, Sequence, Optional, Tuple
 from pydantic import BaseModel
 
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
-from sqlalchemy import BigInteger, select, and_, func, text, or_, exists, case
+from sqlalchemy import BigInteger, Row, select, and_, func, text, or_, exists, case
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from CONFIG import CONFIG
 from Utils.通用.dynamic_id_caculate import ts_2_fake_dynamic_id
@@ -18,6 +18,7 @@ from Service.GetOthersLotDyn.Sql.models import (
     TLotmaininfo,
     TLotuserinfo,
     TLotdyninfo,
+    TLotdyninfoRaw,
     TLotuserspaceresp,
     TRiddynid,
     TLotExtraInfo,
@@ -565,12 +566,44 @@ class __SqlHelper(SqlHelperBase):
             return ret
 
     @log_sql_retry_wrapper()
-    async def isExistDynInfoByDynId(self, DynId: str) -> TLotdyninfo | None:
+    async def isExistDynInfoByDynId(self, DynId: str) -> Optional[Row]:
+        """判断动态是否已入库，只取 dynId / officialLotType 两个小字段。
+
+        rawJsonStr 已垂直拆到 t_lotdyninfo_raw，这里不能再整行读（单行约 8KB）；
+        需要原始 JSON 的场景请配套调用 ``get_raw_json_by_dyn_id``。
+        """
         async with self.async_session() as session:
-            sql = select(TLotdyninfo).filter(TLotdyninfo.dynId == DynId).limit(1)
+            sql = (
+                select(TLotdyninfo.dynId, TLotdyninfo.officialLotType)
+                .filter(TLotdyninfo.dynId == DynId)
+                .limit(1)
+            )
             res = await session.execute(sql)
-            ret = res.scalars().first()
-            return ret
+            return res.first()
+
+    @log_sql_retry_wrapper()
+    async def get_raw_json_by_dyn_id(self, dyn_id: int | str) -> dict | None:
+        """按 dynId 从分表取原始动态 JSON（单行主键查询）。"""
+        async with self.async_session() as session:
+            sql = select(TLotdyninfoRaw.rawJsonStr).filter(
+                TLotdyninfoRaw.dynId == dyn_id
+            )
+            res = await session.execute(sql)
+            return res.scalar()
+
+    @log_sql_retry_wrapper()
+    async def get_raw_json_by_dyn_ids(
+        self, dyn_ids: Sequence[int | str]
+    ) -> dict[int, dict]:
+        """批量取原始动态 JSON，返回 {dynId: rawJsonStr}（一次主键 IN 查询）。"""
+        if not dyn_ids:
+            return {}
+        async with self.async_session() as session:
+            sql = select(TLotdyninfoRaw.dynId, TLotdyninfoRaw.rawJsonStr).filter(
+                TLotdyninfoRaw.dynId.in_(dyn_ids)
+            )
+            res = await session.execute(sql)
+            return {int(row[0]): row[1] for row in res.all() if row[1] is not None}
 
     @log_sql_retry_wrapper()
     async def getAlldyid(self, ret_limit=10000) -> list[str]:
@@ -607,9 +640,30 @@ class __SqlHelper(SqlHelperBase):
         :param need_comment: 是否需要人工评论（来自 manual_reply_judge，非大模型结果）
         """
         async with self.add_dyn_info_lock:
-            async with self.async_session() as session:
-                await session.merge(DynInfo)
-                await session.commit()
+            raw_json = DynInfo.rawJsonStr
+            created_at = DynInfo.created_at or datetime.now()
+            # rawJsonStr 已垂直拆到 t_lotdyninfo_raw：主表只写元数据，
+            # 原始 JSON 同一事务写分表；调用方对象上的值用完即还原。
+            DynInfo.rawJsonStr = None
+            try:
+                async with self.async_session() as session:
+                    await session.merge(DynInfo)
+                    if raw_json is not None:
+                        # upsert：命中已有行只更新 JSON，保留首次收录时间
+                        # （重复爬同一条动态不能把 created_at 刷新成今天，
+                        #  否则分表归档窗口判断会失真）
+                        raw_stmt = mysql_insert(TLotdyninfoRaw).values(
+                            dynId=DynInfo.dynId,
+                            rawJsonStr=raw_json,
+                            created_at=created_at,
+                        )
+                        raw_stmt = raw_stmt.on_duplicate_key_update(
+                            rawJsonStr=raw_stmt.inserted.rawJsonStr
+                        )
+                        await session.execute(raw_stmt)
+                    await session.commit()
+            finally:
+                DynInfo.rawJsonStr = raw_json
 
         if DynInfo.dynContent and DynInfo.dynId:
             # 不再在此同步调用大模型提取，改为投递到入库队列（biliopusdb 队列），
@@ -1430,39 +1484,32 @@ class __SqlHelper(SqlHelperBase):
 
         该表无「开奖时间」数值列（开奖时间只在 t_lot_extra_info 里以文本存放），
         故不统计未开奖数，仅按 created_at 统计新增。
+
+        拆成 5 个走 idx_created_at 的标量子查询，一次往返拿回：
+        总行数是一次索引全扫（无法避免，但只有 44MB 索引），其余 4 个是索引范围
+        count，比原先「扫全表 + 逐行算 4 个 CASE」快一个量级。
         """
+
+        def _range_count(start: datetime, end: datetime | None = None):
+            conditions = [TLotdyninfo.created_at >= start]
+            if end is not None:
+                conditions.append(TLotdyninfo.created_at < end)
+            return (
+                select(func.count())
+                .select_from(TLotdyninfo)
+                .where(*conditions)
+                .scalar_subquery()
+            )
+
         stmt = select(
-            func.count().label("total"),
-            func.sum(
-                case(
-                    (
-                        and_(
-                            TLotdyninfo.created_at >= prev_day_start,
-                            TLotdyninfo.created_at < yesterday_start,
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("new_prev_day"),
-            func.sum(
-                case(
-                    (
-                        and_(
-                            TLotdyninfo.created_at >= yesterday_start,
-                            TLotdyninfo.created_at < today_start,
-                        ),
-                        1,
-                    ),
-                    else_=0,
-                )
-            ).label("new_yesterday"),
-            func.sum(
-                case((TLotdyninfo.created_at >= week_start, 1), else_=0)
-            ).label("new_this_week"),
-            func.sum(
-                case((TLotdyninfo.created_at >= month_start, 1), else_=0)
-            ).label("new_this_month"),
+            select(func.count())
+            .select_from(TLotdyninfo)
+            .scalar_subquery()
+            .label("total"),
+            _range_count(prev_day_start, yesterday_start).label("new_prev_day"),
+            _range_count(yesterday_start, today_start).label("new_yesterday"),
+            _range_count(week_start).label("new_this_week"),
+            _range_count(month_start).label("new_this_month"),
         )
         async with self.async_session() as session:
             res = await session.execute(stmt)

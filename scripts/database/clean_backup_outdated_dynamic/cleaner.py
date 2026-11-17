@@ -9,7 +9,8 @@
    `{root}/lot_dyn_info/{年}/{YYYY_MM}_lot_dyn_info.csv.gz`（按月分片），只读不删库；
 2. **冷数据归档**（`Service/DataArchive/cold_data_archiver.py`）：
    - dyndetail 库 · `bilidyndetail`（动态详情，dynData 大字段）
-   - biliopusdb 库 · `t_lotdyninfo`（第三方抽奖动态，rawJsonStr 大字段）
+   - biliopusdb 库 · `t_lotdyninfo`（第三方抽奖动态元数据）
+   - biliopusdb 库 · `t_lotdyninfo_raw`（rawJsonStr 垂直分表，窗口比主表短）
    - biliopusdb 库 · `t_lotuserspaceresp`（用户空间分页响应，spaceRespJson 大字段）
    产物按月分片：`{root}/{表名}/{年}/{YYYY_MM}_{表名}.csv.gz`，
    校验通过后按保留窗口删库，回收服务器磁盘。

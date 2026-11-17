@@ -902,8 +902,16 @@ class SQLHelper(SqlHelperBase):
             return {row.lottery_id: row for row in rows}
 
     # region 管理端抽奖数据汇总（GetLotteryDataSummary）
+    # 原实现是「一条 SQL 聚合所有指标」，在 12 万行 / 205MB 的 lotdata 上每执行一次
+    # 要读 200MB+（participants / lottery_result 都不在索引里，逐行回表），且无法并发。
+    # 现在按「索引能否覆盖」拆成 4 条互相独立的查询，由接口层 asyncio.gather 并发：
+    #   1) 总量 / 新增：idx_bt_created_at（business_type, created_at）覆盖索引；
+    #   2) 未开奖 / 24h 内开奖：idx_bt_status_lottery_time 覆盖索引；
+    #   3) 待抓开奖结果：只扫 status=0 且已到开奖时间的小子集（lottery_result 是 TEXT，
+    #      必须回表，但不再让 12 万行陪跑）；
+    #   4) 参与人数：idx_bt_participants（business_type, participants）覆盖索引。
     @log_sql_retry_wrapper()
-    async def get_lottery_summary_stats(
+    async def get_lottery_base_stats(
         self,
         *,
         yesterday_start: datetime.datetime,
@@ -911,21 +919,57 @@ class SQLHelper(SqlHelperBase):
         today_start: datetime.datetime,
         week_start: datetime.datetime,
         month_start: datetime.datetime,
-        now_ts: int,
+        business_types: Sequence[int],
     ) -> list[dict]:
-        """按 business_type 汇总 lotdata 的核心统计（单次 GROUP BY，走 idx_bt_created_at 复合索引）。
+        """按 business_type 统计总量与昨日 / 前日 / 本周 / 本月新增（覆盖索引）。"""
 
-        - ``status == 0`` 即 BiliLotDataStatusEnum.UNFINISHED（未开奖）。
-        - 昨日 / 本周 / 本月边界按服务端本地时区计算，直接与库内 created_at（TIMESTAMP）比较。
-        """
-        unfinished = Lotdata.status == 0
+        def _count_if(condition):
+            return func.sum(case((condition, 1), else_=0))
+
         stmt = (
             select(
                 Lotdata.business_type.label("business_type"),
                 func.count().label("total"),
+                _count_if(
+                    and_(
+                        Lotdata.created_at >= prev_day_start,
+                        Lotdata.created_at < yesterday_start,
+                    )
+                ).label("new_prev_day"),
+                _count_if(
+                    and_(
+                        Lotdata.created_at >= yesterday_start,
+                        Lotdata.created_at < today_start,
+                    )
+                ).label("new_yesterday"),
+                _count_if(Lotdata.created_at >= week_start).label("new_this_week"),
+                _count_if(Lotdata.created_at >= month_start).label("new_this_month"),
+            )
+            .where(Lotdata.business_type.in_(list(business_types)))
+            .group_by(Lotdata.business_type)
+            .with_hint(Lotdata, "FORCE INDEX (idx_bt_created_at)")
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [dict(row) for row in res.mappings().all()]
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_live_stats(
+        self, now_ts: int, business_types: Sequence[int]
+    ) -> list[dict]:
+        """未开奖数 / 24h 内即将开奖数（idx_bt_status_lottery_time 覆盖索引）。"""
+        stmt = (
+            select(
+                Lotdata.business_type.label("business_type"),
                 func.sum(
                     case(
-                        (and_(unfinished, Lotdata.lottery_time > now_ts), 1),
+                        (
+                            and_(
+                                Lotdata.status == 0,
+                                Lotdata.lottery_time > now_ts,
+                            ),
+                            1,
+                        ),
                         else_=0,
                     )
                 ).label("not_drawn"),
@@ -933,7 +977,7 @@ class SQLHelper(SqlHelperBase):
                     case(
                         (
                             and_(
-                                unfinished,
+                                Lotdata.status == 0,
                                 Lotdata.lottery_time > now_ts,
                                 Lotdata.lottery_time <= now_ts + 86400,
                             ),
@@ -942,56 +986,55 @@ class SQLHelper(SqlHelperBase):
                         else_=0,
                     )
                 ).label("drawing_soon_24h"),
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                unfinished,
-                                Lotdata.lottery_time <= now_ts,
-                                Lotdata.lottery_result.is_(None),
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("pending_result"),
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                Lotdata.created_at >= prev_day_start,
-                                Lotdata.created_at < yesterday_start,
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("new_prev_day"),
-                func.sum(
-                    case(
-                        (
-                            and_(
-                                Lotdata.created_at >= yesterday_start,
-                                Lotdata.created_at < today_start,
-                            ),
-                            1,
-                        ),
-                        else_=0,
-                    )
-                ).label("new_yesterday"),
-                func.sum(
-                    case((Lotdata.created_at >= week_start, 1), else_=0)
-                ).label("new_this_week"),
-                func.sum(
-                    case((Lotdata.created_at >= month_start, 1), else_=0)
-                ).label("new_this_month"),
+            )
+            .where(Lotdata.business_type.in_(list(business_types)))
+            .group_by(Lotdata.business_type)
+            .with_hint(Lotdata, "FORCE INDEX (idx_bt_status_lottery_time)")
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [dict(row) for row in res.mappings().all()]
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_pending_stats(
+        self, now_ts: int, business_types: Sequence[int]
+    ) -> list[dict]:
+        """待抓开奖结果积压：只扫 status=0 且已到开奖时间的行。"""
+        stmt = (
+            select(
+                Lotdata.business_type.label("business_type"),
+                func.count().label("pending_result"),
+            )
+            .where(
+                Lotdata.business_type.in_(list(business_types)),
+                Lotdata.status == 0,
+                Lotdata.lottery_time <= now_ts,
+                Lotdata.lottery_result.is_(None),
+            )
+            .group_by(Lotdata.business_type)
+            .with_hint(Lotdata, "FORCE INDEX (idx_bt_status_lottery_time)")
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [dict(row) for row in res.mappings().all()]
+
+    @log_sql_retry_wrapper()
+    async def get_lottery_participants_stats(
+        self, business_types: Sequence[int]
+    ) -> list[dict]:
+        """参与人数分布（idx_bt_participants 覆盖索引，index-only）。"""
+        stmt = (
+            select(
+                Lotdata.business_type.label("business_type"),
                 func.sum(func.coalesce(Lotdata.participants, 0)).label(
                     "participants_total"
                 ),
                 func.max(Lotdata.participants).label("participants_max"),
                 func.avg(Lotdata.participants).label("participants_avg"),
             )
+            .where(Lotdata.business_type.in_(list(business_types)))
             .group_by(Lotdata.business_type)
+            .with_hint(Lotdata, "FORCE INDEX (idx_bt_participants)")
         )
         async with self.async_session() as session:
             res = await session.execute(stmt)

@@ -38,17 +38,20 @@ def get_archive_root_dir() -> str:
 class ColdArchiveTables:
     """可归档的冷数据表（值即真实表名，同时作为归档文件名的一部分）。
 
-    三张表存的是同一批动态原始 JSON 的三份副本（dynData / rawJsonStr / spaceRespJson），
-    因此共用同一套归档产物格式、落盘根目录与保留窗口配置。
+    四张表存的是同一批动态原始 JSON 的多份副本（dynData / rawJsonStr /
+    t_lotdyninfo_raw.rawJsonStr / spaceRespJson），因此共用同一套归档产物格式、
+    落盘根目录，但保留窗口按表分别配置（原始 JSON 分表窗口更短）。
     """
 
     BILI_DYN_DETAIL = "bilidyndetail"
     OTHER_LOT_DYN_INFO = "t_lotdyninfo"
+    OTHER_LOT_DYN_INFO_RAW = "t_lotdyninfo_raw"
     LOT_USER_SPACE_RESP = "t_lotuserspaceresp"
 
-    ALL: tuple[str, str, str] = (
+    ALL: tuple[str, ...] = (
         BILI_DYN_DETAIL,
         OTHER_LOT_DYN_INFO,
+        OTHER_LOT_DYN_INFO_RAW,
         LOT_USER_SPACE_RESP,
     )
 

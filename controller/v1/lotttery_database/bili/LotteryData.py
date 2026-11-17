@@ -5,7 +5,6 @@
 import time
 import json
 import datetime
-import logging
 from typing import Annotated, List, Optional
 from Models.lottery_database.bili.LotteryDataModels import EndpointFilterMeta
 from fastapi import Query, Body, Request, Depends
@@ -92,7 +91,7 @@ from Models.lottery_database.redisModel.biliRedisModel import (
 )
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.SqlHelper import topic_sqlhelper
 
-from .base import NoCacheTs, new_router
+from .base import NoCacheTs, lottery_query_cache_key, new_router
 
 # 写 / 控制面路由：写入（Add* 系列）与爬虫进程内状态查询等"有副作用"的接口。
 # 爬虫角色（main.py）同时挂载 router 与 query_router，对外路径与拆分前完全一致。
@@ -101,8 +100,6 @@ router = new_router()
 # 只读查询路由：只读库 / 只读 redis 的接口，无写入、无抓取、不读进程内调度状态。
 # 查询角色（query_main.py）只挂载本 router，因此该进程即使指向只读账号也不会报权限错。
 query_router = new_router()
-
-logger = logging.getLogger(__name__)
 
 # 管理端数据汇总（GetLotteryDataSummary）：趋势天数 / 即将开奖时间窗口
 SUMMARY_TREND_DAYS = 14
@@ -457,6 +454,7 @@ async def api_GetTopicLottery(
 并额外汇总话题抽奖 / 直播抽奖 / 第三方动态抽奖等独立数据源。
 GET 查询，前端每次请求附带 t 时间戳防浏览器缓存（后端不使用该值）。""",
 )
+@cache(expire=180, key_builder=lottery_query_cache_key)
 async def api_GetLotteryDataSummary(t: NoCacheTs = None):
     # 时间边界按服务端本地时区计算，与库内 created_at（TIMESTAMP）直接比较
     now_dt = datetime.datetime.now()
@@ -467,34 +465,66 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
     month_start = today_start.replace(day=1)
     trend_start = today_start - datetime.timedelta(days=SUMMARY_TREND_DAYS - 1)
     now_ts = int(time.time())
+    business_types = [bt for bt, _, _ in _LOTDATA_TYPE_KEYS]
 
-    rows: List[LotterySummaryRow] = []
-    trend_counts: dict[str, dict[str, int]] = {}
-    latest_created_at: datetime.datetime | None = None
-
-    # ---- 1) lotdata 主表：官方 / 预约 / 充电 ----
-    lot_ok = grand_ok = False
-    stats_by_bt: dict[int, dict] = {}
-    grand_by_bt: dict[int, int] = {}
-    try:
-        stats = await grpc_sql_helper.get_lottery_summary_stats(
+    # 11 个数据源互不依赖，全部并发；asyncio_gather 内部捕获异常并返回 None，
+    # 单个查询失败只让对应指标缺省，与原「逐段 try/except」的降级口径一致。
+    (
+        base_stats,
+        live_stats,
+        pending_stats,
+        participant_stats,
+        grand_by_bt,
+        latest_created_at,
+        daily_trend,
+        others_summary,
+        others_trend,
+        topic_stats,
+        live_raw,
+    ) = await asyncio_gather(
+        grpc_sql_helper.get_lottery_base_stats(
             yesterday_start=yesterday_start,
             prev_day_start=prev_day_start,
             today_start=today_start,
             week_start=week_start,
             month_start=month_start,
-            now_ts=now_ts,
-        )
-        stats_by_bt = {_safe_int(r.get("business_type"), -1): r for r in stats}
-        lot_ok = True
-    except Exception:
-        logger.warning("获取 lotdata 汇总统计失败", exc_info=True)
-    try:
-        grand_by_bt = await grpc_sql_helper.get_lottery_grand_prize_stats()
-        grand_ok = True
-    except Exception:
-        logger.warning("获取 lotdata 大奖统计失败", exc_info=True)
+            business_types=business_types,
+        ),
+        grpc_sql_helper.get_lottery_live_stats(now_ts, business_types),
+        grpc_sql_helper.get_lottery_pending_stats(now_ts, business_types),
+        grpc_sql_helper.get_lottery_participants_stats(business_types),
+        grpc_sql_helper.get_lottery_grand_prize_stats(),
+        grpc_sql_helper.get_lottery_latest_created_at(),
+        grpc_sql_helper.get_lottery_daily_new_trend(trend_start),
+        SqlHelper.get_others_lot_summary(
+            yesterday_start=yesterday_start,
+            prev_day_start=prev_day_start,
+            today_start=today_start,
+            week_start=week_start,
+            month_start=month_start,
+        ),
+        SqlHelper.get_others_lot_daily_new_trend(trend_start),
+        topic_sqlhelper.get_traffic_card_summary(),
+        bili_live_lottery_redis._get(
+            BiliLiveLotteryRedis.RedisMap.all_live_lot.value
+        ),
+    )
 
+    lot_ok = base_stats is not None
+    live_ok = live_stats is not None
+    pending_ok = pending_stats is not None
+    participants_ok = participant_stats is not None
+    grand_ok = grand_by_bt is not None
+
+    # 4 条 lotdata 查询按 business_type 合并成一份
+    stats_by_bt: dict[int, dict] = {}
+    for stats_rows in (base_stats, live_stats, pending_stats, participant_stats):
+        for stat in stats_rows or []:
+            stats_by_bt.setdefault(
+                _safe_int(stat.get("business_type"), -1), {}
+            ).update(stat)
+
+    rows: List[LotterySummaryRow] = []
     for business_type, key, type_name in _LOTDATA_TYPE_KEYS:
         stat = stats_by_bt.get(business_type) or {}
         rows.append(
@@ -503,12 +533,12 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
                 type_name=type_name,
                 source="lotdata",
                 total=_safe_int(stat.get("total")) if lot_ok else 0,
-                not_drawn=_safe_int(stat.get("not_drawn")) if lot_ok else None,
+                not_drawn=_safe_int(stat.get("not_drawn")) if live_ok else None,
                 drawing_soon_24h=_safe_int(stat.get("drawing_soon_24h"))
-                if lot_ok
+                if live_ok
                 else None,
                 pending_result=_safe_int(stat.get("pending_result"))
-                if lot_ok
+                if pending_ok
                 else None,
                 grand_prize=grand_by_bt.get(business_type, 0) if grand_ok else None,
                 new_yesterday=_safe_int(stat.get("new_yesterday")) if lot_ok else None,
@@ -518,87 +548,62 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
                 if lot_ok
                 else None,
                 participants_avg=_safe_int(stat.get("participants_avg"))
-                if stat.get("participants_avg") is not None
+                if participants_ok and stat.get("participants_avg") is not None
                 else None,
                 participants_max=_safe_int(stat.get("participants_max"))
-                if stat.get("participants_max") is not None
+                if participants_ok and stat.get("participants_max") is not None
                 else None,
                 participants_total=_safe_int(stat.get("participants_total"))
-                if lot_ok
+                if participants_ok
                 else None,
             )
         )
 
-    # 数据新鲜度、近 N 天新增趋势、即将开奖明细
-    try:
-        latest_created_at = await grpc_sql_helper.get_lottery_latest_created_at()
-    except Exception:
-        logger.warning("获取 lotdata 最新收录时间失败", exc_info=True)
-    try:
-        for day, business_type, cnt in await grpc_sql_helper.get_lottery_daily_new_trend(
-            trend_start
-        ):
-            key = _BUSINESS_TYPE_KEY.get(int(business_type))
-            if key:
-                trend_counts.setdefault(str(day), {})[key] = int(cnt)
-    except Exception:
-        logger.warning("获取 lotdata 新增趋势失败", exc_info=True)
+    # 近 N 天新增趋势（缺失的天 / 数据源补 0，保证折线连续）
+    trend_counts: dict[str, dict[str, int]] = {}
+    for day, business_type, cnt in daily_trend or []:
+        key = _BUSINESS_TYPE_KEY.get(int(business_type))
+        if key:
+            trend_counts.setdefault(str(day), {})[key] = int(cnt)
 
-    # ---- 2) 第三方抽奖动态（t_lotdyninfo）：仅按收录时间统计新增 ----
+    # ---- 第三方抽奖动态（t_lotdyninfo）：仅按收录时间统计新增 ----
     others_row = LotterySummaryRow(
         key="others_dyn", type_name="第三方动态抽奖", source="t_lotdyninfo"
     )
-    try:
-        others = await SqlHelper.get_others_lot_summary(
-            yesterday_start=yesterday_start,
-            prev_day_start=prev_day_start,
-            today_start=today_start,
-            week_start=week_start,
-            month_start=month_start,
-        )
-        others_row.total = _safe_int(others.get("total"))
-        others_row.new_yesterday = _safe_int(others.get("new_yesterday"))
-        others_row.new_prev_day = _safe_int(others.get("new_prev_day"))
-        others_row.new_this_week = _safe_int(others.get("new_this_week"))
-        others_row.new_this_month = _safe_int(others.get("new_this_month"))
-        for day, cnt in await SqlHelper.get_others_lot_daily_new_trend(trend_start):
-            trend_counts.setdefault(str(day), {})["others_dyn"] = int(cnt)
-    except Exception:
-        logger.warning("获取第三方抽奖动态汇总失败", exc_info=True)
+    if others_summary:
+        others_row.total = _safe_int(others_summary.get("total"))
+        others_row.new_yesterday = _safe_int(others_summary.get("new_yesterday"))
+        others_row.new_prev_day = _safe_int(others_summary.get("new_prev_day"))
+        others_row.new_this_week = _safe_int(others_summary.get("new_this_week"))
+        others_row.new_this_month = _safe_int(others_summary.get("new_this_month"))
+    for day, cnt in others_trend or []:
+        trend_counts.setdefault(str(day), {})["others_dyn"] = int(cnt)
     rows.append(others_row)
 
-    # ---- 3) 话题抽奖（t_traffic_card）：无收录时间，仅统计总量与未截止数 ----
+    # ---- 话题抽奖（t_traffic_card）：无收录时间，仅统计总量与未截止数 ----
     topic_row = LotterySummaryRow(
         key="topic", type_name="话题抽奖", source="t_traffic_card"
     )
-    try:
-        topic_stats = await topic_sqlhelper.get_traffic_card_summary()
+    if topic_stats:
         topic_row.total = _safe_int(topic_stats.get("total"))
         topic_row.not_drawn = _safe_int(topic_stats.get("not_drawn"))
-    except Exception:
-        logger.warning("获取话题抽奖汇总失败", exc_info=True)
     rows.append(topic_row)
 
-    # ---- 4) 直播抽奖（Redis all_live_lot）：仅统计总量与未结束数 ----
+    # ---- 直播抽奖（Redis all_live_lot）：仅统计总量与未结束数 ----
     live_row = LotterySummaryRow(
         key="live", type_name="直播抽奖", source="Redis all_live_lot"
     )
-    try:
-        raw = await bili_live_lottery_redis._get(
-            BiliLiveLotteryRedis.RedisMap.all_live_lot.value
-        )
-        live_items = json.loads(raw) if raw else []
+    if live_raw is not None:
+        live_items = json.loads(live_raw) if live_raw else []
         live_row.total = len(live_items)
         end_times = [int(x.get("end_time") or 0) for x in live_items]
         live_row.not_drawn = sum(1 for ts in end_times if ts > now_ts)
         live_row.drawing_soon_24h = sum(
             1 for ts in end_times if now_ts < ts <= now_ts + 86400
         )
-    except Exception:
-        logger.warning("获取直播抽奖汇总失败", exc_info=True)
     rows.append(live_row)
 
-    # ---- 5) 近 N 天新增趋势（缺失的天/数据源补 0，保证折线连续） ----
+    # ---- 近 N 天新增趋势（缺失的天 / 数据源补 0，保证折线连续） ----
     trend = [
         LotteryTrendPoint(
             date=day,

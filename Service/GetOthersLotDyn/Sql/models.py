@@ -106,7 +106,9 @@ class TLotdyninfo(Base):
     officialLotId = mapped_column(Text)
     isOfficialAccount = mapped_column(TINYINT(1))
     dynLotRound_id = mapped_column(Integer)
-    rawJsonStr = mapped_column(JSON)
+    # none_as_null=True：Python None 落库为 SQL NULL（而不是 JSON 'null'）。
+    # 拆表后主表这列常态是 NULL，迁移/回填脚本都靠 ``IS NULL`` 判断，必须区分。
+    rawJsonStr = mapped_column(JSON(none_as_null=True))
     created_at = mapped_column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = mapped_column(
         TIMESTAMP, server_default=text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")
@@ -115,6 +117,22 @@ class TLotdyninfo(Base):
     dynLotRound: Mapped[Optional["TLotmaininfo"]] = relationship(
         "TLotmaininfo", back_populates="t_lotdyninfo"
     )
+
+
+class TLotdyninfoRaw(Base):
+    """`t_lotdyninfo.rawJsonStr` 的垂直拆分表。
+
+    原始动态 JSON 单行约 8KB，占 `t_lotdyninfo` 数据量的 95% 以上；而业务只按
+    dynId 点查（爬取去重缓存 / 从高互动动态的评论里挖用户），从不参与列表和统计。
+    拆出来后主表只留元数据，汇总聚合不再被 6GB 大字段挤出 buffer pool。
+    """
+
+    __tablename__ = "t_lotdyninfo_raw"
+    __table_args__ = (Index("idx_created_at", "created_at"),)
+
+    dynId = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    rawJsonStr = mapped_column(JSON)
+    created_at = mapped_column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
 
 
 class TLotuserspaceresp(Base):

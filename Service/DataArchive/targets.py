@@ -8,6 +8,8 @@
   单调递增，天然可按时间范围切分）。
 - `t_lotdyninfo`：用 `created_at`（收录时间，有 idx_created_at 索引），
   即「很久以前收进来的第三方抽奖动态」属于冷数据。
+- `t_lotdyninfo_raw`：rawJsonStr 垂直分表，同样按 `created_at`；窗口比主表短，
+  必须在主表之前执行。
 - `t_lotuserspaceresp`：无任何时间字段，有轮次的行按 `t_lotmaininfo.created_at`
   归日，早期无轮次的历史行按 `spaceOffset`（动态 id 尺度）归日。
 """
@@ -22,6 +24,7 @@ from sqlalchemy import JSON, Text, cast, delete, func, inspect, select
 from CONFIG import settings
 from Service.GetOthersLotDyn.Sql.models import (
     TLotdyninfo,
+    TLotdyninfoRaw,
     TLotmaininfo,
     TLotuserspaceresp,
 )
@@ -232,6 +235,29 @@ class OtherLotDynArchiveTarget(BaseColdArchiveTarget):
         return int(key.timestamp())
 
 
+class OtherLotDynRawArchiveTarget(BaseColdArchiveTarget):
+    """biliopusdb 库 · 第三方抽奖动态的 rawJsonStr 垂直分表。
+
+    主表 `t_lotdyninfo` 只保留元数据，原始 JSON 全在这张表；业务只按 dynId 点查，
+    历史 JSON 仅手工回补时才用，所以保留窗口刻意比主表短（默认 30 天）。
+    归档顺序必须排在主表之前：先导走 / 删掉分表，主表归档时不会再产生孤儿行。
+    """
+
+    table_name: ClassVar[str] = "t_lotdyninfo_raw"
+    db_alias: ClassVar[str] = "biliopusdb"
+    model: ClassVar[type] = TLotdyninfoRaw
+    key_column_name: ClassVar[str] = "created_at"
+
+    def get_default_keep_days(self) -> int:
+        return settings.COLD_ARCHIVE_KEEP_DAYS_LOTDYNINFO_RAW
+
+    def ts_to_key(self, ts: int) -> datetime.datetime:
+        return datetime.datetime.fromtimestamp(ts)
+
+    def key_to_ts(self, key: datetime.datetime) -> int:
+        return int(key.timestamp())
+
+
 class LotUserSpaceRespArchiveTarget(BaseColdArchiveTarget):
     """biliopusdb 库 · 第三方抽奖「用户空间响应」表（`spaceRespJson` JSON 大字段）。
 
@@ -305,9 +331,14 @@ class LotUserSpaceRespArchiveTarget(BaseColdArchiveTarget):
 
 
 def build_default_targets() -> list[BaseColdArchiveTarget]:
-    """构建全部可归档表（顺序即执行顺序）。"""
+    """构建全部可归档表（顺序即执行顺序）。
+
+    `t_lotdyninfo_raw` 必须排在 `t_lotdyninfo` 之前：主表的归档只删元数据行，
+    分表的原始 JSON 由自己的窗口（更短）负责清理，先跑分表可避免孤儿行。
+    """
     return [
         DynDetailArchiveTarget(grpc_sql_helper),
+        OtherLotDynRawArchiveTarget(OtherLotSqlHelper),
         OtherLotDynArchiveTarget(OtherLotSqlHelper),
         LotUserSpaceRespArchiveTarget(OtherLotSqlHelper),
     ]

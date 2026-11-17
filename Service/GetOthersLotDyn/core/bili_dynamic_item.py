@@ -179,7 +179,10 @@ class BiliDynamicItem:
             # 看动态数据库里面有没有
             is_dyn_exist = await SqlHelper.isExistDynInfoByDynId(self.dynamic_id)
             if is_dyn_exist:
-                dynamic_detail_resp = is_dyn_exist.rawJsonStr
+                # rawJsonStr 在垂直分表里，按 dynId 主键点查
+                dynamic_detail_resp = await SqlHelper.get_raw_json_by_dyn_id(
+                    self.dynamic_id
+                )
                 if dynamic_detail_resp is not None:
                     get_others_lot_log.debug(
                         f"动态【{self.dynamic_id}】在动态数据库中已存在，直接使用数据库缓存数据"
