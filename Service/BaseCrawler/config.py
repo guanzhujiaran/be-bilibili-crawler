@@ -214,9 +214,10 @@ class ReserveScrapyRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "reserve"
     worker_max_timeout: int | None = 300
-    # 预约抽奖对时效敏感（预约名额 / 开奖状态变化快）：走 fast 车道，
-    # 只取 hot/warm 已验证代理，拿不到就快速失败交回队列，不占用 worker 慢慢探测。
-    proxy_tier: ProxyTier = ProxyTier.FAST
+    # 默认 slow 车道（随机取一条 status 可用的就用，退避等池子恢复）。
+    # 不再为了「时效敏感」直接上 fast：fast 预算耗尽后也会自动降档 slow 兜底，
+    # 但直接从 slow 起步可以少浪费 6 次快速失败和一轮代理轮换。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     # 至少一次（马上重试）：失败既落 crawl_failed_task，也**无条件立即插回队首**重试
     # （不等退避、不进队尾 —— 前面的 id 缺失会影响后面的结束判断）
     requeue_on_fetch_fail: bool = True
@@ -233,8 +234,9 @@ class TopicRobotConfig(CrawlerConfig):
 
     concurrency_key: str = "topic"
     worker_max_timeout: int | None = 300
-    # 话题活动有时间窗口，新话题需要尽快发现：走 fast 车道
-    proxy_tier: ProxyTier = ProxyTier.FAST
+    # 默认 slow 车道：话题时间窗口内允许退避等代理池恢复；
+    # 确需快速失败的场景才显式改回 fast（依赖 request_wrapper 的 fast→slow 兜底）。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     # 至少一次（马上重试）：同上
     requeue_on_fetch_fail: bool = True
     max_requeue_per_task: int | None = 20
@@ -255,8 +257,9 @@ class LotteryApiRobotConfig(CrawlerConfig):
     """
 
     concurrency_key: str = "lottery_api"
-    # 官方抽奖动态 / 预约 notice 有时效性，需要尽快判定：走 fast 车道
-    proxy_tier: ProxyTier = ProxyTier.FAST
+    # 默认 slow 车道：官方抽奖动态 / 预约 notice 失败后允许退避等池子恢复，
+    # 避免一次代理池抖动就把整批请求打成 ProxyRetryBudgetExhausted。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     # 至少一次（马上重试）：官方抽奖动态 / 预约 notice 失败后立刻插回队首重试
     requeue_on_fetch_fail: bool = True
     max_requeue_per_task: int | None = 20
@@ -294,8 +297,9 @@ class BiliLiveCrawlerConfig(CrawlerConfig):
     """直播监控爬虫配置（env: BILI_LIVE__*）"""
 
     concurrency_key: str = "bili_live"
-    # 直播抽奖开奖即时性强，需要尽快轮询到新分区/新房间：走 fast 车道
-    proxy_tier: ProxyTier = ProxyTier.FAST
+    # 默认 slow 车道：轮询类任务可容忍退避等待，池子恢复后继续；
+    # 历史 fast 口径在池抖时只会快速耗尽预算并刷 -5。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     logger: Any = live_monitor_logger
     plugins: List[PluginConfig] = []
 
@@ -316,11 +320,12 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
     # 超过才交给下一轮（轮次保持未完成，下一轮复用该轮次继续抓）。
     max_requeue_per_task: int | None = 100
     requeue_max_task_seconds: float | None = 6 * 3600
-    # 抽奖判定对时效有要求（他人刚转发的动态要尽快落库），走 fast 车道：
-    # 只从已验证的 hot/warm 代理里取，避免把时间耗在 cold 代理探测上。
+    # 默认 slow 车道：他人动态是长期批量任务，可容忍退避等池子恢复；
+    # 历史上 fast 在池抖时反复 ProxyRetryBudgetExhausted(-5)，任务被交回队列空转。
     # 注：内部空间动态 / 动态详情 / 评论的 RequestConf 都从本配置取档位，
     # 否则历史参数 is_use_available_proxy=True 会把档位重新解析成 slow。
-    proxy_tier: ProxyTier = ProxyTier.FAST
+    # 少数显式 tier=FAST 的调用点由 request_wrapper 的 fast→slow 兜底。
+    proxy_tier: ProxyTier = ProxyTier.SLOW
     logger: Any = get_others_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),

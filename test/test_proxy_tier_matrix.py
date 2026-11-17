@@ -3,8 +3,9 @@
 
 约定（与 Service/BaseCrawler/config.py 的注释一致）：
 
-- FAST（高可用池，快速失败）：预约 / 话题 / 抽奖 API / 直播 / 他人动态；
-- SLOW（可掺 cold 探测）：动态详情 / 取关对象 / 抽奖库刷新；
+- 所有爬虫默认 SLOW（可掺 cold 探测，退避等池子恢复）；
+- FAST 只在确需快速失败时显式使用；即使误用 fast，``request_wrapper`` 也会在
+  fast 预算耗尽后自动降档 slow 兜底；
 - 山姆不走 B 站代理链路（直连），档位保持默认，不参与比较。
 
 另锁定一个易踩的坑：``is_use_available_proxy=True`` 会把档位解析成 SLOW，
@@ -45,14 +46,14 @@ from Utils.代理.redisProxyRequest.RedisRequestProxy import (
 EXPECTED_TIERS = {
     DynDetailScrapyConfig: ProxyTier.SLOW,
     GetRmFollowingListV2Config: ProxyTier.SLOW,
-    ReserveScrapyRobotConfig: ProxyTier.FAST,
-    TopicRobotConfig: ProxyTier.FAST,
-    LotteryApiRobotConfig: ProxyTier.FAST,
+    ReserveScrapyRobotConfig: ProxyTier.SLOW,
+    TopicRobotConfig: ProxyTier.SLOW,
+    LotteryApiRobotConfig: ProxyTier.SLOW,
     RefreshBiliLotDatabaseConfig: ProxyTier.SLOW,
     SamsClubCrawlerConfig: ProxyTier.SLOW,
     SamsClubSPUDetailCrawlerConfig: ProxyTier.SLOW,
-    BiliLiveCrawlerConfig: ProxyTier.FAST,
-    GetOthersLotDynRobotConfig: ProxyTier.FAST,
+    BiliLiveCrawlerConfig: ProxyTier.SLOW,
+    GetOthersLotDynRobotConfig: ProxyTier.SLOW,
 }
 
 
@@ -64,6 +65,12 @@ def test_each_crawler_uses_expected_proxy_tier() -> None:
     for config_cls, expected in EXPECTED_TIERS.items():
         actual = CRAWLER_CONFIG_REGISTRY[config_cls].proxy_tier
         assert actual is expected, f"{config_cls.__name__} 期望 {expected}，实际 {actual}"
+
+
+def test_requeue_has_no_queue_level_delay() -> None:
+    """所有爬虫池级失败回队列都不做队列层退避（0 = 立即插回队首）。"""
+    assert CONFIG.crawler_runtime.requeue_delay_base == 0
+    assert CONFIG.crawler_runtime.requeue_delay_max == 0
 
 
 def test_explicit_tier_overrides_legacy_available_proxy_flag() -> None:

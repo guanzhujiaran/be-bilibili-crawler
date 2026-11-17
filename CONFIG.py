@@ -90,12 +90,12 @@ class CrawlerRuntimeConfig(BaseModel):
     # 任务失败后的等待时间（秒）
     worker_error_delay: int = 300
     # ===== 失败任务的「延迟重入队」=====
-    # 原来失败立刻 put 回队列，坏代理期间会形成「取出→失败→立刻放回」的忙循环，
-    # 队列重入次数暴涨而有效数据为 0。改为按重试次数指数退避后再入队：
-    # delay = min(requeue_delay_base × 2^(retry-1), requeue_delay_max)（含抖动）。
-    # 0 表示维持旧的「立即重入队」行为。
-    requeue_delay_base: float = 5.0
-    requeue_delay_max: float = 300.0
+    # 默认 0：池级失败后任务立即插回队首，不做队列层指数退避 + 抖动。
+    # 请求层已经承担了退避（fast 6 次 / slow 最长 180s、单次封顶 60s），
+    # 队列层再叠 5~300s 只是纯等待；slow 池量大，换一条代理立刻重试收益更高。
+    # 需要队列层退避的爬虫可在自己的 Config 里显式覆盖 requeue_delay_base/max。
+    requeue_delay_base: float = 0.0
+    requeue_delay_max: float = 0.0
     # ===== 重入队上限（重试预算耗尽之后的处置）=====
     # 重试预算（fast 2 轮 × 3 次 / slow 累计等待）只约束「一次 handle_fetch 内部」，
     # 预算耗尽后任务会被打回队列 —— 若代理池整体不可用，这一步会无限循环：

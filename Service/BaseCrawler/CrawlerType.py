@@ -1240,8 +1240,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     def _requeue_delay(self, retry_count: int) -> float:
         """失败任务的延迟重入队时长：``base × 2^(retry-1)``，封顶 ``requeue_delay_max``。
 
-        没有这个延迟时，坏代理会让队列形成「取出→失败→立刻放回」的忙循环：
-        任务重入次数暴涨、有效数据为 0，看起来像 worker 卡死。
+        ``base`` 默认为 0（立即插回队首）：请求层已有 fast / slow 重试预算承担退避
+        （slow 最长 180s、单次封顶 60s），队列层不再叠加等待，避免「等待 5~300s」
+        把代理池恢复后的可用代理白白错过。需要队列层退避的爬虫显式覆盖即可。
         """
         base = max(0.0, float(self.requeue_delay_base or 0))
         if base <= 0:
@@ -1265,7 +1266,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         按 ``Config.requeue_strategy`` 分支（默认 ``immediate_front`` 保持历史行为）：
 
         - ``immediate_front``：声明了 ``retry_task_type`` 的爬虫**立即插到队首**，
-          不走退避；未声明的爬虫沿用「指数退避 + 独立 task」老逻辑；
+          不走退避；未声明的爬虫按 ``requeue_delay_*`` 延迟后插入（默认 0 = 立即）；
         - ``delayed``：所有爬虫都按 ``_requeue_delay`` 指数退避后再插队首；
         - ``next_round``：本轮不重排（由 ``_should_requeue`` 拦截），失败任务已由
           ``_settle_retry_task`` 落 pending，下一轮 ``main()`` 补跑。

@@ -11,6 +11,7 @@ from Service.GrpcModule.Models.CustomRequestErrorModel import (
     Request412Error,
     RequestKnownError,
     RequestProxyResponseError,
+    RequestProxyUnavailableError,
 )
 from Service.GrpcModule.Grpc.Bapi.Constants import APP_KEY, APP_SEC
 from Utils.代理.mdoel.ProxyTier import ProxyTier
@@ -19,6 +20,7 @@ from Utils.代理.mdoel.request_context import (
     begin_retry_round,
     resolve_tier,
     retry_sleep,
+    set_proxy_tier,
 )
 
 
@@ -46,10 +48,14 @@ def gen_trace_id() -> str:
 
 
 #: 「已知可忽略错误」——代理 / 风控 / 上游返回体错误，按档位预算重试。
-#: ``RequestProxyUnavailableError``（取不到代理）是 ``RequestKnownError`` 的子类，
-#: 同样走这里：slow 档用退避等代理池恢复，fast 档快速耗尽预算。
+#: ``RequestProxyUnavailableError``（取不到代理）与 ``ProxyRetryBudgetExhausted``
+#: 都是 ``RequestKnownError`` 的子类，这里显式列出以锁定「池级错误必须能被兜住」：
+#: 池空时走本分支 → fast 耗尽降档 slow 等池子恢复；slow 也耗尽才抛出预算异常
+#: （``except ProxyRetryBudgetExhausted`` 优先命中，不会在本 wrapper 内二次重试）。
 _KNOWN_ERRORS = (
     RequestKnownError,
+    RequestProxyUnavailableError,
+    ProxyRetryBudgetExhausted,
     Request412Error,
     Request352Error,
     RequestProxyResponseError,
@@ -94,9 +100,10 @@ def request_wrapper(
     """通用请求重试装饰器（按档位分级，重试期间不占 worker 并发额度）。
 
     - **已知可忽略错误**（代理失败 / 412 / 352 / 取不到代理）按 ``tier`` 的预算重试：
-      * ``fast``：换 2 轮代理、每轮 3 次（共 6 次），退避 0.2~1s，仍未成功就抛
-        ``ProxyRetryBudgetExhausted`` 快速失败 —— 交给队列延迟重入队，
-        **不再无限重试**（历史 bug：坏代理让 20 个 worker 长期空转）；
+      * ``fast``：换 2 轮代理、每轮 3 次（共 6 次），退避 0.2~1s。预算耗尽后
+        **自动降档 slow 再走一轮完整预算**（只降一次，日志打一条 ``fast→slow``），
+        slow 也耗尽才抛 ``ProxyRetryBudgetExhausted`` 交回队列延迟重入队
+        （历史 bug：坏代理让 20 个 worker 长期空转）；
       * ``slow``：大预算 + 指数退避封顶 60s（``PROXY_RETRY__SLOW__*``），
         允许慢慢等代理池恢复，但同样不阻塞并发；
     - **其它异常**（接口返回 -500 等业务错误）最多重试 ``max_error_retries`` 次，
@@ -111,6 +118,8 @@ def request_wrapper(
             error_retry_count = 0
             known_error_retry_count = 0
             waited_seconds = 0.0
+            # 是否发生过 fast→slow 降档：只降一次，slow 也耗尽才抛预算异常
+            downgraded_from_fast = False
             effective_tier, policy = _resolve_policy(args, kwargs, tier)
             log_interval = max(1, policy.log_interval)
 
@@ -140,14 +149,41 @@ def request_wrapper(
                         )
                     # 两条预算：次数（fast 2 轮 × 3 次）与累计等待（slow 也不能挂几小时）
                     if policy.is_exhausted(known_error_retry_count, waited_seconds):
+                        if effective_tier is ProxyTier.FAST:
+                            # fast 预算耗尽 → slow 兜底：让同一请求继续等代理池恢复。
+                            # 只降一次（effective_tier 置 slow 后不会再进本分支），
+                            # 禁止 fast↔slow 来回切。
+                            bapi_log.warning(
+                                f"方法：【{fn.__name__}】 fast 档重试预算耗尽"
+                                f"（共 {known_error_retry_count} 次、累计等待 "
+                                f"{waited_seconds:.1f}s，最后一次错误：{_describe(known_err)}），"
+                                f"降档到 slow 继续重试（fast→slow）"
+                            )
+                            effective_tier = ProxyTier.SLOW
+                            policy = CONFIG.proxy_retry.policy_for(ProxyTier.SLOW)
+                            log_interval = max(1, policy.log_interval)
+                            downgraded_from_fast = True
+                            # resolve_tier 里 RequestConf.tier 优先级最高，必须同步改；
+                            # 没有 RequestConf 的老接口靠上下文兜底
+                            conf = _extract_request_conf(*args, **kwargs)
+                            if conf is not None:
+                                conf.tier = ProxyTier.SLOW
+                            set_proxy_tier(ProxyTier.SLOW)
+                            # slow 是新一轮完整预算：计数 / 累计等待 / 本轮排除的代理全部复位
+                            known_error_retry_count = 0
+                            waited_seconds = 0.0
+                            begin_retry_round()
+                            continue
                         bapi_log.error(
                             f"方法：【{fn.__name__}】 重试预算耗尽"
                             f"（tier={effective_tier.value}，共 {known_error_retry_count} 次、"
                             f"累计等待 {waited_seconds:.1f}s），"
                             f"交回队列延迟重入队。最后一次错误：{_describe(known_err)}"
                         )
+                        exhausted_note = "（fast→slow 均耗尽）" if downgraded_from_fast else ""
                         raise ProxyRetryBudgetExhausted(
-                            f"{fn.__name__} 重试预算耗尽：{_describe(known_err)}",
+                            f"{fn.__name__} 重试预算耗尽{exhausted_note}："
+                            f"{_describe(known_err)}",
                             attempts=known_error_retry_count,
                         ) from known_err
                     # 每跨一轮清空已排除的代理：fast 档的「换 2 轮代理」靠这里生效

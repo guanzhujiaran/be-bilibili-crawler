@@ -637,6 +637,7 @@ class RequestWithProxy:
                 return proxy, False
             raise await self._unavailable_error(
                 tier,
+                local_tried=False,
                 extra="pool_only 请求且代理池无候选（不回落自建出口）",
                 scope=scope,
             )
