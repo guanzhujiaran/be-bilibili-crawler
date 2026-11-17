@@ -3,6 +3,7 @@ from Models.v1.background_service.background_service_model import (
     ProgressStatusResp,
     TypeScrapyStatus,
 )
+from Service.BaseCrawler.plugin.statusPlugin import WorkerSummaryModel
 from Service.opus新版官方抽奖.bili_lottery_api.refresh_bili_lot_database import (
     refresh_bili_lot_database_crawler,
 )
@@ -35,6 +36,19 @@ def _proxy_block_fields(robot) -> dict:
     }
 
 
+def _running_params(robot, counter) -> list[WorkerSummaryModel]:
+    """运行中任务的状态摘要（与 StatsPlugin.running_params_set 同构）。
+
+    other_space / other_dyn 三个阶段共用同一个 StatsPlugin，running_params_set
+    在每次 run() 开始时重置。这里用对应阶段计数器的 is_running 做闸门，
+    避免 phase3 的动态判定任务混进空间参数（反之亦然）。
+    """
+    plugin = getattr(robot, "stats_plugin", None)
+    if plugin is None or not getattr(counter, "is_running", False):
+        return []
+    return plugin.running_params_set
+
+
 def get_scrapy_status(
     scrapy_type: Literal[
         "dyn",
@@ -62,7 +76,10 @@ def get_scrapy_status(
                     progress=other_lot_class.robot.space_succ_counter.show_pace(),
                     is_running=other_lot_class.robot.space_succ_counter.is_running,
                     update_ts=other_lot_class.robot.space_succ_counter.update_ts,
-                    running_params=other_lot_class.robot.space_succ_counter.running_params,
+                    running_params=_running_params(
+                        other_lot_class.robot,
+                        other_lot_class.robot.space_succ_counter,
+                    ),
                     **_proxy_block_fields(other_lot_class.robot),
                 )
             else:
@@ -76,7 +93,10 @@ def get_scrapy_status(
                     progress=other_lot_class.robot.dyn_succ_counter.show_pace(),
                     is_running=other_lot_class.robot.dyn_succ_counter.is_running,
                     update_ts=other_lot_class.robot.dyn_succ_counter.update_ts,
-                    running_params=other_lot_class.robot.dyn_succ_counter.running_params,
+                    running_params=_running_params(
+                        other_lot_class.robot,
+                        other_lot_class.robot.dyn_succ_counter,
+                    ),
                     **_proxy_block_fields(other_lot_class.robot),
                 )
             else:

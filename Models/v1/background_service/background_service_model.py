@@ -1,5 +1,5 @@
 from bili_common.models import StrEnumAutoDoc
-from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin
+from Service.BaseCrawler.plugin.statusPlugin import StatsPlugin, WorkerSummaryModel
 import time
 from typing import Any
 
@@ -47,7 +47,10 @@ class ProgressStatusResp(CustomBaseModel):
     progress: float | int = Field(default=0, description="当前进度")
     is_running: bool = False
     update_ts: int = 0  # 最后更新时间
-    running_params: set = Field(default_factory=set, description="运行中的参数")
+    running_params: list[WorkerSummaryModel] = Field(
+        default_factory=list,
+        description="运行中任务的状态摘要（seqId / 状态 / 重试次数 / 时间 / 参数投影）",
+    )
     # ===== 代理池阻塞状态（前端据此显示「等待代理恢复」而不是「已停止」）=====
     waiting_for_proxy: bool = Field(
         default=False, description="是否正在等待代理池恢复（熔断开启）"

@@ -105,27 +105,18 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         if self._phase in (1, 2):
             is_pub = self._phase == 2
             obj: BiliSpaceUserItem = params.obj  # ty:ignore[invalid-assignment]
-            uid = obj.uid
-            self.space_succ_counter.running_params.add(uid)
-            try:
-                await obj.get_user_space_dynamic_id(
-                    isPubLotUser=is_pub,
-                    SpareTime=self.SpareTime,
-                    succ_counter=self.space_succ_counter,
-                )
-            finally:
-                self.space_succ_counter.running_params.discard(uid)
+            await obj.get_user_space_dynamic_id(
+                isPubLotUser=is_pub,
+                SpareTime=self.SpareTime,
+                succ_counter=self.space_succ_counter,
+            )
             self.space_succ_counter.succ_count += 1
         elif self._phase == 3:
             obj: BiliDynamicItem = params.obj  # ty:ignore[invalid-assignment]
-            self.dyn_succ_counter.running_params.add(self.__hash__())
-            try:
-                judge_result = await obj.judge_lottery(
-                    lotRound_id=self.nowRound.lotRound_id
-                )
-                self._collect_run_dyn_ids(judge_result)
-            finally:
-                self.dyn_succ_counter.running_params.discard(self.__hash__())
+            judge_result = await obj.judge_lottery(
+                lotRound_id=self.nowRound.lotRound_id
+            )
+            self._collect_run_dyn_ids(judge_result)
             self.dyn_succ_counter.succ_count += 1
         return WorkerStatus.complete
 
