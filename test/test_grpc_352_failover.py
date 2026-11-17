@@ -19,6 +19,7 @@ from Service.GrpcModule.Grpc.grpc_api import BiliGrpc
 from Service.GrpcModule.Models.CustomRequestErrorModel import Request352Error
 from Service.GrpcModule.Models.GrpcApiBaseModel import MetaDataWrapper
 from Utils.代理.数据库操作 import ProxyEvent
+from Utils.代理.数据库操作.ProxyHealth import ProxyFailureKind
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 from Utils.代理.mdoel.request_context import (
     ProxyAttemptState,
@@ -319,8 +320,8 @@ async def test_handle_proxy_352_keeps_db_status_by_default(monkeypatch):
     monkeypatch.setattr(ProxyEvent, "proxy_health_store", health)
     updates: list[tuple[int, int]] = []
 
-    async def _fake_update(proxy_tab, change_score_num=10):
-        updates.append((proxy_tab.proxy_id, change_score_num))
+    async def _fake_update(proxy_tab, change_score_num=10, kind=None):
+        updates.append((proxy_tab.proxy_id, change_score_num, kind))
         return True
 
     monkeypatch.setattr(ProxyEvent.SQLHelper, "update_to_proxy_list", _fake_update)
@@ -332,4 +333,4 @@ async def test_handle_proxy_352_keeps_db_status_by_default(monkeypatch):
 
     await ProxyEvent.handle_proxy_352(proxy_tab=proxy, mark_db_invalid=True)
     assert proxy.status == -352
-    assert updates == [(proxy.proxy_id, 10)]
+    assert updates == [(proxy.proxy_id, 10, ProxyFailureKind.RISK_CONTROL)]

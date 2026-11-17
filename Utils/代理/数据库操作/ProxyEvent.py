@@ -11,13 +11,23 @@ from CONFIG import CONFIG
 from log.base_log import sql_log
 
 # 代理事件的两个副作用：
-# 1. proxy_tab 的 status / score / success_times（保留原有语义，读写方很多，不能改含义）；
+# 1. proxy_tab 的 status / score / success_times + 失败原因计数（MySQL 侧可聚合）；
 # 2. Redis 健康状态机（连续失败 / EWMA / 冷却），见 ProxyHealth.py。
 # available_proxy 表已于 2026-11-10 废弃（取代理改为 MySQL 随机），这里不再写它。
 #
 # 口径（2026-11-14 起）：**判定看前缀**（IPv6 /64、IPv4 /24），地址级明细只留作日志。
 # 自建 IPv6 出口（PROXY_SERVER）不再豁免记账：它是一条固定出口，
 # 以前被伪造成 score=10000/success_times=10000，导致永不降权、永不冷却。
+#
+# status 语义（2026-11-17 起拆分）：
+# - 0    可用；
+# - -1   非风控失败（network / response / unknown），由 refresh_proxy 两小时后复位；
+# - -412 真正的 B 站风控码（412），不再被网络失败复用；
+# - -352 风控挑战（352）。
+# 只有风控类失败会写 -412/-352；网络失败写 -1，MySQL 侧因此可直接区分两类失败。
+
+#: 网络 / 响应 / 未知失败写回 MySQL 的 status（不再复用 -412）
+NETWORK_FAIL_STATUS = -1
 
 
 def _pool_proxy_key(proxy_tab: ProxyTab | None) -> str:
@@ -65,7 +75,10 @@ async def handle_proxy_352(
         return
     if mark_db_invalid:
         proxy_tab.status = -352
-        await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
+        # risk_control 只累加 quarantine_times（观测用），不进入 fail_* 删除计数
+        await SQLHelper.update_to_proxy_list(
+            proxy_tab, change_score_num=10, kind=ProxyFailureKind.RISK_CONTROL
+        )
     key = _pool_proxy_key(proxy_tab)
     if key:
         await proxy_health_store.record_failure(
@@ -93,7 +106,10 @@ async def handle_proxy_412(
         mark_db_invalid = bool(CONFIG.proxy_health.risk_write_db_status)
     if mark_db_invalid:
         proxy_tab.status = -412
-        await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
+        # risk_control 只累加 quarantine_times（观测用），不进入 fail_* 删除计数
+        await SQLHelper.update_to_proxy_list(
+            proxy_tab, change_score_num=10, kind=ProxyFailureKind.RISK_CONTROL
+        )
     key = _pool_proxy_key(proxy_tab)
     if key:
         await proxy_health_store.record_failure(
@@ -106,27 +122,32 @@ async def handle_proxy_request_fail(
     kind: ProxyFailureKind = ProxyFailureKind.NETWORK,
     scope: str | None = None,
 ):
-    """请求失败（连接错误 / 超时 / 407）：分数 -10、连续失败 +1、10~30 分钟冷却。
+    """请求失败（连接错误 / 超时 / 407 / 上游响应异常）：扣分 + 按原因记账 + 冷却。
 
-    网络层冷却与风控域无关（``scope`` 只透传给健康状态机，网络层仍写全局前缀桶）。
+    - status 写 ``-1``（非风控失败），与真正的 B 站风控码 -412 区分开；
+    - MySQL 侧按 ``kind`` 累加 ``fail_network_times`` / ``fail_response_times`` /
+      ``fail_unknown_times``（窗口内滚动），供清理任务按原因判定；
+    - 网络层冷却与风控域无关（``scope`` 只透传给健康状态机）。
     """
     if not proxy_tab:
         sql_log.warning("handle_proxy_request_fail called with None proxy_tab.")
         return
-    proxy_tab.status = -412
-    await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=-10)
+    proxy_tab.status = NETWORK_FAIL_STATUS
+    await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=-10, kind=kind)
     key = _pool_proxy_key(proxy_tab)
     if key:
         await proxy_health_store.record_failure(key, kind, scope=scope)
 
 
 async def handle_proxy_unknown_err(proxy_tab: ProxyTab | None):
-    """未知错误：同样按失败处理（归到 unknown，冷却策略与网络层一致）。"""
+    """未知错误：按未知失败处理（status=-1，按 unknown 计数，冷却策略与网络层一致）。"""
     if not proxy_tab:
         sql_log.warning("handle_proxy_unknown_err called with None proxy_tab.")
         return
-    proxy_tab.status = -412
-    await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=-10)
+    proxy_tab.status = NETWORK_FAIL_STATUS
+    await SQLHelper.update_to_proxy_list(
+        proxy_tab, change_score_num=-10, kind=ProxyFailureKind.UNKNOWN
+    )
     key = _pool_proxy_key(proxy_tab)
     if key:
         await proxy_health_store.record_failure(key, ProxyFailureKind.UNKNOWN)

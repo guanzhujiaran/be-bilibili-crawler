@@ -448,6 +448,34 @@ class ProxyHealthConfig(BaseModel):
     # ---- 冷启动播种：Redis 无记录时按 MySQL 历史表现推断初始 EWMA ----
     seed_success_times: int = 3
     seed_min_score: int = 50
+    # ================= 僵尸代理清理（按失败原因 + 时间窗口） =================
+    # 见 async_proxy_op_alchemy_mysql_ver.clear_unusable_proxy：
+    # 只删「窗口内失败次数达阈值且窗口内一次都没成功」的 network / unknown 代理；
+    # response 只降权，risk_control（quarantine_times）永不进入删除候选。
+    fail_network_delete_threshold: int = Field(
+        default=5, description="近 zombie_window_days 天内 network 失败达到该次数才进删除候选"
+    )
+    fail_unknown_delete_threshold: int = Field(
+        default=10, description="近 zombie_window_days 天内 unknown 失败达到该次数才进删除候选"
+    )
+    zombie_window_days: int = Field(
+        default=7,
+        description="失败计数的统计窗口（天）：窗口外的失败不计入删除判定",
+    )
+    clean_batch_size: int = Field(
+        default=5000, description="清理任务单批删除行数（按主键分批，批间 sleep）"
+    )
+    clean_max_rows_per_run: int = Field(
+        default=50000, description="清理任务单轮最多删除的行数（防止一次删太多）"
+    )
+    clean_batch_sleep_seconds: float = Field(
+        default=0.2, description="清理任务批间等待（秒），避免持续占用行锁 / IO"
+    )
+    slow_zombie_probe_ratio: float = Field(
+        default=0.05,
+        description="slow 档随机采样时，抽中 success_times<0 僵尸代理的比例（用于重新分类；"
+        "0 = 不探活僵尸，fast 档永远不取僵尸）",
+    )
     # ================= 前缀级（网段）判定 =================
     # 风控按网段聚合：IPv6 常见 /64、IPv4 常见 /24。同一段内换地址对服务端还是同一个来源，
     # 所以连续失败 / EWMA / 冷却 / 并发配额都按前缀算（地址级明细只留作日志）。

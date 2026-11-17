@@ -23,6 +23,9 @@ class ProxyTab(Base):
         # (status, success_times) 复合索引 → 「可用 / 从未使用」两个计数的范围扫描
         Index("ix_proxy_tab_add_ts", "add_ts"),
         Index("ix_proxy_tab_status_success_times", "status", "success_times"),
+        # 僵尸代理清理专用：按「失败窗口起点」定位最近失败过的行，
+        # 再在索引内过滤 network 次数（窗口外的历史行不参与候选）。
+        Index("ix_proxy_tab_fail_window", "fail_window_start_ts", "fail_network_times"),
         Index(
             "覆盖索引",
             "proxy_id",
@@ -43,6 +46,28 @@ class ProxyTab(Base):
     add_ts = mapped_column(Integer)
     success_times = mapped_column(Integer, server_default=text("'0'"))
     zhihu_status = mapped_column(Integer, server_default=text("'0'"))
+    # ===== 失败原因计数（按 kind 分桶，窗口内滚动）=====
+    # 口径见 ProxyEvent.py：network / response / unknown / risk_control 各自累加。
+    # 只有 network / unknown 会进入删除候选；response 只降权，risk_control 永不删除。
+    fail_network_times = mapped_column(
+        Integer, nullable=False, server_default=text("'0'")
+    )
+    fail_response_times = mapped_column(
+        Integer, nullable=False, server_default=text("'0'")
+    )
+    fail_unknown_times = mapped_column(
+        Integer, nullable=False, server_default=text("'0'")
+    )
+    quarantine_times = mapped_column(
+        Integer, nullable=False, server_default=text("'0'")
+    )
+    # 当前计数窗口的起点（unix 秒）。下一次失败若已超出 zombie_window_days，
+    # 先把四个计数一起清零再累加，保证计数始终是「近 N 天」的失败次数。
+    fail_window_start_ts = mapped_column(Integer)
+    last_fail_ts = mapped_column(Integer)
+    # 最近一次成功时间：清理要求「窗口内 success_total == 0」，
+    # 即 last_success_ts 为空或早于 fail_window_start_ts。
+    last_success_ts = mapped_column(Integer)
     computed_proxy_str = mapped_column(
         String(255),
         Computed(

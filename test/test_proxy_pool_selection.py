@@ -10,6 +10,7 @@
 
 from sqlalchemy.dialects import mysql as mysql_dialect
 
+from CONFIG import CONFIG
 from Utils.代理.数据库操作.ProxyHealth import (
     ProxyHealthMap,
     ProxyHealthRecord,
@@ -157,7 +158,7 @@ async def test_fast_expands_sampling_when_candidates_hit_task_exclusion(monkeypa
     async def _range(self):
         return 1, 10_000
 
-    async def _cand(self, start_id: int, limit: int):
+    async def _cand(self, start_id: int, limit: int, probe_zombie: bool = False):
         calls.append(limit)
         # 候选全部落在「本任务已失败」名单里：blocked_ratio=100%
         return [_FakeProxyRow(f"http://10.9.{i // 250}.{i % 250}:80") for i in range(limit)]
@@ -809,3 +810,34 @@ def test_zombie_success_times():
     assert is_zombie_success_times(0) is False
     assert is_zombie_success_times(3) is False
     assert is_zombie_success_times(-1) is True
+
+
+# ---------------------------------------------------------------------------
+# 僵尸探活（按原因清理的前置：slow 档小比例重新分类 success_times<0）
+# ---------------------------------------------------------------------------
+
+
+async def test_zombie_probe_only_for_slow_tier(monkeypatch):
+    """slow 档按比例取 success_times<0 探活；fast 档永远不取僵尸。"""
+    seen: list[bool] = []
+
+    async def _cand(self, start_id: int, limit: int, probe_zombie: bool = False):
+        seen.append(probe_zombie)
+        return []
+
+    _stub_health(monkeypatch, verified=[])
+    monkeypatch.setattr(type(SQLHelper), "_select_candidate_rows", _cand)
+    monkeypatch.setattr(SQLHelper, "_get_proxy_id_range", _fake_id_range(2, 100))
+    # 0.0：跳过已验证分档取样，并让探活抽签必中（ratio=1.0）
+    monkeypatch.setattr(
+        "Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver.random.random",
+        lambda: 0.0,
+    )
+    monkeypatch.setattr(CONFIG.proxy_health, "slow_zombie_probe_ratio", 1.0)
+
+    await SQLHelper.select_random_proxy_detailed(tier=ProxyTier.SLOW)
+    assert any(seen), f"slow 档未触发僵尸探活：{seen}"
+
+    seen.clear()
+    await SQLHelper.select_random_proxy_detailed(tier=ProxyTier.FAST)
+    assert seen and not any(seen), f"fast 档不应取僵尸：{seen}"

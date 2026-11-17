@@ -11,6 +11,7 @@ from Service.opus新版官方抽奖.bili_lottery_api.scrapyLotteryDataFromBapi i
 )
 from Service.samsclub.main import sams_club_crawler, sams_club_SPU_detail_crawler
 from Utils.代理.redisProxyRequest.GetProxyFromNet import get_proxy_methods
+from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper
 from Service.opus新版官方抽奖.活动抽奖.话题抽奖.robot import topic_robot
 from Service.opus新版官方抽奖.预约抽奖.etc.scrapyReserveJsonData import reserve_robot
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
@@ -26,6 +27,7 @@ class BackgroundService:
     STUCK_CHECK_SCHEDULER: BaseScheduler | None = None
     DYN_DETAIL_DATABASE_CLEANER: BaseScheduler | None = None
     TABLESPACE_MAINTENANCE: BaseScheduler | None = None
+    PROXY_POOL_CLEANER: BaseScheduler | None = None
     GET_PROXY_METHODS_SCHEDULER: GenericCrawlerScheduler | None = None
     SAMSCCLUB_SCHEDULER: GenericCrawlerScheduler | None = None
     SAMSCCLUB_SPU_DETAIL_SCHEDULER: GenericCrawlerScheduler | None = None
@@ -73,6 +75,16 @@ class BackgroundService:
             cron_expr="30 4 1 * *",
             crawler_name=BackgroundServiceName.TABLESPACE_MAINTENANCE.value,
             default_interval_seconds=25 * 86400,
+            run_on_startup=False,
+        )
+        self.PROXY_POOL_CLEANER = BaseScheduler(
+            # 每天 05:00（业务低峰）按「失败原因 + 时间窗口」分批清理僵尸代理。
+            # 只在清理任务里判定，不影响取用；risk_control 永不删除。
+            # 单轮上限 / 批大小 / 批间 sleep 见 ProxyHealthConfig.clean_*。
+            func=SQLHelper.clear_unusable_proxy,
+            cron_expr="0 5 * * *",
+            crawler_name=BackgroundServiceName.PROXY_POOL_CLEANER.value,
+            default_interval_seconds=24 * 3600,
             run_on_startup=False,
         )
         self.GET_PROXY_METHODS_SCHEDULER = GenericCrawlerScheduler(

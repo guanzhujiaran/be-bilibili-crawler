@@ -73,6 +73,7 @@ from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 from Utils.代理.SealedRequests import my_async_httpx
 from Utils.代理.数据库操作.ProxyCommOp import get_available_proxy
 from Utils.代理.数据库操作.ProxyEvent import (
+    NETWORK_FAIL_STATUS,
     handle_proxy_succ,
     handle_proxy_request_fail,
     handle_proxy_352,
@@ -83,7 +84,11 @@ from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
     SQLHelper,
     to_proxy_key,
 )
-from Utils.代理.数据库操作.ProxyHealth import proxy_health_store, proxy_prefix_of
+from Utils.代理.数据库操作.ProxyHealth import (
+    ProxyFailureKind,
+    proxy_health_store,
+    proxy_prefix_of,
+)
 from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
 from Utils.代理.mdoel.request_context import (
     excluded_proxy_keys,
@@ -1060,8 +1065,12 @@ class BiliGrpc:
                         # 重大错误！
                         f"{dyn_ids} grpc_api_get_DynDetails\n BiliGRPC error: {stat} - {det}\n{dyn_details_req}\n{type(e)}"
                     )
-                proxy.status = -412
-                await SQLHelper.update_to_proxy_list(proxy, score_change)
+                # gRPC RpcError 无法区分网络 / 风控：按 unknown 记账（status=-1），
+                # 不再复用 -412 —— 后者只代表真正的 B 站风控码。
+                proxy.status = NETWORK_FAIL_STATUS
+                await SQLHelper.update_to_proxy_list(
+                    proxy, score_change, kind=ProxyFailureKind.UNKNOWN
+                )
 
     # endregion
 

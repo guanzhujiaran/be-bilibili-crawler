@@ -15,7 +15,7 @@ from typing import List, Literal
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
-from sqlalchemy import select, func, update, and_, or_, delete
+from sqlalchemy import select, func, update, and_, or_, delete, case
 from sqlalchemy.dialects.mysql import insert as mysql_insert
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 
@@ -28,6 +28,7 @@ from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 from Utils.redisTool.RedisManager import RedisManagerBase
 from Utils.代理.mdoel.ProxyTier import ProxyTier
 from Utils.代理.数据库操作.ProxyHealth import (
+    ProxyFailureKind,
     ProxyHealthCounts,
     ProxyHealthRecord,
     ProxyHealthState,
@@ -39,8 +40,6 @@ from Utils.代理.数据库操作.ProxyHealth import (
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
 from Utils.代理.数据库操作.comm import get_scheme_ip_port_form_proxy_dict
 
-MIN_REFRESH_SUCCESS_TIME = -3  # 最低允许刷新状态的代理获取请求成功次数
-MIN_REFRESH_SCORE = 0  # 最低允许刷新状态的代理分数
 DEFAULT_CHUNK_SIZE = 1000  # Adjust as needed
 # zset 与 MySQL 短暂不一致时，最多换几个候选代理（每次都把自己剔除）
 ZSET_ZOMBIE_MAX_RETRY = 3
@@ -70,6 +69,107 @@ def is_zombie_success_times(success_times: int | None) -> bool:
     NULL（从未被使用）不算僵尸。
     """
     return (success_times or 0) < ZOMBIE_SUCCESS_TIMES_MAX
+
+
+# ---------------------------------------------------------------------------
+# 失败原因计数（MySQL 侧可聚合口径，见 ProxyEvent.py / clear_unusable_proxy）
+# ---------------------------------------------------------------------------
+#: 失败原因 → ``proxy_tab`` 的计数列。每次失败只累加对应的一列，
+#: 其余列在「窗口滚动」时一起清零（见 ``build_fail_counter_values``）。
+FAIL_COUNTER_COLUMNS: dict[ProxyFailureKind, str] = {
+    ProxyFailureKind.NETWORK: "fail_network_times",
+    ProxyFailureKind.RESPONSE: "fail_response_times",
+    ProxyFailureKind.UNKNOWN: "fail_unknown_times",
+    ProxyFailureKind.RISK_CONTROL: "quarantine_times",
+}
+
+#: 允许进入**删除候选**的原因 → ``ProxyHealthConfig`` 里的阈值字段名。
+#: ``response`` 只降权 / 冷却，``risk_control`` 永不删除（本次修复的核心口径），
+#: 两者都不在表里，``build_cleanup_candidate_condition`` 对它们返回 None。
+_CLEANUP_THRESHOLD_FIELDS: dict[ProxyFailureKind, str] = {
+    ProxyFailureKind.NETWORK: "fail_network_delete_threshold",
+    ProxyFailureKind.UNKNOWN: "fail_unknown_delete_threshold",
+}
+
+#: 清理任务真实删除的原因（顺序 = 分批 / 日志顺序）
+CLEANUP_DELETE_KINDS: tuple[ProxyFailureKind, ...] = (
+    ProxyFailureKind.NETWORK,
+    ProxyFailureKind.UNKNOWN,
+)
+
+
+def build_success_values(columns, now: int) -> dict:
+    """成功时对计数列的更新值。
+
+    ``success_times`` 的原有语义是「净成功次数」（正数 +1）；
+    历史僵尸（负数）一旦探测成功直接复位为 0 —— 否则要连续成功十几次
+    才能爬回非负，慢档探活永远追不上 137 万条存量。
+    """
+    current = func.coalesce(columns.success_times, 0)
+    return {
+        "success_times": case((current < 0, 0), else_=current + 1),
+        "last_success_ts": now,
+    }
+
+
+def build_fail_counter_values(
+    columns, kind: ProxyFailureKind, now: int, window_seconds: int
+) -> dict:
+    """失败时按 ``kind`` 分桶累加计数，并处理「窗口滚动」。
+
+    计数含义是**当前窗口内**的失败次数：一旦距窗口起点超过
+    ``window_seconds``，本次失败先把所有原因的计数清零再记 1，
+    窗口起点更新为 ``now``。这样 ``fail_*_times`` 始终可解释为「近 N 天」。
+
+    ``columns`` 只需要提供同名属性（``ProxyTab`` 类或单测里的 SQLite 表列）。
+    """
+    window_start = columns.fail_window_start_ts
+    window_stale = or_(
+        window_start.is_(None),
+        window_start <= now - max(1, int(window_seconds)),
+    )
+    values: dict = {}
+    for item_kind, column_name in FAIL_COUNTER_COLUMNS.items():
+        column = getattr(columns, column_name)
+        if item_kind is kind:
+            values[column_name] = case(
+                (window_stale, 1), else_=func.coalesce(column, 0) + 1
+            )
+        else:
+            values[column_name] = case((window_stale, 0), else_=func.coalesce(column, 0))
+    values["fail_window_start_ts"] = case(
+        (window_stale, now), else_=window_start
+    )
+    values["last_fail_ts"] = now
+    return values
+
+
+def build_cleanup_candidate_condition(columns, kind: ProxyFailureKind, now: int, cfg):
+    """构造某原因下的删除候选条件；不可删除的原因返回 ``None``。
+
+    候选 = 窗口内该原因失败次数达阈值 + 窗口起点仍在有效期内
+    + 窗口内没有成功记录 + 净成功次数为负（僵尸）。最后一条是保守约束：
+    净成功仍为正的代理说明历史上成功多于失败，不因一个窗口内的波动被删。
+    """
+    threshold_field = _CLEANUP_THRESHOLD_FIELDS.get(kind)
+    if threshold_field is None:
+        return None
+    threshold = max(1, int(getattr(cfg, threshold_field)))
+    window_seconds = max(1, int(cfg.zombie_window_days)) * 86400
+    counter = getattr(columns, FAIL_COUNTER_COLUMNS[kind])
+    window_start = columns.fail_window_start_ts
+    return and_(
+        counter >= threshold,
+        window_start.isnot(None),
+        # 窗口起点必须严格晚于「now - 窗口长度」：与滚动时 <= 判定保持同一口径
+        window_start > now - window_seconds,
+        # 窗口内 success_total == 0：从未成功，或最后一次成功早于窗口起点
+        or_(
+            columns.last_success_ts.is_(None),
+            columns.last_success_ts < window_start,
+        ),
+        func.coalesce(columns.success_times, 0) < ZOMBIE_SUCCESS_TIMES_MAX,
+    )
 
 
 class ProxyKeyLookup(BaseModel):
@@ -239,44 +339,132 @@ class SQLHelperClass(SqlHelperBase):
         self._health_bootstrapped: bool = False
 
     @log_sql_retry_wrapper()
-    async def clear_unusable_proxy(self) -> int:
-        """清理 MySQL 中彻底不可用的代理（物理删行，不可回滚，口径必须保守）。
+    async def clear_unusable_proxy(self, dry_run: bool = False) -> dict[str, int]:
+        """按「失败原因 + 时间窗口」分批清理僵尸代理（物理删行，口径保守）。
 
-        删除条件：``score <= 0 OR success_times < -3``，线上实测长期 0 行
-        （score 有 10 的下限，success_times < -3 从未出现），所以实际不删任何数据。
+        判定（只在清理任务里执行，不影响取用）：
 
-        为什么不按 ``success_times < 0`` 删：那是 100 万行，一次性删除会长时间持锁；
-        取代理时的过滤条件（``status=0 且 success_times>=0``）已经在查询层把僵尸排除，
-        不需要物理删除。
+        - ``network``：近 ``zombie_window_days`` 天内 ``fail_network_times`` 达到
+          ``fail_network_delete_threshold`` 且窗口内没有成功记录；
+        - ``unknown``：同上，阈值 ``fail_unknown_delete_threshold``；
+        - ``response``：**永不删除**（只降权 / 冷却）；
+        - ``risk_control``（412/352）：**永不删除**，只保留前缀冷却。
+
+        删除分两阶段：先按主键取一批候选（``clean_batch_size``），
+        再在短事务里按主键删除，批间 sleep；单轮总量不超过
+        ``clean_max_rows_per_run``。绝不一次 DELETE 全部候选。
+
+        :param dry_run: 只统计各原因分组的候选行数并打日志，不删任何行。
+        :return: ``{原因: 行数}``；dry-run 时是候选数，否则是本轮实际删除数。
         """
-        deleted_rows = 0
+        cfg = CONFIG.proxy_health
+        now = int(time.time())
+        candidates = await self.count_cleanup_candidates(now)
+        candidate_text = " / ".join(
+            f"{kind} 候选 {candidates[kind]} 行" for kind in candidates
+        )
+        if dry_run:
+            sql_log.warning(f"代理池清理 dry-run：{candidate_text}")
+            return candidates
+
+        # 返回 / 日志统一带四类原因：response / risk_control 恒为 0，
+        # 用于每轮都能直接看到「风险类没有被误删」。
+        deleted = {
+            ProxyFailureKind.NETWORK.value: 0,
+            ProxyFailureKind.RESPONSE.value: 0,
+            ProxyFailureKind.RISK_CONTROL.value: 0,
+            ProxyFailureKind.UNKNOWN.value: 0,
+        }
+        # 与 refresh_proxy / flush_proxy_health 的批量写互斥，避免顺着不同索引
+        # 加锁形成 AB-BA 死锁；拿不到锁就跳过本轮（下一天再清）。
+        token = await self._acquire_batch_write_lock()
+        if token is None:
+            sql_log.warning("proxy_tab 批量写正被健康心跳占用，本轮代理清理跳过")
+            return deleted
+        batch = max(1, int(cfg.clean_batch_size))
+        max_rows = max(batch, int(cfg.clean_max_rows_per_run))
+        sleep_seconds = max(0.0, float(cfg.clean_batch_sleep_seconds))
+        total = 0
+        try:
+            while total < max_rows:
+                round_deleted = 0
+                for kind in CLEANUP_DELETE_KINDS:
+                    if total >= max_rows:
+                        break
+                    limit = min(batch, max_rows - total)
+                    ids = await self._select_cleanup_candidate_ids(kind, now, limit)
+                    if not ids:
+                        continue
+                    removed = await self._delete_proxy_ids(ids)
+                    deleted[kind.value] += removed
+                    total += removed
+                    round_deleted += removed
+                    if removed > 0 and sleep_seconds > 0:
+                        await asyncio.sleep(sleep_seconds)
+                if round_deleted <= 0:
+                    break
+        finally:
+            await self._release_batch_write_lock(token)
+
+        remaining_zombie = await self.get_zombie_proxy_num()
+        deleted_text = " / ".join(f"{kind} 删除 {count} 行" for kind, count in deleted.items())
+        sql_log.warning(
+            f"代理池清理：{candidate_text}；{deleted_text}；"
+            f"本轮共删除 {total} 行，剩余 success_times<0 代理 {remaining_zombie} 条"
+        )
+        return deleted
+
+    async def count_cleanup_candidates(self, now: int | None = None) -> dict[str, int]:
+        """按原因统计删除候选行数（供 dry-run 与清理日志；不删任何行）。
+
+        返回顺序固定为 ``network / response / risk_control / unknown``：
+        其中 response 与 risk_control 按口径恒为 0（永不删除），
+        写进结果是为了让日志能直接对照「风险类没有被误伤」。
+        """
+        ts = int(now if now is not None else time.time())
+        counts = {
+            ProxyFailureKind.NETWORK.value: 0,
+            ProxyFailureKind.RESPONSE.value: 0,
+            ProxyFailureKind.RISK_CONTROL.value: 0,
+            ProxyFailureKind.UNKNOWN.value: 0,
+        }
+        for kind in ProxyFailureKind:
+            cond = build_cleanup_candidate_condition(ProxyTab, kind, ts, CONFIG.proxy_health)
+            if cond is None:
+                continue
+            sql = select(func.count(ProxyTab.proxy_id)).where(cond)
+            async with self.async_session() as session:
+                res = await session.execute(sql)
+            counts[kind.value] = int(res.scalars().first() or 0)
+        return counts
+
+    async def _select_cleanup_candidate_ids(
+        self, kind: ProxyFailureKind, now: int, limit: int
+    ) -> list[int]:
+        """取一批删除候选主键（按主键升序，走 ``ix_proxy_tab_fail_window``）。"""
+        cond = build_cleanup_candidate_condition(ProxyTab, kind, now, CONFIG.proxy_health)
+        if cond is None:
+            return []
+        sql = (
+            select(ProxyTab.proxy_id)
+            .where(cond)
+            .order_by(ProxyTab.proxy_id)
+            .limit(max(1, int(limit)))
+        )
         async with self.async_session() as session:
-            # 查找所有将要被删除的 proxy_tab_id
-            stmt = select(ProxyTab.proxy_id).where(
-                or_(
-                    ProxyTab.score <= MIN_REFRESH_SCORE,
-                    ProxyTab.success_times < MIN_REFRESH_SUCCESS_TIME,
+            res = await session.execute(sql)
+        return [int(row) for row in res.scalars().all() if row is not None]
+
+    async def _delete_proxy_ids(self, proxy_ids: list[int]) -> int:
+        """按主键删除一批代理（短事务，单批行数由调用方控制）。"""
+        if not proxy_ids:
+            return 0
+        async with self.async_session() as session:
+            async with session.begin():
+                res = await session.execute(
+                    delete(ProxyTab).where(ProxyTab.proxy_id.in_(proxy_ids))
                 )
-            )
-            result = await session.execute(stmt)
-            proxy_ids_to_delete = [row[0] for row in result.all()]
-
-            if proxy_ids_to_delete:
-                delete_proxy_tab = delete(ProxyTab).where(
-                    ProxyTab.proxy_id.in_(proxy_ids_to_delete)
-                )
-                res = await session.execute(delete_proxy_tab)
-
-                await session.commit()
-                deleted_rows = res.rowcount or 0
-
-        zombie_num = await self.get_zombie_proxy_num()
-        if zombie_num:
-            sql_log.warning(
-                f"代理池清理：本轮 MySQL 删除 {deleted_rows} 行；"
-                f"僵尸代理（success_times<0）{zombie_num} 条不参与随机选取"
-            )
-        return deleted_rows
+        return int(res.rowcount or 0)
 
     async def get_zombie_proxy_num(self) -> int:
         """僵尸代理数量（用过但净失败）。只做观测，不参与删行决策。"""
@@ -374,7 +562,7 @@ class SQLHelperClass(SqlHelperBase):
         return self._proxy_id_range
 
     async def _select_candidate_rows(
-        self, start_id: int, limit: int
+        self, start_id: int, limit: int, probe_zombie: bool = False
     ) -> list[ProxyTab]:
         """从随机主键起点往后取一批候选行（走 ``(proxy_id, status, ...)`` 索引）。
 
@@ -383,16 +571,26 @@ class SQLHelperClass(SqlHelperBase):
         这里用「随机主键起点 + ``ORDER BY proxy_id LIMIT N``」，实测 **14~18ms**，
         N 只取十几条（健康状态在 Redis，需要多取几条才能筛出合格代理），
         仍然是索引范围扫描，不排序、不全表扫。
+
+        :param probe_zombie: 只取 ``success_times<0`` 的僵尸代理（slow 档按
+            ``slow_zombie_probe_ratio`` 小比例探活，成功即把 success_times 复位为 0）。
+            fast 档永远传 False —— 不得改变 fast 的取用语义。
         """
+        if probe_zombie:
+            success_filter = (
+                func.coalesce(ProxyTab.success_times, 0) < ZOMBIE_SUCCESS_TIMES_MAX
+            )
+        else:
+            success_filter = or_(
+                ProxyTab.success_times.is_(None),
+                ProxyTab.success_times >= ZOMBIE_SUCCESS_TIMES_MAX,
+            )
         sql = (
             select(ProxyTab)
             .where(
                 ProxyTab.proxy_id >= start_id,
                 ProxyTab.status == 0,
-                or_(
-                    ProxyTab.success_times.is_(None),
-                    ProxyTab.success_times >= ZOMBIE_SUCCESS_TIMES_MAX,
-                ),
+                success_filter,
             )
             .order_by(ProxyTab.proxy_id)
             .limit(limit)
@@ -721,7 +919,16 @@ class SQLHelperClass(SqlHelperBase):
             attempts_left -= 1
             # 每次都从随机主键起点取一批：健康状态在 Redis，单条太容易筛空
             start_id = random.randint(min_id, max_id)
-            rows = await self._select_candidate_rows(start_id, current_batch)
+            # slow 档按比例掺入僵尸代理探活（success_times<0）：
+            # 不探活的话它们永远不失败、永远到不了删除阈值，137 万条存量无法重新分类。
+            # fast 档永远不取僵尸（probe_zombie=False），取用语义保持不变。
+            probe_zombie = (
+                tier is ProxyTier.SLOW
+                and random.random() < cfg.slow_zombie_probe_ratio
+            )
+            rows = await self._select_candidate_rows(
+                start_id, current_batch, probe_zombie=probe_zombie
+            )
             stats.db_scanned += len(rows)
             if rows:
                 fetched_any = True
@@ -1094,13 +1301,19 @@ class SQLHelperClass(SqlHelperBase):
 
     @log_sql_retry_wrapper()
     async def update_to_proxy_list(
-        self, proxy_tab: ProxyTab, change_score_num=10
+        self,
+        proxy_tab: ProxyTab,
+        change_score_num=10,
+        kind: ProxyFailureKind | None = None,
     ) -> bool:
-        """
-        更新数据 update 最好只用update，upsert会导致主键增长异常
-        :param change_score_num: 修改的分
-        :param proxy_tab:
-        :return:
+        """更新单条代理的分数 / 状态 / 失败原因计数。
+
+        更新只用 update（upsert 会导致主键增长异常）。
+
+        :param change_score_num: 修改的分（>=0 视为成功，<0 视为失败）
+        :param kind: 失败原因。失败时按 kind 分桶累加 ``proxy_tab.fail_*_times``
+            （窗口内滚动，见 ``build_fail_counter_values``）；成功时忽略。
+            为 None 的历史调用点只做分数 / success_times 增减，不计原因。
         """
         proxy_key = to_proxy_key(proxy_tab.proxy)
         if not proxy_key:
@@ -1111,24 +1324,33 @@ class SQLHelperClass(SqlHelperBase):
             # 否则每次请求都会走到「不存在」分支并刷屏。
             sql_log.debug(f"本地 IPv6 代理不参与分数更新，已跳过：{proxy_key}")
             return False
-        succ_times_num = 1 if change_score_num >= 0 else -1
-        sql = (
-            update(ProxyTab)
-            .where(ProxyTab.computed_proxy_str == proxy_key)
-            .values(
-                status=proxy_tab.status,
-                # 分数钳制在 ±10000（与原实现一致），成功/失败次数用 SQL 原子增减
-                score=func.least(
-                    10000,
-                    func.greatest(
-                        -10000,
-                        func.coalesce(ProxyTab.score, 0) + change_score_num,
-                    ),
+        now = int(time.time())
+        values: dict = {
+            "status": proxy_tab.status,
+            # 分数钳制在 ±10000（与原实现一致），成功/失败次数用 SQL 原子增减
+            "score": func.least(
+                10000,
+                func.greatest(
+                    -10000,
+                    func.coalesce(ProxyTab.score, 0) + change_score_num,
                 ),
-                success_times=func.coalesce(ProxyTab.success_times, 0) + succ_times_num,
-                update_ts=int(time.time()),
-            )
-        )
+            ),
+            "update_ts": now,
+        }
+        if change_score_num >= 0:
+            values.update(build_success_values(ProxyTab, now))
+        else:
+            values["success_times"] = func.coalesce(ProxyTab.success_times, 0) - 1
+            if kind is not None:
+                values.update(
+                    build_fail_counter_values(
+                        ProxyTab,
+                        kind,
+                        now,
+                        max(1, int(CONFIG.proxy_health.zombie_window_days)) * 86400,
+                    )
+                )
+        sql = update(ProxyTab).where(ProxyTab.computed_proxy_str == proxy_key).values(**values)
         async with self.async_session() as session:
             async with session.begin():
                 res = await session.execute(sql)
@@ -1248,7 +1470,11 @@ class SQLHelperClass(SqlHelperBase):
                     ProxyTab.status != available_status,
                     now - ProxyTab.update_ts >= _412_sep_time,
                     ProxyTab.score >= avaliable_score,
-                    ProxyTab.success_times >= MIN_REFRESH_SUCCESS_TIME,
+                    # 不再要求 success_times >= -3：慢档探活失败会让僵尸的
+                    # success_times 继续下降，旧条件会把它们永久锁在不可用，
+                    # 清理计数也就永远累加不到阈值。僵尸的取用准入由取代理侧控制
+                    # （fast 不取 success_times<0，slow 只小比例探活），
+                    # 这里只负责把「非风控」状态在两小时后复位。
                 ),
             )
             .values(status=available_status, update_ts=now)
