@@ -200,19 +200,19 @@ def _breaker(clock: _FakeClock, **overrides) -> tuple[ProxyCircuitBreaker, _Fake
     return ProxyCircuitBreaker("breaker-test", config, log, clock=clock), log
 
 
-def test_breaker_opens_after_consecutive_pool_failures():
+async def test_breaker_opens_after_consecutive_pool_failures():
     clock = _FakeClock(100.0)
     breaker, log = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure("重试预算耗尽", pool_level=True)
+        await breaker.record_failure("重试预算耗尽", pool_level=True)
 
     assert breaker.state is ProxyCircuitState.OPEN
-    assert breaker.snapshot().retry_after_seconds == pytest.approx(10.0, abs=0.1)
+    assert (await breaker.snapshot()).retry_after_seconds == pytest.approx(10.0, abs=0.1)
     assert sum("熔断开启" in msg for msg in log.warnings) == 1
     # 非池级失败不累计连续计数
     breaker2, _ = _breaker(_FakeClock())
     for _ in range(10):
-        breaker2.record_failure("单条代理网络错误", pool_level=False)
+        await breaker2.record_failure("单条代理网络错误", pool_level=False)
     assert breaker2.state is ProxyCircuitState.CLOSED
 
 
@@ -220,7 +220,7 @@ async def test_breaker_half_open_recovers_after_probe_successes():
     clock = _FakeClock(0.0)
     breaker, log = _breaker(clock)
     for _ in range(3):
-        breaker.record_failure("没有可用代理", pool_level=True)
+        await breaker.record_failure("没有可用代理", pool_level=True)
     assert breaker.state is ProxyCircuitState.OPEN
 
     clock.now += 10.5
@@ -228,9 +228,9 @@ async def test_breaker_half_open_recovers_after_probe_successes():
     assert breaker.state is ProxyCircuitState.HALF_OPEN
     assert sum("进入半开探测：" in msg for msg in log.warnings) == 1
 
-    breaker.record_success()
+    await breaker.record_success()
     assert breaker.state is ProxyCircuitState.HALF_OPEN
-    breaker.record_success()
+    await breaker.record_success()
     assert breaker.state is ProxyCircuitState.CLOSED
     assert sum("熔断解除" in msg for msg in log.warnings) == 1
 
@@ -240,11 +240,11 @@ async def test_half_open_probe_lease_releases_leaked_slot():
     clock = _FakeClock(0.0)
     breaker, _ = _breaker(clock, probe_lease_seconds=30.0)
     for _ in range(3):
-        breaker.record_failure("没有可用代理", pool_level=True)
+        await breaker.record_failure("没有可用代理", pool_level=True)
 
     clock.now += 10.5
     await breaker.wait_until_ready()  # 占用唯一探测名额
-    assert breaker.snapshot().probes_in_flight == 1
+    assert (await breaker.snapshot()).probes_in_flight == 1
 
     # 租约未到期：第二个请求拿不到名额（会持续等待）
     with pytest.raises(asyncio.TimeoutError):
@@ -253,10 +253,10 @@ async def test_half_open_probe_lease_releases_leaked_slot():
     # 租约到期：按「协程被取消」处理，强制归还后可以继续探测
     clock.now += 31
     await asyncio.wait_for(breaker.wait_until_ready(), timeout=1.0)
-    assert breaker.snapshot().probes_in_flight == 1
+    assert (await breaker.snapshot()).probes_in_flight == 1
 
 
-def test_breaker_opens_on_low_success_rate():
+async def test_breaker_opens_on_low_success_rate():
     config = CrawlerBreakerConfig(
         enabled=True,
         consecutive_proxy_failures=0,
@@ -270,19 +270,19 @@ def test_breaker_opens_on_low_success_rate():
     )
     clock = _FakeClock()
     breaker = ProxyCircuitBreaker("rate", config, _FakeLog(), clock=clock)
-    breaker.record_success()
-    breaker.record_success()
-    breaker.record_failure("超时", pool_level=False)
+    await breaker.record_success()
+    await breaker.record_success()
+    await breaker.record_failure("超时", pool_level=False)
     assert breaker.state is ProxyCircuitState.CLOSED
-    breaker.record_failure("超时", pool_level=False)
+    await breaker.record_failure("超时", pool_level=False)
     assert breaker.state is ProxyCircuitState.OPEN
 
 
-def test_breaker_disabled_never_opens():
+async def test_breaker_disabled_never_opens():
     config = CrawlerBreakerConfig(enabled=False, consecutive_proxy_failures=1)
     breaker = ProxyCircuitBreaker("disabled", config, _FakeLog(), clock=_FakeClock())
     for _ in range(5):
-        breaker.record_failure("重试预算耗尽", pool_level=True)
+        await breaker.record_failure("重试预算耗尽", pool_level=True)
     assert breaker.state is ProxyCircuitState.CLOSED
 
 

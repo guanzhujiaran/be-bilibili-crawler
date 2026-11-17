@@ -1,9 +1,12 @@
 import asyncio
 import gc
 import traceback
+import tracemalloc
+from collections import Counter
 from datetime import datetime
+from typing import Literal
 
-from fastapi import Body, HTTPException, Path
+from fastapi import Body, HTTPException, Path, Query
 from ApiRoutes import RouterPaths, RouterNames, RouterTags
 from controller.common.base import new_router
 from log.base_log import myfastapi_logger
@@ -71,6 +74,118 @@ async def app_avaliable_api():
 async def app_avaliable_api():
     await asyncio.to_thread(gc.collect)
     return "gc完成！"
+
+
+# region 进程内存观测（内部接口：路径不在网关白名单内，故不对外公开）
+_MEMORY_STATUS_FIELDS = ("VmRSS", "VmHWM", "VmData", "Threads")
+_CGROUP_STAT_FIELDS = ("anon", "active_anon", "inactive_anon", "file")
+_CGROUP_ALIASES = {
+    "total_rss": "anon",
+    "total_cache": "file",
+    "total_active_anon": "active_anon",
+    "total_inactive_anon": "inactive_anon",
+}
+
+
+def _read_proc_status() -> dict:
+    """只读 /proc/self/status 的指定字段（不引入 psutil）。"""
+    values: dict[str, str] = {}
+    try:
+        with open("/proc/self/status", "r", encoding="utf-8") as fh:
+            for line in fh:
+                key, _, value = line.partition(":")
+                if key in _MEMORY_STATUS_FIELDS:
+                    values[key] = value.strip()
+    except OSError as e:
+        values["error"] = f"{type(e).__name__}: {e}"
+    return values
+
+
+def _read_cgroup_memory() -> dict:
+    """只读 cgroup memory.stat：区分 anon（活对象）与 inactive_anon（分配器空闲页）。"""
+    for path in (
+        "/sys/fs/cgroup/memory.stat",  # cgroup v2
+        "/sys/fs/cgroup/memory/memory.stat",  # cgroup v1
+    ):
+        try:
+            raw: dict[str, int] = {}
+            with open(path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    key, _, value = line.partition(" ")
+                    if key in _CGROUP_STAT_FIELDS or key in _CGROUP_ALIASES:
+                        raw[_CGROUP_ALIASES.get(key, key)] = int(value.strip() or 0)
+            return {"path": path, **{k: raw.get(k, 0) for k in _CGROUP_STAT_FIELDS}}
+        except (OSError, ValueError):
+            continue
+    return {"error": "无法读取 cgroup memory.stat"}
+
+
+def _gc_type_counts(limit: int = 20) -> list[dict]:
+    """按类型名统计 gc.get_objects()（只返回数量，禁止序列化对象本身）。"""
+    counter = Counter(type(obj).__name__ for obj in gc.get_objects())
+    return [{"type": name, "count": count} for name, count in counter.most_common(limit)]
+
+
+def _tracemalloc_report(limit: int = 20) -> dict:
+    """返回当前/峰值追踪内存与按「文件:行号」聚合的 top-N 分配点。"""
+    current, peak = tracemalloc.get_traced_memory()
+    stats: list[dict] = []
+    for stat in tracemalloc.take_snapshot().statistics("lineno")[:limit]:
+        frame = stat.traceback[0]
+        stats.append(
+            {
+                "file": frame.filename,
+                "line": frame.lineno,
+                "size_kb": round(stat.size / 1024, 1),
+                "count": stat.count,
+            }
+        )
+    return {
+        "current_bytes": current,
+        "peak_bytes": peak,
+        "top": stats,
+    }
+
+
+@router.get(
+    RouterPaths.DEBUG_MEMORY,
+    name=RouterNames.DEBUG_MEMORY,
+    description="【内部接口】进程内存观测：RSS / VmHWM / cgroup anon 拆分、GC 类型 top20、"
+    "可选 tracemalloc 分配点 top20（?trace=on|off）。只读、不阻塞事件循环；"
+    "路径不在网关白名单内，不对外公开。",
+)
+async def api_debug_memory(
+    trace: Literal["on", "off"] | None = Query(
+        default=None, description="on=启动 tracemalloc（有性能开销，记得 off）；off=关闭"
+    ),
+):
+    note: list[str] = []
+    if trace == "on" and not tracemalloc.is_tracing():
+        tracemalloc.start(25)
+        note.append("tracemalloc 已开启（25 帧），会产生额外内存与 CPU 开销，排查后请 ?trace=off")
+    elif trace == "off" and tracemalloc.is_tracing():
+        tracemalloc.stop()
+        note.append("tracemalloc 已关闭")
+    elif trace is None:
+        note.append("未指定 ?trace，仅返回 RSS / cgroup / GC 统计；需要分配点请加 ?trace=on")
+
+    result: dict = {
+        "trace_enabled": tracemalloc.is_tracing(),
+        "note": note,
+        "proc_status": _read_proc_status(),
+        "cgroup_memory": _read_cgroup_memory(),
+        "gc": {
+            "collections": gc.get_count(),
+            "stats": gc.get_stats(),
+            "top_types": await asyncio.to_thread(_gc_type_counts),
+        },
+    }
+    if tracemalloc.is_tracing():
+        result["tracemalloc"] = await asyncio.to_thread(_tracemalloc_report)
+    return result
+
+
+# endregion
 
 
 @router.get(

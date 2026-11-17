@@ -8,6 +8,8 @@ import numbers
 import time
 from collections.abc import Mapping
 from typing import Any
+# numpy 仅服务 SequentialNullStopPlugin._status_vector（差分法算连续 nullData）；
+# 若要极省内存可替换为 array('b') + 手写扫描，但收益 <10MB 且属热路径，需先做基准对比。
 import numpy as np
 from Models.base.custom_pydantic import CustomBaseModel
 from Service.BaseCrawler.base.core import ParamsType, BaseCrawler
@@ -294,9 +296,18 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             if self._processed_items_count
             else 0.0
         )
+        failure_kinds = getattr(self.crawler, "_failure_kind_counts", None)
+        kind_text = (
+            "、".join(f"{name}={count}" for name, count in failure_kinds.most_common())
+            if failure_kinds
+            else "无"
+        )
+        recent_ids = getattr(self.crawler, "_recent_fail_ids", None)
         summary = (
             f"StatsPlugin 运行结束统计:\n"
             f"  爬虫名称: {self.crawler.crawler_name}\n"
+            f"  代理策略: proxy_tier={getattr(self.crawler, 'proxy_tier', '')}\n"
+            f"  重入队策略: requeue_strategy={getattr(self.crawler, 'requeue_strategy', '')}\n"
             f"  开始时间: {self.start_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  结束时间: {self.last_update_time_str:%Y-%m-%d %H:%M:%S}\n"
             f"  总运行时长: {format_duration(self.total_run_duration)}\n"
@@ -306,6 +317,8 @@ class StatsPlugin(CrawlerPlugin[ParamsType]):
             f"  空数据数: {self._null_count}\n"
             f"  重排重试次数: {self._requeued_count}\n"
             f"  最终失败数: {self._final_fail_count}\n"
+            f"  失败原因分类: {kind_text}\n"
+            f"  最近失败业务 id: {'、'.join(recent_ids) if recent_ids else '无'}\n"
             f"  成功率(按尝试次数): {success_rate:.1f}%\n"
             f"  平均速度: {self.crawling_speed:.2f} 项/秒\n"
             f"  是否运行中: {self._is_running}\n"

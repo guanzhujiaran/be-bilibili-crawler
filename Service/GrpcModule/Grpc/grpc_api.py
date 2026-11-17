@@ -89,6 +89,7 @@ from Utils.代理.mdoel.request_context import (
     excluded_proxy_keys,
     note_failed_proxy,
 )
+from Utils.代理.mdoel.RiskScope import risk_scope_of, scope_label
 from bili_common.core.log_mask import mask_text
 
 ad_extra = "979CD936E441AD18D4DA41A86BACC8168EBE79AA118B33339F80B75C0CD4A1992D36232462A56F4CC7C7E93BFAE33C2EDEA22F19D1DB9C021604DAB304035F8FD09CC00070E1751C322FDA073FE81362163A60D48EF19F79929E98E56202A64E9CC418923EBCC72B8D676AA9423D243CBA9F7F544456356D3F20CC8EF065EB485098B21A7C39249AAA2944F0878CEB6400A58D841A31395E563CC9C9D0EC24F85A956FC3C0BEBBD28A04F20CA973344137F8583324E9EA32FE172917A0F5068F6C711E0EE360CB39DF943E09D7479CDA7584FB8AAECF4207C2AE5CCB652D1B0E445CCF13E1DAC3DFE45D86190945FECFBD82ED8DFE3BC7182313203A9DF1D93BDB0B32F3542EF35D78A806F29C5F1A66D94790E1B3077361C48F0F6C62202E21E7ACB125B18093EA08237831BB23E545610141CEEDC7D7D3F1B2D8AA4E305B91C22C112EF4E12C0C90034FFE36E32304A3926E7AD04BB7A23C3068DBF1DD757C6B43837275DF468FB0AFA297B71A8C9422175EB48877DA262EF6A41351614E89C05AB4E47292E4B405E49BE54E5F0D30D6FBCB8B441433444A8C0E4B37EDF281170B66BA8CDF704CFEBC6C9C8A8AFD9B35B55A716DEF754409DE4300E5F7A609D6EFC5FF10F253513971D6D8F09552184C7ECF6A62358BB3DBF2DA3B2FFFB77A2F8D34E8DADECDAA842A5A4966797C03"
@@ -443,13 +444,13 @@ class BiliGrpc:
         return metadata
 
     # region 出口决策（专线 / 代理池）
-    async def _local_exit_blocked_reason(self) -> str:
+    async def _local_exit_blocked_reason(self, scope: str | None = None) -> str:
         """专线为什么不能用于本次请求（``""`` = 可用）。
 
         闸门口径与 HTTP 通道 ``RequestWithProxy._acquire_local_exit`` 一致：
 
         - 本任务内专线（或它所在的前缀）已经失败过 → 同段换地址没有意义；
-        - 专线前缀处于风控冷却（412/352 记在 /64 上）→ 冷却期内不用。
+        - 专线前缀在**当前 gRPC 风控域**处于风控冷却（412/352 记在 /64 上）→ 冷却期内不用。
         """
         proxy_key = self._local_exit_proxy_key()
         if not proxy_key:
@@ -462,8 +463,10 @@ class BiliGrpc:
             return f"本任务内专线前缀 {prefix} 已失败"
         if prefix:
             try:
-                if await proxy_health_store.is_prefix_cooling(prefix):
-                    return f"专线前缀 {prefix} 处于风控冷却"
+                if await proxy_health_store.is_prefix_cooling(prefix, scope):
+                    return (
+                        f"专线前缀 {prefix} 在风控域 {scope_label(scope)} 处于风控冷却"
+                    )
             except Exception as e:  # noqa: BLE001 读冷却失败不能挡住业务请求
                 self.grpc_api_any_log.debug(
                     f"读取专线前缀冷却状态失败：{type(e).__name__} {e}"
@@ -477,6 +480,7 @@ class BiliGrpc:
         validate_token: str,
         ipv6_proxy_weights: int,
         real_proxy_weights: int,
+        scope: str | None = None,
     ) -> bool:
         """本次请求走代理池（True）还是专线（False）。
 
@@ -528,7 +532,7 @@ class BiliGrpc:
             )[0]  # True 用真实代理池，False 用专线
         if proxy_flag:
             return True
-        blocked = await self._local_exit_blocked_reason()
+        blocked = await self._local_exit_blocked_reason(scope)
         if blocked:
             self.grpc_api_any_log.warning(
                 f"专线不可用（{blocked}），本次降级到 gRPC 代理池"
@@ -648,6 +652,9 @@ class BiliGrpc:
         channel = None
         ipv6_proxy_weights = 1
         real_proxy_weights = 1000
+        # 风控域：gRPC 方法与 web 接口的风控相互独立（DynDetail -352 不应冷却 web 接口）。
+        # func_name 为空时用 url（含 ``/bilibili.app.dynamic.v2.Dynamic/DynDetail``）推导。
+        grpc_scope = risk_scope_of(func_name or url, channel="grpc")
         while 1:
             # self.grpc_api_any_log.debug(f'距离上次352时间：{int(time.time()) - self.latest_352_ts}秒')
             proxy_flag = await self._decide_use_proxy(
@@ -655,6 +662,7 @@ class BiliGrpc:
                 validate_token=validate_token,
                 ipv6_proxy_weights=ipv6_proxy_weights,
                 real_proxy_weights=real_proxy_weights,
+                scope=grpc_scope,
             )
             if proxy_flag:
                 proxy, channel = await self._get_random_channel()
@@ -818,6 +826,7 @@ class BiliGrpc:
                 if proxy:
                     await handle_proxy_succ(
                         proxy_tab=proxy,
+                        scope=grpc_scope,
                     )
                 if proxy_flag:
                     # 池代理对 gRPC 可用：清空「连不上」计数
@@ -914,8 +923,10 @@ class BiliGrpc:
                         f"代理{proxy.proxy} 报错-352 被封禁\n{url}\n{new_headers}\n{grpc_req_message}"
                     )
                     # gRPC 通道不再把代理在 MySQL 里永久置为不可用（否则几轮 352
-                    # 就把池子打空），只在 Redis 健康度上做前缀冷却。
-                    await handle_proxy_352(proxy_tab=proxy, mark_db_invalid=False)
+                    # 就把池子打空），只在 Redis 健康度上做**当前 gRPC 风控域**的前缀冷却。
+                    await handle_proxy_352(
+                        proxy_tab=proxy, mark_db_invalid=False, scope=grpc_scope
+                    )
                     ipv6_proxy_weights += 1
                 else:
                     real_proxy_weights += 20
@@ -964,6 +975,7 @@ class BiliGrpc:
                     if proxy:
                         await handle_proxy_succ(
                             proxy_tab=proxy,
+                            scope=grpc_scope,
                         )
                     return {}
 

@@ -24,7 +24,7 @@ class _AlwaysDenyQuotaStore:
     def __init__(self) -> None:
         self.qps_calls: list[tuple[str, float]] = []
 
-    async def is_prefix_cooling(self, prefix: str) -> bool:
+    async def is_prefix_cooling(self, prefix: str, scope: str | None = None) -> bool:
         return False
 
     async def acquire_qps(

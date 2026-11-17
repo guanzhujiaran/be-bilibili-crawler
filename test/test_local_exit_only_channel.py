@@ -35,7 +35,7 @@ class _FakeHealthStore:
         self.qps_ok = qps_ok
         self.qps_calls: list[tuple[str, float]] = []
 
-    async def is_prefix_cooling(self, prefix: str) -> bool:
+    async def is_prefix_cooling(self, prefix: str, scope: str | None = None) -> bool:
         return self.cooling
 
     async def acquire_qps(

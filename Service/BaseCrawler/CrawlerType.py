@@ -1,5 +1,6 @@
 from typing import Any, AsyncGenerator, Generic, List, ClassVar, TypeVar
 from abc import abstractmethod
+from collections import Counter, deque
 from datetime import datetime
 import asyncio
 import random
@@ -22,6 +23,13 @@ from Service.BaseCrawler.retry_queue import (
     RETRY_BATCH_LIMIT,
     CrawlFailedTaskDao,
     crawl_failed_task_dao,
+)
+from Service.GrpcModule.Models.CustomRequestErrorModel import (
+    ProxyRetryBudgetExhausted,
+    Request352Error,
+    Request412Error,
+    RequestProxyNetworkError,
+    RequestProxyUnavailableError,
 )
 from Utils.通用.Common import ConcurrencyLimit, asyncio_gather
 from Utils.推送.PushMe import a_push_error
@@ -47,6 +55,37 @@ def _resolve(value, fallback, sentinel=None):
     不能跟「跟随统一配置」混用。
     """
     return fallback if value is sentinel or value == sentinel else value
+
+
+#: 失败原因分类（推送 / 日志统一口径，便于 message-service 聚合）
+FAILURE_NO_PROXY = "no_proxy"
+FAILURE_BUDGET_EXHAUSTED = "budget_exhausted"
+FAILURE_RISK_CONTROL = "risk_control"
+FAILURE_NETWORK = "network"
+FAILURE_TIMEOUT = "timeout"
+FAILURE_UNKNOWN = "unknown"
+
+
+def classify_failure_reason(
+    err: BaseException | None, status: WorkerStatus | None = None
+) -> str:
+    """把一次失败归类成 ``no_proxy / budget_exhausted / risk_control / network / timeout``。
+
+    只依赖异常类型与任务状态，不识别任何业务文案；未知异常归为 ``unknown``。
+    """
+    if isinstance(err, RequestProxyUnavailableError):
+        return FAILURE_NO_PROXY
+    if isinstance(err, ProxyRetryBudgetExhausted):
+        return FAILURE_BUDGET_EXHAUSTED
+    if isinstance(err, (Request412Error, Request352Error)):
+        return FAILURE_RISK_CONTROL
+    if isinstance(err, (asyncio.TimeoutError, TimeoutError)):
+        return FAILURE_TIMEOUT
+    if status == WorkerStatus.timeoutError:
+        return FAILURE_TIMEOUT
+    if isinstance(err, (RequestProxyNetworkError, ConnectionError, OSError)):
+        return FAILURE_NETWORK
+    return FAILURE_UNKNOWN
 
 
 class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
@@ -161,6 +200,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.requeue_max_task_seconds = _resolve(
             self.config.requeue_max_task_seconds, runtime.requeue_max_task_seconds
         )
+        # 重入队策略：按爬虫 Config 声明；默认 immediate_front（保持历史行为）
+        self.requeue_strategy: str = self.config.requeue_strategy
 
         # 并发：统一从 CONFIG.concurrency 取，各爬虫只声明 concurrency_key。
         concurrency = CONFIG.concurrency
@@ -181,6 +222,13 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         # 不在这里写死任何业务判断。
         self.proxy_tier: ProxyTier = self.config.proxy_tier
         self.slow_lane_ratio: float = self.config.slow_lane_ratio
+        if self.requeue_strategy == "next_round" and not self.retry_task_type:
+            self.log.warning(
+                self.format_log(
+                    "requeue_strategy=next_round 但未声明 retry_task_type："
+                    "失败任务无法持久化到下一轮补跑，将被丢弃"
+                )
+            )
 
         # 实例名优先取 Config 声明的 crawler_name（支持同类多实例各自命名），
         # 留空则保持基类的类名；调度器创建时还会进一步回填为 BackgroundServiceName 的值。
@@ -206,6 +254,11 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self._alert_throttle = FailureAlertThrottle(config=CONFIG.crawler_alert)
         # 本轮「达到重入队上限」的最终失败计数（run 开始时重置）
         self._final_fail_tally = FinalFailTally()
+        # 失败推送辅助：按原因计数 + 最近 N 个业务 id（run 开始时重置）
+        self._failure_kind_counts: Counter[str] = Counter()
+        self._recent_fail_ids: deque[str] = deque(
+            maxlen=max(0, int(self.config.failure_push_id_limit))
+        )
 
         self._plugins = []
         for plugin_cfg in self.config.plugins:
@@ -462,13 +515,25 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                 # 失败即落库：本轮会继续重试，库里的记录保证「杀旧开新 / 重启」不丢
                 await self._upsert_retry_task(worker_model)
                 if not should_requeue:
-                    self.log.warning(
-                        self.format_log(
-                            f"任务本轮重试用尽（{business_id}），已留在重试队列 pending，"
-                            "下一轮开头继续补跑"
+                    if (
+                        getattr(self, "requeue_strategy", "immediate_front")
+                        == "next_round"
+                    ):
+                        # next_round：本轮不重排、不计 max_retries，也不算「最终失败」
+                        self.log.info(
+                            self.format_log(
+                                f"任务按 requeue_strategy=next_round 留待下一轮补跑："
+                                f"{business_id}"
+                            )
                         )
-                    )
-                    await self.on_task_final_fail(worker_model)
+                    else:
+                        self.log.warning(
+                            self.format_log(
+                                f"任务本轮重试用尽（{business_id}），已留在重试队列 pending，"
+                                "下一轮开头继续补跑"
+                            )
+                        )
+                        await self.on_task_final_fail(worker_model)
         except Exception as e:  # noqa: BLE001 记账失败不能拖垮爬虫主循环
             self.log.exception(
                 self.format_log(f"同步重试队列失败（不影响本任务）：{e!r}")
@@ -761,7 +826,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             async with asyncio.timeout(self.worker_max_timeout):
                 fetch_result = await self.handle_fetch(worker_model.params)
         except asyncio.TimeoutError:
-            self._breaker.record_failure("爬取超时", pool_level=False)
+            await self._breaker.record_failure("爬取超时", pool_level=False)
             if self.log_timeout_error:
                 self.log.exception(
                     self.format_log(f"爬取超时：{self.worker_max_timeout}s")
@@ -769,7 +834,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             return WorkerStatus.timeoutError
         except Exception as e:
             pool_level = is_pool_level_error(e)
-            self._breaker.record_failure(f"{type(e).__name__}: {e}", pool_level=pool_level)
+            await self._breaker.record_failure(
+                f"{type(e).__name__}: {e}", pool_level=pool_level
+            )
             if self.log_error:
                 self.log.exception(self.format_log(f"爬取异常：{e}"))
                 await self._push_failure_alert(worker_model, e)
@@ -788,28 +855,59 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
                     f"{worker_model.params}"
                 )
             )
-            self._breaker.record_success()
+            await self._breaker.record_success()
             return WorkerStatus.complete
         if not isinstance(fetch_result, WorkerStatus):
-            self._breaker.record_success()
+            await self._breaker.record_success()
             return WorkerStatus.complete
         if fetch_result in (WorkerStatus.complete, WorkerStatus.nullData):
-            self._breaker.record_success()
+            await self._breaker.record_success()
         elif fetch_result in (WorkerStatus.fail, WorkerStatus.timeoutError):
             # handle_fetch 内部吞掉异常、直接返回失败状态：同样计入熔断口径
-            self._breaker.record_failure(
+            await self._breaker.record_failure(
                 f"fetch_status={fetch_result.name}", pool_level=False
             )
         return fetch_result
+
+    def _business_id_of(self, worker_model: WorkerModel) -> str:
+        """从任务参数里取业务 id（用于推送与日志归因，不含任何业务名硬编码）。
+
+        取值顺序：``Config.business_id_fields`` 声明 → 第一个以 ``_id`` 结尾的字段。
+        """
+        params = worker_model.params
+        try:
+            data = params.model_dump() if hasattr(params, "model_dump") else dict(params or {})
+        except Exception:  # noqa: BLE001 参数不可序列化时不阻断推送
+            return ""
+        for field_name in getattr(self.config, "business_id_fields", ()) or ():
+            value = data.get(field_name)
+            if value not in (None, ""):
+                return f"{field_name}={value}"
+        for key, value in data.items():
+            if key.endswith("_id") and value not in (None, ""):
+                return f"{key}={value}"
+        return ""
+
+    def _remember_failure(self, worker_model: WorkerModel, reason: str) -> str:
+        """记录本轮失败原因与业务 id，返回本次 business_id 文案。"""
+        self._failure_kind_counts[reason] += 1
+        business_id = self._business_id_of(worker_model)
+        if business_id and self._recent_fail_ids.maxlen:
+            self._recent_fail_ids.append(business_id)
+        return business_id
 
     async def _push_failure_alert(
         self, worker_model: WorkerModel, err: BaseException
     ) -> None:
         """失败告警：按「爬虫 + 时间窗口」聚合，避免失败风暴打爆推送通道。
 
-        content 里只放**稳定可去重**的信息（爬虫名 / 计数 / 异常类型），
-        具体 params 与堆栈已写本地日志 —— message-service 才能聚合成一条摘要。
+        content 里只放**稳定可去重**的信息（爬虫名 / 计数 / 异常类型 / 代理档位 /
+        重入队策略 / 失败原因分类 / 业务 id），具体 params 与堆栈已写本地日志 ——
+        message-service 才能聚合成一条摘要；最近 N 个失败 id 放到 ``_flush_failure_alert``
+        的另一条 subject 里，避免污染现有聚合内容。
         """
+        reason = classify_failure_reason(err, worker_model.fetchStatus)
+        business_id = self._remember_failure(worker_model, reason)
         decision: AlertDecision = self._alert_throttle.hit()
         if not decision.push:
             self.log.debug(
@@ -828,7 +926,9 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             content=(
                 f"爬虫[{self.crawler_name}] 失败{tag}：窗口 {decision.window_seconds:.0f}s 内 "
                 f"{decision.count} 次失败{aggregated}；最近一次异常类型 "
-                f"{type(err).__name__}；熔断状态 {self._breaker.state.value}"
+                f"{type(err).__name__}；失败原因 {reason}；"
+                f"proxy_tier={self.proxy_tier.value}；requeue_strategy={self.requeue_strategy}；"
+                f"business_id={business_id or '<无>'}；熔断状态 {self._breaker.state.value}"
                 f"（明细见本地日志）"
             ),
         )
@@ -866,13 +966,19 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         return None
 
     def _should_requeue(self, worker_model: WorkerModel) -> bool:
-        """判断任务是否需要重试，检查状态和重入队上限。"""
+        """判断任务是否需要**本轮**重试，检查状态和重入队上限。
+
+        ``next_round`` 策略直接返回 False：本轮不重排、不计 max_retries，
+        失败任务由 ``_settle_retry_task`` 留在 pending，下一轮 ``main()`` 补跑。
+        """
         status = worker_model.fetchStatus
         if status == WorkerStatus.fail and not self.requeue_on_fetch_fail:
             return False
         if status == WorkerStatus.timeoutError and not self.requeue_on_timeout:
             return False
         if status not in (WorkerStatus.fail, WorkerStatus.timeoutError):
+            return False
+        if getattr(self, "requeue_strategy", "immediate_front") == "next_round":
             return False
 
         limit = self._requeue_limit_reason(worker_model)
@@ -903,25 +1009,42 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         decision = self._alert_throttle.flush()
         if decision is None:
             return
+        kinds = "、".join(
+            f"{name}={count}" for name, count in self._failure_kind_counts.most_common()
+        ) or "无"
         await a_push_error(
             subject="运行异常",
             content=(
                 f"爬虫[{self.crawler_name}] 失败窗口汇总：窗口 "
                 f"{decision.window_seconds:.0f}s 内共 {decision.count} 次失败"
                 f"（{decision.suppressed} 次已聚合省略）；本轮最终失败 "
-                f"{self._final_fail_tally.total} 个；熔断状态 "
-                f"{self._breaker.state.value}（明细见本地日志）"
+                f"{self._final_fail_tally.total} 个；失败原因分类 {kinds}；"
+                f"proxy_tier={self.proxy_tier.value}；requeue_strategy={self.requeue_strategy}；"
+                f"熔断状态 {self._breaker.state.value}（明细见本地日志）"
             ),
         )
+        # 最近失败 id 单独一条 subject：不塞进上面的聚合 content，避免破坏 message-service
+        # 的「稳定可去重」口径（CrawlerType.py:810-811 的约束）。
+        if self._recent_fail_ids:
+            await a_push_error(
+                subject="失败明细",
+                content=(
+                    f"爬虫[{self.crawler_name}] 最近 {len(self._recent_fail_ids)} 个失败业务 id"
+                    f"（proxy_tier={self.proxy_tier.value}，"
+                    f"requeue_strategy={self.requeue_strategy}）："
+                    + "、".join(self._recent_fail_ids)
+                ),
+            )
 
-    def _log_final_fail_summary(self) -> None:
+    async def _log_final_fail_summary(self) -> None:
         """运行结束时落一条汇总（有最终失败才打，正常跑完不产生噪音）。"""
         if self._final_fail_tally.total <= 0:
             return
+        snapshot = await self._breaker.snapshot()
         self.log.warning(
             self.format_log(
                 f"本轮最终失败汇总：{self._final_fail_tally.to_log_str()}；"
-                f"熔断快照 {self._breaker.snapshot().model_dump(mode='json')}"
+                f"熔断快照 {snapshot.model_dump(mode='json')}"
             )
         )
 
@@ -950,20 +1073,36 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         queue 必须与 worker 处理该任务时使用的是同一个队列实例，
         否则「杀旧开新」后重排的任务会落进新一轮的队列。
 
-        **「至少一次」爬虫（声明了 ``retry_task_type``）：无条件立即插到队首**，
-        不经过任何退避计算 —— 业务数据有连贯性（前面的 id 缺失会影响后面的结束
-        判断），而且队列可能积压几千条（生产者不限速），放队尾等于「拖到最后」。
-        非「至少一次」的爬虫保留老的「指数退避 + 独立 task」逻辑（防止忙循环）。
+        按 ``Config.requeue_strategy`` 分支（默认 ``immediate_front`` 保持历史行为）：
+
+        - ``immediate_front``：声明了 ``retry_task_type`` 的爬虫**立即插到队首**，
+          不走退避；未声明的爬虫沿用「指数退避 + 独立 task」老逻辑；
+        - ``delayed``：所有爬虫都按 ``_requeue_delay`` 指数退避后再插队首；
+        - ``next_round``：本轮不重排（由 ``_should_requeue`` 拦截），失败任务已由
+          ``_settle_retry_task`` 落 pending，下一轮 ``main()`` 补跑。
         """
         if queue is None:
             queue = self.task_queue
         worker_model.fetchStatus = WorkerStatus.pending
         worker_model.retry_count += 1
         await self.on_task_requeue(worker_model)
-        if self.retry_task_type:
-            # 马上重试：插队首，下一个空闲 worker 立刻取到它
+        strategy = getattr(self, "requeue_strategy", "immediate_front")
+        if strategy == "next_round":
+            # next_round 不应走到这里（_should_requeue 已拦截）；防御性返回，
+            # 任务已由 _settle_retry_task 落 pending，下一轮会补跑。
+            self.log.info(
+                self.format_log(
+                    f"requeue_strategy=next_round：任务留待下一轮，不在本轮重排："
+                    f"{worker_model.params}"
+                )
+            )
+            return
+        if strategy == "immediate_front" and self.retry_task_type:
+            # 历史行为：至少一次语义的爬虫失败后立刻插队首，下一个空闲 worker 立刻取到它
             self._put_front(queue, worker_model)
             return
+        # delayed（所有爬虫）或 immediate_front（未声明 retry_task_type 的老行为）：
+        # 指数退避后插队首，避免「取出→失败→立刻放回」的忙循环。
         delay = self._requeue_delay(worker_model.retry_count)
         if delay <= 0:
             self._put_front(queue, worker_model)
@@ -1123,6 +1262,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         # 本轮统计复位：最终失败计数 / 告警聚合窗口。
         # 熔断状态**不**复位 —— 「杀旧开新」几秒一次，复位会让熔断形同虚设。
         self._final_fail_tally = FinalFailTally()
+        self._failure_kind_counts = Counter()
+        self._recent_fail_ids.clear()
         self._alert_throttle.reset()
 
         seqId = 0
@@ -1275,9 +1416,8 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         await self.on_run_end(worker_model)
 
         # 收尾：最终失败汇总 + 告警窗口积压补推（有积压才推）
-        self._log_final_fail_summary()
+        await self._log_final_fail_summary()
         await self._flush_failure_alert()
-
         self.log.info(self.format_log("run finished."))
 
         # 清理队列中可能残留的项目（理论上应该为空，因为所有worker已完成）

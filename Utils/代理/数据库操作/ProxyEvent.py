@@ -7,6 +7,7 @@ from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
     SQLHelper,
     to_proxy_key,
 )
+from CONFIG import CONFIG
 from log.base_log import sql_log
 
 # 代理事件的两个副作用：
@@ -31,8 +32,8 @@ def _pool_proxy_key(proxy_tab: ProxyTab | None) -> str:
     return to_proxy_key(proxy_tab.proxy) or ""
 
 
-async def handle_proxy_succ(proxy_tab: ProxyTab | None):
-    """请求成功：分数 +10，status 归零，健康状态回到 hot 并清冷却。"""
+async def handle_proxy_succ(proxy_tab: ProxyTab | None, scope: str | None = None):
+    """请求成功：分数 +10，status 归零，健康状态回到 hot 并清该 scope 的冷却。"""
     if not proxy_tab:
         sql_log.warning("handle_proxy_succ called with None proxy_tab.")
         return
@@ -40,21 +41,24 @@ async def handle_proxy_succ(proxy_tab: ProxyTab | None):
     await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
     key = _pool_proxy_key(proxy_tab)
     if key:
-        await proxy_health_store.record_success(key)
+        await proxy_health_store.record_success(key, scope=scope)
 
 
 async def handle_proxy_352(
-    proxy_tab: ProxyTab | None, mark_db_invalid: bool = False
+    proxy_tab: ProxyTab | None,
+    mark_db_invalid: bool = False,
+    scope: str | None = None,
 ):
-    """-352（风控挑战）：按临时状态处理，健康侧按**前缀级**风控长冷却。
+    """-352（风控挑战）：按临时状态处理，健康侧按 **(scope, 前缀)** 风控长冷却。
 
     :param mark_db_invalid: 是否把 ``status=-352`` 写回 MySQL。
 
-        - ``False``（gRPC 通道默认）：352 是**出口风控**而不是「代理坏了」。
+        - ``False``（默认，gRPC / HTTP 都已对齐）：352 是**出口风控**而不是「代理坏了」。
           写回 MySQL 会让该代理永久不满足 ``status==0``（候选查询只取 0），
           几轮 352 就能把整个池子打空；这里只在 Redis 健康度上做前缀冷却
           （``ProxyFailureKind.RISK_CONTROL``），代理行本身保持可用。
-        - ``True``：沿用 HTTP 通道既有行为（412/352 都置 -352 并等 ``refresh_proxy`` 复位）。
+        - ``True``：沿用 HTTP 通道旧行为（412/352 都置 -352 并等 ``refresh_proxy`` 复位）。
+    :param scope: 风控域（如 ``grpc:dynamic``）；None = 全局桶（历史口径）。
     """
     if not proxy_tab:
         sql_log.warning("handle_proxy_352 called with None proxy_tab.")
@@ -64,29 +68,48 @@ async def handle_proxy_352(
         await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
     key = _pool_proxy_key(proxy_tab)
     if key:
-        await proxy_health_store.record_failure(key, ProxyFailureKind.RISK_CONTROL)
+        await proxy_health_store.record_failure(
+            key, ProxyFailureKind.RISK_CONTROL, scope=scope
+        )
 
 
-async def handle_proxy_412(proxy_tab: ProxyTab | None):
-    """-412（安全风控）：按**前缀**长冷却（2h→6h→24h），分数仍 +10（能返回 412 说明网络是通的）。
+async def handle_proxy_412(
+    proxy_tab: ProxyTab | None,
+    mark_db_invalid: bool | None = None,
+    scope: str | None = None,
+):
+    """-412（安全风控）：按 **(scope, 前缀)** 长冷却（2h→6h→24h）。
 
-    冷却记在 /64、/24 上：同段内换地址等于同一个 IP，换地址重试只会继续撞墙。
+    :param mark_db_invalid: 是否把 ``status=-412`` 写回 MySQL。默认取
+        ``CONFIG.proxy_health.risk_write_db_status``（默认 False）：412 是出口风控，
+        写 status 会让候选查询（``status==0``）在所有接口上一并剔除该代理 ——
+        这正是「一个接口风控 → 整条出口不可用」的第二层放大。
+    :param scope: 风控域；None = 全局桶（历史口径）。
     """
     if not proxy_tab:
         sql_log.warning("handle_proxy_412 called with None proxy_tab.")
         return
-    proxy_tab.status = -412
-    await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
+    if mark_db_invalid is None:
+        mark_db_invalid = bool(CONFIG.proxy_health.risk_write_db_status)
+    if mark_db_invalid:
+        proxy_tab.status = -412
+        await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=10)
     key = _pool_proxy_key(proxy_tab)
     if key:
-        await proxy_health_store.record_failure(key, ProxyFailureKind.RISK_CONTROL)
+        await proxy_health_store.record_failure(
+            key, ProxyFailureKind.RISK_CONTROL, scope=scope
+        )
 
 
 async def handle_proxy_request_fail(
     proxy_tab: ProxyTab | None,
     kind: ProxyFailureKind = ProxyFailureKind.NETWORK,
+    scope: str | None = None,
 ):
-    """请求失败（连接错误 / 超时 / 407）：分数 -10、连续失败 +1、10~30 分钟冷却。"""
+    """请求失败（连接错误 / 超时 / 407）：分数 -10、连续失败 +1、10~30 分钟冷却。
+
+    网络层冷却与风控域无关（``scope`` 只透传给健康状态机，网络层仍写全局前缀桶）。
+    """
     if not proxy_tab:
         sql_log.warning("handle_proxy_request_fail called with None proxy_tab.")
         return
@@ -94,7 +117,7 @@ async def handle_proxy_request_fail(
     await SQLHelper.update_to_proxy_list(proxy_tab, change_score_num=-10)
     key = _pool_proxy_key(proxy_tab)
     if key:
-        await proxy_health_store.record_failure(key, kind)
+        await proxy_health_store.record_failure(key, kind, scope=scope)
 
 
 async def handle_proxy_unknown_err(proxy_tab: ProxyTab | None):

@@ -168,6 +168,11 @@ class CrawlerBreakerConfig(BaseModel):
         description="半开探测名额的租约（秒）：协程被取消时不会回到记账分支，"
         "租约到期后强制归还名额，避免熔断器被永久卡在半开",
     )
+    window_max_samples: int = Field(
+        default=2000,
+        description="成功率窗口的硬上限（条）。稳态高 QPS 下窗口内样本可能远超时间窗口，"
+        "不设上限会让 snapshot 的成功率统计退化成 O(n²)（2026-11-17 事件循环卡顿 15s）",
+    )
     log_interval: float = Field(
         default=60.0, description="熔断期间进度日志的最小间隔（秒）"
     )
@@ -465,6 +470,63 @@ class ProxyHealthConfig(BaseModel):
     )
     prefix_risk_cooldown_max: int = Field(
         default=86400, description="412/352 第 3 级及以后的前缀冷却上限（秒）"
+    )
+    # ================= 风控域（risk scope）：前缀 × 接口维度 =================
+    # B 站各接口风控相互独立（web / gRPC 分开、topic / dynamic 分开）。历史实现只按
+    # 「出口前缀」记账，一个接口 -352 会把整条出口对所有接口一起冷却（2026-11-17 事故）。
+    # 映射表在此声明（通用机制：不在 Utils/代理/** 里硬编码任何站点域名 / 业务接口）。
+    # 匹配口径：对 url 的 path 做 fnmatch，命中即返回「通道:业务域」；顺序即优先级。
+    risk_scope_rules: list[tuple[str, str]] = Field(
+        default_factory=lambda: [
+            ("/x/topic*", "topic"),
+            ("/x/polymer/web-dynamic*", "dynamic"),
+            ("/bilibili.app.dynamic.v2.Dynamic/DynDetail", "dynamic"),
+            ("/bilibili.app.dynamic.v2.Dynamic/DynDetails", "dynamic"),
+            ("/bilibili.app.dynamic.v2.Dynamic/DynSpace", "dynamic"),
+        ],
+        description="(url path 模式, 业务域) 列表：用于把请求归并到「通道:业务域」风控域",
+    )
+    risk_scope_enforce: bool = Field(
+        default=True,
+        description="是否按 scope 维度记账 / 判定风控冷却。False = 回退历史全局桶（灰度回滚开关），"
+        "调用方未传 scope 时同样回退全局桶",
+    )
+    risk_scope_dual_write: bool = Field(
+        default=False,
+        description="双写开关：按 scope 记账时同时写一份全局桶，便于灰度关闭 enforce 后无缝回退",
+    )
+    risk_write_db_status: bool = Field(
+        default=False,
+        description="412 是否把 status=-412 写回 MySQL。False = 只写 Redis 健康度（与 gRPC -352 口径一致），"
+        "避免候选查询 status==0 把该代理在所有接口上一并剔除",
+    )
+    # ================= 单轮抓取的跨源去重（Redis SET） =================
+    # 58 万条去重集合整轮驻留进程内存 ≈ 90MB，并产生海量短命小对象撑大 pymalloc arena；
+    # 改为每轮一个 Redis SET（与 ProxyHealth 同库），轮末 DEL + TTL 兜底。
+    proxy_dedup_key_prefix: str = Field(
+        default="proxy_dedup",
+        description="单轮抓取去重 SET 的 key 前缀（实际 key = 前缀:轮次令牌）",
+    )
+    proxy_dedup_ttl_seconds: int = Field(
+        default=7200,
+        description="去重 SET 的 TTL（秒）：进程被杀时由 Redis 自动清理",
+    )
+    proxy_dedup_batch_size: int = Field(
+        default=2000,
+        description="写入去重 SET 的单批条数（pipeline 一次往返，禁止逐条 await）",
+    )
+    proxy_dedup_delete_batch: int = Field(
+        default=5000,
+        description="proxy_tab 去重时每个短事务最多删除的行数（分批 + LIMIT，避免长事务锁表）",
+    )
+    proxy_dedup_use_legacy_delete: bool = Field(
+        default=False,
+        description="是否使用旧的 ORM 全量去重实现（仅回滚对照；默认走 computed_proxy_str 分批删除）",
+    )
+    proxy_fetch_queue_batches: int = Field(
+        default=8,
+        description="抓取流水线队列最多缓存多少批（每批 proxy_dedup_batch_size 条）。"
+        "源站解析快于入库时用背压把内存压在「队列批次 + 在途批」以内，避免无界积压",
     )
     # ================= 自建 IPv6 出口（专线） =================
     # 它是「一条固定出口」而不是「可轮换的 IP 池」：不再伪造 score/success_times=10000，

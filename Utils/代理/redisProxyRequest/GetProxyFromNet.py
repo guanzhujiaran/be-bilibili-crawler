@@ -10,9 +10,11 @@ import time
 from collections.abc import Sequence
 from datetime import datetime
 from typing import AsyncGenerator, Literal
+from uuid import uuid4
 
 import bs4
 import curl_cffi.requests.exceptions
+import redis.asyncio as aioredis
 from pydantic import BaseModel, Field
 
 from CONFIG import CONFIG, settings
@@ -608,6 +610,135 @@ def parse_proxy_lines(
         if proxy_dict := format_proxy(proxy_text, protocol=protocol):
             proxies.append(proxy_dict)
     return proxies
+
+
+class _RoundDeduper:
+    """单轮抓取的跨源去重：优先 Redis SET，Redis 不可用时降级为内存 set。
+
+    为什么要移出进程内存：一轮抓取去重后可达 58 万条，``set[str]`` 常驻 ≈ 90MB，
+    且逐条 add 产生海量短命小对象，撑大 pymalloc arena（线上常驻 1.2~1.3GiB 的主因之一）。
+
+    - key：``{proxy_dedup_key_prefix}:{round_id}``，轮末 ``DEL``，并带 TTL 兜底进程被杀；
+    - 每批一次 pipeline ``SADD``（``SADD`` 返回 1 表示本轮首次出现），
+      只把新增成员对应的 dict 继续入库；
+    - 统计走 ``SCARD``，不把成员读回内存。
+    """
+
+    def __init__(self) -> None:
+        cfg = CONFIG.proxy_health
+        round_id = f"{int(time.time())}-{uuid4().hex[:8]}"
+        self.key = f"{cfg.proxy_dedup_key_prefix}:{round_id}"
+        self._ttl = max(60, int(cfg.proxy_dedup_ttl_seconds))
+        self._batch_size = max(1, int(cfg.proxy_dedup_batch_size))
+        self._pool: aioredis.ConnectionPool | None = None
+        self._client: aioredis.Redis | None = None
+        # None = Redis 模式；set = 已降级为内存去重
+        self._fallback: set[str] | None = None
+        self._redis_added = 0
+        self._warned = False
+
+    @property
+    def using_fallback(self) -> bool:
+        return self._fallback is not None
+
+    @property
+    def seen_so_far(self) -> int:
+        return self._redis_added + len(self._fallback or ())
+
+    def _get_client(self) -> aioredis.Redis:
+        if self._client is None:
+            redis_cfg = CONFIG.database.proxyRedis
+            cfg = CONFIG.proxy_health
+            self._pool = aioredis.ConnectionPool.from_url(
+                url=(
+                    f"redis://:{redis_cfg.pwd}@{redis_cfg.host}:{redis_cfg.port}"
+                    f"/{redis_cfg.db}?decode_responses=True"
+                ),
+                max_connections=8,
+                socket_timeout=cfg.redis_timeout,
+                socket_connect_timeout=cfg.redis_timeout,
+            )
+            self._client = aioredis.Redis(connection_pool=self._pool)
+        return self._client
+
+    @staticmethod
+    def _key_of(proxy_dict: dict) -> str:
+        """去重键口径必须与 ``computed_proxy_str`` 一致（代理 JSON 第一个 value）。"""
+        if not proxy_dict:
+            return ""
+        return str(list(proxy_dict.values())[0] or "")
+
+    def _fallback_filter(self, proxies: list[dict]) -> list[dict]:
+        if self._fallback is None:
+            self._fallback = set()
+        return GetProxyMethods._dedup_batch(proxies, self._fallback)
+
+    def _degrade(self, err: BaseException) -> None:
+        if not self._warned:
+            self._warned = True
+            sql_log.warning(
+                f"代理去重 Redis 不可用，本轮降级为内存去重（抓取不中断）："
+                f"{type(err).__name__} {err}"
+            )
+
+    async def filter_batch(self, proxies: list[dict]) -> list[dict]:
+        """返回本批中「本轮首次出现」的代理 dict（保持原顺序）。"""
+        if not proxies:
+            return []
+        if self._fallback is not None:
+            return self._fallback_filter(proxies)
+        valid = [item for item in proxies if item and self._key_of(item)]
+        if not valid:
+            return []
+        kept: list[dict] = []
+        try:
+            client = self._get_client()
+            for start in range(0, len(valid), self._batch_size):
+                chunk = valid[start : start + self._batch_size]
+                async with client.pipeline(transaction=False) as pipe:
+                    for item in chunk:
+                        pipe.sadd(self.key, self._key_of(item))
+                    pipe.expire(self.key, self._ttl)
+                    results = await pipe.execute()
+                added_flags = results[:-1]
+                for item, added in zip(chunk, added_flags):
+                    if int(added or 0) == 1:
+                        kept.append(item)
+                        self._redis_added += 1
+            return kept
+        except Exception as e:  # noqa: BLE001 Redis 故障必须降级，不能让抓取中断
+            self._degrade(e)
+            return self._fallback_filter(valid)
+
+    async def count(self) -> int:
+        """本轮去重后的累计条数（Redis 用 SCARD，不读回成员）。"""
+        if self._fallback is not None:
+            return self.seen_so_far
+        try:
+            return int(await self._get_client().scard(self.key) or 0)
+        except Exception as e:  # noqa: BLE001
+            self._degrade(e)
+            return self.seen_so_far
+
+    async def close(self) -> None:
+        """轮末删除去重 key 并释放连接（TTL 兜底进程被杀的情况）。"""
+        if self._client is not None and self._fallback is None:
+            try:
+                await self._client.delete(self.key)
+            except Exception as e:  # noqa: BLE001 清理失败不阻断抓取
+                sql_log.debug(f"删除代理去重 key 失败（将由 TTL 清理）：{e!r}")
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            self._client = None
+        if self._pool is not None:
+            try:
+                await self._pool.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+            self._pool = None
 
 
 class GetProxyMethods:
@@ -2470,7 +2601,9 @@ class GetProxyMethods:
         funcs = inspect.getmembers(
             get_proxy_methods, predicate=inspect.isasyncgenfunction
         )
-        queue: asyncio.Queue[list[dict] | None] = asyncio.Queue()
+        queue: asyncio.Queue[list[dict] | None] = asyncio.Queue(
+            maxsize=max(1, int(CONFIG.proxy_health.proxy_fetch_queue_batches))
+        )
         semaphore = asyncio.Semaphore(_SOURCE_CONCURRENCY)
         tasks = [
             asyncio.create_task(self._pump_source(fn, queue, semaphore))
@@ -2478,32 +2611,39 @@ class GetProxyMethods:
             if name.startswith("get_proxy_from")
         ]
         # 边下边解析边入库：每个源按批塞进队列，处理完一批即释放，
-        # 内存峰值 = 一批（2000 条）+ 去重集合，与源文件大小无关。
-        seen: set[str] = set()
+        # 内存峰值 = 一批（2000 条）+ 单轮去重集合（现放 Redis，不再常驻进程）。
+        deduper = _RoundDeduper()
         finished = 0
-        while finished < len(tasks):
-            batch = await queue.get()
-            if batch is None:
-                finished += 1
-                if finished % 20 == 0:
-                    self.log.info(
-                        f"代理抓取进度 {finished}/{len(tasks)}："
-                        f"去重后累计 {len(seen)} 条，已入库 {self._round_stats.inserted} 条"
-                    )
-                continue
-            self._round_stats.raw_total += len(batch)
-            # 跨源 seen 集合只有这里一个消费者，串行 await 保证不会并发写
-            deduped = await asyncio.to_thread(self._dedup_batch, batch, seen)
-            if deduped:
-                await self._ingest_proxies(deduped)
-        self._round_stats.dedup_total = len(seen)
+        try:
+            while finished < len(tasks):
+                batch = await queue.get()
+                if batch is None:
+                    finished += 1
+                    if finished % 20 == 0:
+                        self.log.info(
+                            f"代理抓取进度 {finished}/{len(tasks)}："
+                            f"去重后累计 {deduper.seen_so_far} 条，"
+                            f"已入库 {self._round_stats.inserted} 条"
+                        )
+                    continue
+                self._round_stats.raw_total += len(batch)
+                # 跨源去重：Redis pipeline 单批一次往返；Redis 故障自动降级内存实现。
+                deduped = await deduper.filter_batch(batch)
+                if deduped:
+                    await self._ingest_proxies(deduped)
+            dedup_total = await deduper.count()
+        finally:
+            # 轮末删 key（TTL 兜底进程被杀），并释放独立连接池
+            await deduper.close()
+        self._round_stats.dedup_total = dedup_total
         self.proxy_list = []
-        if not seen:
+        if dedup_total <= 0:
             self.log.warning("警告：未能获取到任何代理，proxy_list为空")
         else:
             self.log.info(
-                f"本轮去重后共 {len(seen)} 个代理，已边收边存完成"
+                f"本轮去重后共 {dedup_total} 个代理，已边收边存完成"
                 f"（新增 {self._round_stats.inserted} / 已存在 {self._round_stats.existed}）"
+                f"{'（Redis 不可用，本轮为内存去重）' if deduper.using_fallback else ''}"
             )
 
     @staticmethod

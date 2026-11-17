@@ -115,3 +115,9 @@ class RequestConf(CustomBaseModel):
     retry_policy: RequestRetryPolicy | None = Field(
         default=None, description="显式覆盖重试预算；None = 按 tier 取 CONFIG.proxy_retry"
     )
+    risk_scope: str | None = Field(
+        default=None,
+        description="本次请求的风控域（如 web:topic / grpc:dynamic）。None = 按 url 自动推导；"
+        "显式 '*' 表示沿用历史全局桶。scope 只影响风控冷却维度，"
+        "网络层冷却 / 在途并发 / EWMA 仍按出口前缀与地址维度",
+    )

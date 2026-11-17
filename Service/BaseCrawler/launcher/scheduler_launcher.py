@@ -28,7 +28,10 @@ from dao.commStorageRedisObj import comm_storage_redis_obj
 class CrawlerExecutionInfoModel(CustomBaseModel):
     crawler_name: str
     default_interval_seconds: int
+    #: 上一次**成功**执行结束时间（兼容历史 Redis key）
     last_exec_time: datetime | None = None
+    #: 上一次**尝试**执行时间（无论成功 / 失败 / 被 cancel 都更新）
+    last_attempt_time: datetime | None = None
 
 
 class CrawlerExecutionInfo:
@@ -46,6 +49,9 @@ class CrawlerExecutionInfo:
             default_interval_seconds=default_interval_seconds,
         )
         self._exec_info_redis_key = f"{self.info.crawler_name}_last_exec_time.txt"
+        self._attempt_info_redis_key = (
+            f"{self.info.crawler_name}_last_attempt_time.txt"
+        )
 
     async def load_last_exec_time(self):
         if self.info.last_exec_time is None:
@@ -62,6 +68,14 @@ class CrawlerExecutionInfo:
                 self.info.last_exec_time = datetime.fromtimestamp(
                     86400
                 )  # 默认时间点：1970-01-02 00:00:00
+        if self.info.last_attempt_time is None:
+            ts_str = await comm_storage_redis_obj.get_val(self._attempt_info_redis_key)
+            if ts_str:
+                self.info.last_attempt_time = datetime.fromtimestamp(float(ts_str))
+                self.logger.info(
+                    f"[{self.info.crawler_name}] 加载上次尝试时间："
+                    f"{self.info.last_attempt_time}"
+                )
 
     async def save_last_exec_time(self):
         now = datetime.now()
@@ -70,22 +84,44 @@ class CrawlerExecutionInfo:
             self._exec_info_redis_key, str(now.timestamp())
         )
 
+    async def save_last_attempt_time(self):
+        """记录「本轮已尝试」时间：失败 / 被 cancel 也要更新。
+
+        否则失败轮永远不推进 last_exec_time，``is_need_to_execute`` 恒为真，
+        任何一次触发都会立刻开跑（线上出现「跑完一轮立刻又开新一轮」）。
+        """
+        now = datetime.now()
+        self.info.last_attempt_time = now
+        await comm_storage_redis_obj.set_val(
+            self._attempt_info_redis_key, str(now.timestamp())
+        )
+
     async def is_need_to_execute(self) -> bool:
-        """判断是否需要执行爬虫"""
+        """判断是否需要执行爬虫（按「上次尝试时间」与「上次成功时间」的较大者节流）。"""
         await self.load_last_exec_time()
-        if self.info.last_exec_time is None:
+        reference = max(
+            (
+                item
+                for item in (self.info.last_exec_time, self.info.last_attempt_time)
+                if item is not None
+            ),
+            default=None,
+        )
+        if reference is None:
             self.logger.info(
                 f"[{self.info.crawler_name}] 上次执行时间为空，将执行一次。"
             )
             return True
         now = datetime.now()
-        delta = (now - self.info.last_exec_time).total_seconds()
+        delta = (now - reference).total_seconds()
         if delta >= self.info.default_interval_seconds:
-            self.logger.info(f"[{self.info.crawler_name}] 满足执行条件，delta={delta}s")
+            self.logger.info(
+                f"[{self.info.crawler_name}] 满足执行条件，delta={delta:.0f}s"
+            )
             return True
         else:
             self.logger.info(
-                f"[{self.info.crawler_name}] 不满足执行条件，delta={delta}s"
+                f"[{self.info.crawler_name}] 不满足执行条件，delta={delta:.0f}s"
             )
             return False
 
@@ -305,6 +341,13 @@ class BaseScheduler:
         """
         crawler_name = self.exec_info.info.crawler_name
         start_ts = time.time()
+        # 先记录「已尝试」：失败 / 被 cancel 也推进节流基准，避免 is_need_to_execute 恒为真
+        try:
+            await self.exec_info.save_last_attempt_time()
+        except Exception as e:  # noqa: BLE001 记录失败不能阻断本轮执行
+            self.logger.warning(
+                f"[{crawler_name}] 记录 last_attempt_time 失败：{e}"
+            )
         await self._push_stage(
             crawler_name, "start", f"开始时间：{datetime.now():%Y-%m-%d %H:%M:%S}"
         )

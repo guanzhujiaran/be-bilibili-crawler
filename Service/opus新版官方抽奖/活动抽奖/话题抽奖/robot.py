@@ -271,18 +271,26 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
 
     async def main(self, start_topic_id=0):
         try:
-            # 先取「上一轮没写成功」的话题 id：它们在任务生成器之前入队
+            # 先取「上一轮没写成功」的话题 id：它们在任务生成器之前入队。
+            # 没有待补任务时**不再空跑一轮**（历史实现固定连跑两次 run()，第一轮
+            # 刚结束立刻开第二轮，把上一轮的失败任务反复重排）。
             retry_params = await self.load_retry_params()
             self.get_failed_topic_ids = await self.sql.get_recent_failed_topic_id(
                 self._max_stop_count + self.sem_limit + 5000
             )
-            await self.run(
-                TopicParams(topic_id=self.get_failed_topic_ids[0]),
-                pre_params=retry_params,
-            )
+            if retry_params or self.get_failed_topic_ids:
+                seed_topic_id = (
+                    self.get_failed_topic_ids[0] if self.get_failed_topic_ids else 0
+                )
+                await self.run(
+                    TopicParams(topic_id=seed_topic_id),
+                    pre_params=retry_params,
+                )
+                self.has_get_failed_topic_ids = True  # 获取失败的话题完成
+                self._cur_stop_times = 0
+            else:
+                self.log.info("没有上一轮待补跑的话题，跳过补跑轮")
 
-            self.has_get_failed_topic_ids = True  # 获取失败的话题完成
-            self._cur_stop_times = 0
             if start_topic_id:
                 self.start_topic_id = start_topic_id
             else:

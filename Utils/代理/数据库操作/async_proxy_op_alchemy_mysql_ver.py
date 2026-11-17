@@ -125,19 +125,73 @@ def is_local_ipv6_proxy(proxy_key: str) -> bool:
 class ProxyPickResult:
     """一次「按档位挑代理」的结果 + 诊断信息。
 
-    ``blocked_by_prefix`` 是本次候选里因「前缀冷却 / 在途打满 / 本任务已失败」被跳过的
-    条数：占比高说明**可用网段**被压没了（线上 fast 空池的主因），上层据此扩大采样重抽。
+    ``blocked_by_prefix`` 是本次候选里因「前缀冷却 / 在途打满」被跳过的条数，
+    ``task_excluded`` 是因「本任务内已失败」被跳过的条数：两者合计占比高说明
+    **不是池子没货**，而是可用网段 / 本任务排除把候选压没了，上层据此扩大采样重抽。
     """
 
     proxy: ProxyTab | None
     candidates: int = 0
     blocked_by_prefix: int = 0
+    task_excluded: int = 0
+    gate_blocked: int = 0
     #: fast 档降级到了哪一级：""（未降级）/ "warm" / "cold"
     fallback_stage: str = ""
 
     @property
+    def blocked_ratio(self) -> float:
+        if not self.candidates:
+            return 0.0
+        return (self.blocked_by_prefix + self.task_excluded) / self.candidates
+
+    @property
     def prefix_blocked_ratio(self) -> float:
-        return (self.blocked_by_prefix / self.candidates) if self.candidates else 0.0
+        return self.blocked_ratio
+
+
+@dataclass
+class SelectionStats:
+    """一次取代理的全链路诊断计数（供异常文案与扩样判定共用）。"""
+
+    tier: str = ""
+    candidates: int = 0
+    task_excluded: int = 0
+    prefix_blocked: int = 0
+    gate_blocked: int = 0
+    expanded: bool = False
+    db_scanned: int = 0
+    verified_samples: int = 0
+
+    @property
+    def blocked_ratio(self) -> float:
+        if not self.candidates:
+            return 0.0
+        return (self.task_excluded + self.prefix_blocked) / self.candidates
+
+    def absorb(self, result: ProxyPickResult) -> None:
+        """合并一次候选批的挑取结果（多轮采样时累加）。"""
+        self.candidates += result.candidates
+        self.task_excluded += result.task_excluded
+        self.prefix_blocked += result.blocked_by_prefix
+        self.gate_blocked += result.gate_blocked
+
+    def merge(self, other: "SelectionStats") -> None:
+        """合并另一份诊断（已验证取样 / DB 采样两条路径共用一份统计）。"""
+        self.candidates += other.candidates
+        self.task_excluded += other.task_excluded
+        self.prefix_blocked += other.prefix_blocked
+        self.gate_blocked += other.gate_blocked
+        self.verified_samples += other.verified_samples
+        self.db_scanned += other.db_scanned
+        self.expanded = self.expanded or other.expanded
+
+    def to_log_str(self) -> str:
+        return (
+            f"tier={self.tier} 候选={self.candidates} "
+            f"fast闸门={self.gate_blocked} 段冷却={self.prefix_blocked} "
+            f"本任务排除={self.task_excluded} 扩大采样={'是' if self.expanded else '否'} "
+            f"已验证取样={self.verified_samples} 扫描行={self.db_scanned}"
+        )
 
 
 class SQLHelperClass(SqlHelperBase):
@@ -357,10 +411,11 @@ class SQLHelperClass(SqlHelperBase):
         rows: list[ProxyTab],
         tier: ProxyTier,
         exclude_prefixes: frozenset[str] = frozenset(),
+        exclude_keys: frozenset[str] | set[str] = frozenset(),
     ) -> ProxyTab | None:
         """``_pick_proxy_by_tier_detailed`` 的简版（只返回代理，供测试 / 老调用点使用）。"""
         result = await self._pick_proxy_by_tier_detailed(
-            rows, tier, exclude_prefixes=exclude_prefixes
+            rows, tier, exclude_prefixes=exclude_prefixes, exclude_keys=exclude_keys
         )
         return result.proxy
 
@@ -369,11 +424,15 @@ class SQLHelperClass(SqlHelperBase):
         rows: list[ProxyTab],
         tier: ProxyTier,
         exclude_prefixes: frozenset[str] = frozenset(),
+        exclude_keys: frozenset[str] | set[str] = frozenset(),
     ) -> ProxyPickResult:
         """在一批候选行里按档位挑一条，并返回诊断信息。
 
         - **前缀闸门（先过）**：fast 档看「同 /64、/24 冷却 / 在途打满」；
           slow 档只排除「本任务已失败过的网段」（段级冷却/在途只记账）；
+        - ``exclude_keys``：本任务内已失败的代理串。**必须在这里计数**而不是在
+          查询前提前过滤，否则 ``candidates`` / 扩样比例会把它们算丢
+          （线上 fast 空池时「候选全被排除」却永远触发不了扩样）；
         - ``fast``：优先「未冷却 + EWMA 达标 + 在途未打满」；取不到时**分级降级**
           （warm → cold 探测），而不是直接抛「没有可用代理」——
           线上 24h 里 176 次 fast 空池，绝大多数是「自建出口 -352 冷却 + 可用网段被
@@ -398,7 +457,13 @@ class SQLHelperClass(SqlHelperBase):
 
         scored: list[tuple[ProxyTab, str, ProxyHealthRecord, int]] = []
         blocked_by_prefix = 0
+        task_excluded = 0
         for row, key, prefix in zip(rows, keys, prefixes):
+            if key and key in exclude_keys:
+                # 先判任务级排除：它的前缀通常也在 exclude_prefixes 里，
+                # 反过来判会把「本任务排除」误记成「段冷却」。
+                task_excluded += 1
+                continue
             if not snapshot.prefix_allows(
                 prefix, now, enforce_health=enforce_prefix_health
             ):
@@ -408,10 +473,10 @@ class SQLHelperClass(SqlHelperBase):
                 row.success_times, row.score
             )
             scored.append((row, key, record, snapshot.address_in_flight.get(key)))
-        if blocked_by_prefix:
+        if blocked_by_prefix or task_excluded:
             sql_log.debug(
-                f"本次候选 {blocked_by_prefix}/{len(rows)} 条因前缀冷却 / 在途打满 / "
-                f"本任务已失败被跳过（tier={tier.value}）"
+                f"本次候选 {len(rows)} 条：段冷却 / 在途挡掉 {blocked_by_prefix} 条、"
+                f"本任务已失败排除 {task_excluded} 条（tier={tier.value}）"
             )
 
         if tier is ProxyTier.FAST:
@@ -420,11 +485,14 @@ class SQLHelperClass(SqlHelperBase):
                 for item in scored
                 if proxy_health_store.is_fast_eligible(item[2], item[3], now)
             ]
+            gate_blocked = len(scored) - len(fast_candidates)
             if fast_candidates:
                 return ProxyPickResult(
                     proxy=random.choice(fast_candidates)[0],
                     candidates=len(rows),
                     blocked_by_prefix=blocked_by_prefix,
+                    task_excluded=task_excluded,
+                    gate_blocked=gate_blocked,
                 )
             degraded = self._fast_degrade(scored, now)
             if degraded is not None:
@@ -433,17 +501,21 @@ class SQLHelperClass(SqlHelperBase):
                     proxy=proxy,
                     candidates=len(rows),
                     blocked_by_prefix=blocked_by_prefix,
+                    task_excluded=task_excluded,
+                    gate_blocked=gate_blocked,
                     fallback_stage=stage,
                 )
             sql_log.debug(
                 f"fast 档本次候选 {len(rows)} 条均不达标"
                 f"（需 ewma>={cfg.fast_min_ewma}、未冷却、在途<{cfg.fast_max_in_flight}；"
-                f"warm/cold 兜底也未命中）"
+                f"warm/cold 兜底也未命中；fast 闸门挡掉 {gate_blocked} 条）"
             )
             return ProxyPickResult(
                 proxy=None,
                 candidates=len(rows),
                 blocked_by_prefix=blocked_by_prefix,
+                task_excluded=task_excluded,
+                gate_blocked=gate_blocked,
             )
 
         # slow 档（默认口径 = 老版本 select_proxy("rand")）：status 可用就用。
@@ -476,6 +548,7 @@ class SQLHelperClass(SqlHelperBase):
                 proxy=None,
                 candidates=len(rows),
                 blocked_by_prefix=blocked_by_prefix,
+                task_excluded=task_excluded,
             )
         # 探测抽签：按比例放行 cold（完全没记录）/ suspect，用来把新代理「养」成 hot
         if random.random() < cfg.cold_probe_ratio:
@@ -494,6 +567,7 @@ class SQLHelperClass(SqlHelperBase):
                     proxy=random.choice(probes)[0],
                     candidates=len(rows),
                     blocked_by_prefix=blocked_by_prefix,
+                    task_excluded=task_excluded,
                     fallback_stage="cold",
                 )
         hot = [item for item in usable if item[2].state is ProxyHealthState.HOT]
@@ -502,6 +576,7 @@ class SQLHelperClass(SqlHelperBase):
                 proxy=random.choice(hot)[0],
                 candidates=len(rows),
                 blocked_by_prefix=blocked_by_prefix,
+                task_excluded=task_excluded,
             )
         warm = [item for item in usable if item[2].state is ProxyHealthState.WARM]
         if warm:
@@ -509,12 +584,14 @@ class SQLHelperClass(SqlHelperBase):
                 proxy=random.choice(warm)[0],
                 candidates=len(rows),
                 blocked_by_prefix=blocked_by_prefix,
+                task_excluded=task_excluded,
                 fallback_stage="warm",
             )
         return ProxyPickResult(
             proxy=random.choice(usable)[0],
             candidates=len(rows),
             blocked_by_prefix=blocked_by_prefix,
+            task_excluded=task_excluded,
             fallback_stage="cold",
         )
 
@@ -564,24 +641,33 @@ class SQLHelperClass(SqlHelperBase):
         tier: ProxyTier = ProxyTier.FAST,
         exclude: frozenset[str] | set[str] | None = None,
     ) -> ProxyTab | None:
-        """按档位从 MySQL 随机取一条可用代理（随机主键起点，禁止 ORDER BY / 全表扫）。
+        """按档位从 MySQL 随机取一条可用代理（只返回代理，兼容老调用点）。"""
+        proxy, _ = await self.select_random_proxy_detailed(tier=tier, exclude=exclude)
+        return proxy
+
+    async def select_random_proxy_detailed(
+        self,
+        tier: ProxyTier = ProxyTier.FAST,
+        exclude: frozenset[str] | set[str] | None = None,
+    ) -> tuple[ProxyTab | None, SelectionStats]:
+        """按档位从 MySQL 随机取一条可用代理，并返回**全链路诊断计数**。
 
         :param tier: ``slow``（爬虫默认车道）口径对齐老版本 ``select_proxy("rand")``：
             随机取一条 status 可用的就用。地址冷却优先规避、但全在冷却时回退（不空池），
             EWMA / 段级冷却 / 段级在途 / dead 只记账与排序
-            （见 ``ProxyHealthConfig.slow_skip_*``），取不到只剩「池子真空 / 候选全被
-            本任务失败前缀排除」两种可能；``fast`` 保持严格准入（EWMA + 冷却 + 在途）。
+            （见 ``ProxyHealthConfig.slow_skip_*``）；``fast`` 保持严格准入
+            （EWMA + 冷却 + 在途）。
         :param exclude: 本次任务已失败的代理串（换代理用）。这里会**按其前缀归并**：
             同 /64、/24 内换地址不重试（风控按段聚合）。两个档位都会排除它。
 
-        随机点落在最后一条可用行之后会取空，此时最后一次尝试回退到「从头取」，
-        保证有结果；取到的行在 id 上略有偏差（空洞后面的行更容易被选中），
-        但 id 与代理质量无关。
+        ``SelectionStats`` 里分别记录「本任务排除 / 段冷却 / fast 闸门」挡掉的条数：
+        任务级排除**不再在查询前提前过滤**，否则会从 ``candidates`` 与扩样比例里消失。
         """
         min_id, max_id = await self._get_proxy_id_range()
-        if max_id <= 0:
-            return None
         cfg = CONFIG.proxy_health
+        stats = SelectionStats(tier=tier.value)
+        if max_id <= 0:
+            return None, stats
         excluded = exclude or frozenset()
         # 失败代理 → 失败前缀：同段内换地址对风控没有意义，整段跳过
         excluded_prefixes = frozenset(
@@ -594,76 +680,116 @@ class SQLHelperClass(SqlHelperBase):
         # 代理池 68 万行里已验证的只有几千条，随机主键起点几乎抽不到（实测 80 次中 1 次），
         # 不先从这里取，就等于「名义上优先好代理、实际全用冷代理」。
         if tier is ProxyTier.FAST or random.random() >= cfg.cold_probe_ratio:
-            verified = await self._pick_from_verified_pool(
+            verified, vstats = await self._pick_from_verified_pool_detailed(
                 tier, excluded, excluded_prefixes
             )
+            stats.merge(vstats)
             if verified is not None:
-                return verified
+                return verified, stats
+            # 8 条已验证取样全被挡 → 允许扩样一次（否则 fast 空池只能等下一轮）
+            if (
+                tier is ProxyTier.FAST
+                and vstats.candidates > 0
+                and vstats.blocked_ratio >= cfg.prefix_block_expand_ratio
+                and vstats.candidates < cfg.candidate_batch_max
+            ):
+                expanded_size = min(
+                    cfg.candidate_batch_max,
+                    max(cfg.verified_sample * 2, vstats.candidates * 2),
+                )
+                verified, v2 = await self._pick_from_verified_pool_detailed(
+                    tier, excluded, excluded_prefixes, sample_size=expanded_size
+                )
+                v2.expanded = True
+                stats.merge(v2)
+                sql_log.debug(
+                    f"已验证取样 {vstats.candidates} 条全部被挡"
+                    f"（段冷却 {vstats.prefix_blocked} / 本任务排除 {vstats.task_excluded}），"
+                    f"扩大取样到 {expanded_size} 条"
+                )
+                if verified is not None:
+                    return verified, stats
 
         fetched_any = False
-        # 自适应采样：当候选里「被前缀冷却 / 在途打满」挡掉的比例很高时，
-        # 说明不是池子没货，而是**可用网段**被压没了（线上 fast 176 次空池的主因：
-        # 地址级 hot=1959 但 73 个网段在冷却）。此时把候选批翻倍、轮次 +1 再抽，
-        # 而不是直接判定「无合格代理」。
+        # 自适应采样：当候选里「被前缀冷却 / 在途打满 / 本任务排除」挡掉的比例很高时，
+        # 说明不是池子没货，而是**可用网段 / 本任务排除**把候选压没了。
+        # 此时把候选批翻倍、轮次 +1 再抽，而不是直接判定「无合格代理」。
         attempts_left = attempts
         current_batch = batch
-        expanded = False
         while attempts_left > 0:
             attempts_left -= 1
             # 每次都从随机主键起点取一批：健康状态在 Redis，单条太容易筛空
             start_id = random.randint(min_id, max_id)
             rows = await self._select_candidate_rows(start_id, current_batch)
-            if excluded:
-                rows = [
-                    row for row in rows if self._proxy_key_of(row) not in excluded
-                ]
+            stats.db_scanned += len(rows)
             if rows:
                 fetched_any = True
             result = await self._pick_proxy_by_tier_detailed(
-                rows, tier, exclude_prefixes=excluded_prefixes
+                rows,
+                tier,
+                exclude_prefixes=excluded_prefixes,
+                exclude_keys=excluded,
             )
+            stats.absorb(result)
             if result.proxy is not None:
-                return result.proxy
+                return result.proxy, stats
             if (
-                not expanded
+                not stats.expanded
                 and tier is ProxyTier.FAST
                 and current_batch < cfg.candidate_batch_max
                 and result.candidates > 0
-                and result.prefix_blocked_ratio >= cfg.prefix_block_expand_ratio
+                and result.blocked_ratio >= cfg.prefix_block_expand_ratio
             ):
-                expanded = True
+                stats.expanded = True
                 current_batch = min(cfg.candidate_batch_max, current_batch * 2)
                 attempts_left = max(attempts_left, 1)
                 sql_log.debug(
-                    f"fast 候选 {result.blocked_by_prefix}/{result.candidates} 条被前缀"
-                    f"冷却挡掉（比例 {result.prefix_blocked_ratio:.0%}），"
+                    f"fast 候选 {result.candidates} 条中段冷却 {result.blocked_by_prefix} 条 / "
+                    f"本任务排除 {result.task_excluded} 条"
+                    f"（比例 {result.blocked_ratio:.0%}），"
                     f"扩大采样到 {current_batch} 条重抽"
                 )
         if not fetched_any:
             # 所有随机起点都落在「末段空洞」（id 已被删干净）之后的兜底：从头取一批
             rows = await self._select_candidate_rows(min_id, max(current_batch, batch))
-            if excluded:
-                rows = [
-                    row for row in rows if self._proxy_key_of(row) not in excluded
-                ]
-            proxy_tab = await self._pick_proxy_by_tier(
-                rows, tier, exclude_prefixes=excluded_prefixes
+            stats.db_scanned += len(rows)
+            result = await self._pick_proxy_by_tier_detailed(
+                rows,
+                tier,
+                exclude_prefixes=excluded_prefixes,
+                exclude_keys=excluded,
             )
-            if proxy_tab is not None:
-                return proxy_tab
+            stats.absorb(result)
+            if result.proxy is not None:
+                return result.proxy, stats
         if tier is ProxyTier.FAST:
             # fast 档取不到：可能是 Redis 刚清空（还没播种）。懒触发一次播种，
             # 这样即使调度器没跑（开发环境 IS_DEV=1），fast 车道也不会长期空池。
             self._ensure_health_bootstrapped()
-        return None
+        sql_log.debug(f"本次未取到代理：{stats.to_log_str()}")
+        return None, stats
 
     async def _pick_from_verified_pool(
         self,
         tier: ProxyTier,
         exclude: frozenset[str] | set[str],
         exclude_prefixes: frozenset[str] = frozenset(),
+        sample_size: int | None = None,
     ) -> ProxyTab | None:
-        """从「已验证分档」（hot → warm）里取样，取到就返回，取不到返回 None。
+        """兼容老调用点：只返回代理。"""
+        proxy, _ = await self._pick_from_verified_pool_detailed(
+            tier, exclude, exclude_prefixes, sample_size=sample_size
+        )
+        return proxy
+
+    async def _pick_from_verified_pool_detailed(
+        self,
+        tier: ProxyTier,
+        exclude: frozenset[str] | set[str],
+        exclude_prefixes: frozenset[str] = frozenset(),
+        sample_size: int | None = None,
+    ) -> tuple[ProxyTab | None, SelectionStats]:
+        """从「已验证分档」（hot → warm）里取样，并返回诊断计数。
 
         为什么不能只靠随机主键起点：已验证代理只占池子的极小比例（实测几千 / 68 万），
         32 行候选里出现一条的概率约 0.4%，相当于「名义上优先、实际上全用冷代理」。
@@ -679,15 +805,21 @@ class SQLHelperClass(SqlHelperBase):
         slow 档默认只排除「本任务内失败过的网段」，与老版本口径一致。
         """
         cfg = CONFIG.proxy_health
+        stats = SelectionStats(tier=tier.value)
         enforce_prefix_health = (
             tier is ProxyTier.FAST or cfg.slow_skip_cooled_prefix
         )
         states = (ProxyHealthState.HOT, ProxyHealthState.WARM)
-        keys = await proxy_health_store.sample_state_keys(states, max(1, cfg.verified_sample))
-        if exclude:
-            keys = [key for key in keys if key not in exclude]
+        sample_count = max(1, int(sample_size or cfg.verified_sample))
+        raw_keys = await proxy_health_store.sample_state_keys(states, sample_count)
+        stats.candidates = len(raw_keys)
+        stats.verified_samples = len(raw_keys)
+        if not raw_keys:
+            return None, stats
+        keys = [key for key in raw_keys if key not in exclude]
+        stats.task_excluded = len(raw_keys) - len(keys)
         if not keys:
-            return None
+            return None, stats
 
         prefixes = [proxy_prefix_of(key) for key in keys]
         snapshot = await proxy_health_store.read_selection_state(
@@ -706,11 +838,13 @@ class SQLHelperClass(SqlHelperBase):
             if not snapshot.prefix_allows(
                 prefix, now, enforce_health=enforce_prefix_health
             ):
+                stats.prefix_blocked += 1
                 continue
             if tier is ProxyTier.FAST:
                 if not proxy_health_store.is_fast_eligible(
                     record, snapshot.address_in_flight.get(key), now
                 ):
+                    stats.gate_blocked += 1
                     continue
             elif cfg.slow_skip_cooled_address and not proxy_health_store.is_slow_eligible(
                 record, now
@@ -730,7 +864,7 @@ class SQLHelperClass(SqlHelperBase):
                 f"{len(candidates)} 条最快解冻的候选"
             )
         if not candidates:
-            return None
+            return None, stats
 
         # 同档内按 EWMA 加权：成功率越高的越先被抽到，但不会把流量全压在少数几条上
         chosen_pool = [c for c in candidates if c[1].state is ProxyHealthState.HOT]
@@ -746,8 +880,8 @@ class SQLHelperClass(SqlHelperBase):
         if row is None:
             # 这一条在 MySQL 里已经不可用（被删 / 被置黑）：摘掉并让上层继续找
             await proxy_health_store.forget_state(chosen_key)
-            return None
-        return row
+            return None, stats
+        return row, stats
 
     def _ensure_health_bootstrapped(self) -> None:
         """首次需要时触发一次健康状态播种（后台任务，不阻塞请求）。"""
@@ -843,6 +977,21 @@ class SQLHelperClass(SqlHelperBase):
             else:
                 return None
 
+    async def select_proxy_detailed(
+        self,
+        mode: Literal["single", "all", "rand"] = "single",
+        channel="bili",
+        tier: ProxyTier = ProxyTier.FAST,
+        exclude: frozenset[str] | set[str] | None = None,
+    ) -> tuple[ProxyTab | List[ProxyTab] | None, SelectionStats]:
+        """``select_proxy`` 的诊断版：额外返回闸门挡掉的计数（取不到代理时用于文案归因）。"""
+        if mode == "rand":
+            return await self.select_random_proxy_detailed(tier=tier, exclude=exclude)
+        proxy = await self.select_proxy(
+            mode=mode, channel=channel, tier=tier, exclude=exclude
+        )
+        return proxy, SelectionStats(tier=tier.value)
+
     @log_sql_retry_wrapper()
     async def is_exist_proxy_by_proxy(self, proxy: dict) -> int:
         """
@@ -860,23 +1009,87 @@ class SQLHelperClass(SqlHelperBase):
         return exist_num or 0
 
     @log_sql_retry_wrapper()
-    async def remove_list_dict_data_by_proxy(self) -> bool:
+    async def remove_list_dict_data_by_proxy(self) -> int:
+        """按 ``computed_proxy_str`` 去重 ``proxy_tab``，返回删除行数（分批、可打断）。
+
+        与旧实现的区别：
+
+        - 分组列从 JSON 列 ``proxy`` 改为持久化生成列 ``computed_proxy_str``
+          （已有索引），避免 ``GROUP BY`` JSON 列的全表排序；
+        - **不再把重复行实例化成 ORM 对象**：先只取重复行的 ``proxy_id``（一批
+          ``proxy_dedup_delete_batch`` 个 int），再按主键 ``DELETE``；
+        - 每批一个短事务，循环到返回行数 < 批次上限为止，不会一次长事务锁住整表。
         """
-        根据proxy列对数据库table去重
-        :return:
+        if CONFIG.proxy_health.proxy_dedup_use_legacy_delete:
+            return await self._remove_duplicates_legacy()
+        batch = max(100, int(CONFIG.proxy_health.proxy_dedup_delete_batch))
+        deleted_total = 0
+        while True:
+            ids = await self._select_duplicate_proxy_ids(batch)
+            if not ids:
+                break
+            async with self.async_session() as session:
+                async with session.begin():
+                    res = await session.execute(
+                        delete(ProxyTab).where(ProxyTab.proxy_id.in_(ids))
+                    )
+                    deleted = int(res.rowcount or 0)
+            deleted_total += deleted
+            if len(ids) < batch or deleted <= 0:
+                break
+        if deleted_total > 0:
+            sql_log.warning(f"代理表去重完成：删除重复行 {deleted_total} 条")
+        else:
+            sql_log.info("代理数据重复记录不存在")
+        return deleted_total
+
+    async def _select_duplicate_proxy_ids(self, limit: int) -> list[int]:
+        """取一批「同一 ``computed_proxy_str`` 下非最大 proxy_id」的行主键。
+
+        只 select 主键（int），不加载 ORM 实体；``LIMIT`` 保证单批可被取消 / 打断。
+        注意 MySQL 的多表 ``DELETE ... JOIN`` 不支持 ``LIMIT``，所以这里先取 id
+        再按主键删除，语义等价且满足「分批 + 可打断」。
         """
+        keep_subq = (
+            select(
+                ProxyTab.computed_proxy_str.label("proxy_str"),
+                func.max(ProxyTab.proxy_id).label("keep_id"),
+            )
+            .where(ProxyTab.computed_proxy_str.isnot(None))
+            .group_by(ProxyTab.computed_proxy_str)
+            .subquery()
+        )
+        sql = (
+            select(ProxyTab.proxy_id)
+            .join(
+                keep_subq,
+                ProxyTab.computed_proxy_str == keep_subq.c.proxy_str,
+            )
+            .where(ProxyTab.proxy_id < keep_subq.c.keep_id)
+            .order_by(ProxyTab.proxy_id)
+            .limit(limit)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(sql)
+        return [int(row) for row in res.scalars().all() if row is not None]
+
+    async def _remove_duplicates_legacy(self) -> int:
+        """旧实现（ORM 全量加载 + 逐条 delete）：仅用于回滚对照，默认不启用。"""
         subquery = select(func.max(ProxyTab.proxy_id)).group_by(ProxyTab.proxy)
         sql = select(ProxyTab).where(ProxyTab.proxy_id.not_in(subquery))
+        removed = 0
         async with self.async_session() as session:
             async with session.begin():
                 res = await session.execute(sql)
                 original = res.scalars().all()
                 if not original:
                     sql_log.info("代理数据重复记录不存在")
-                    return True
+                    return 0
                 for record in original:
                     await session.delete(record)
-        return True
+                removed = len(original)
+        sql_log.warning(f"代理表去重完成（legacy）：删除重复行 {removed} 条")
+        return removed
 
     @log_sql_retry_wrapper()
     async def update_to_proxy_list(

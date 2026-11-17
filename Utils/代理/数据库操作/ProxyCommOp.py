@@ -1,12 +1,14 @@
 import asyncio
-from typing import Optional
 
 from log.base_log import sql_log
 from Utils.代理.mdoel.ProxyTier import ProxyTier
 from Utils.代理.mdoel.request_context import current_proxy_tier
 from Utils.代理.redisProxyRequest.GetProxyFromNet import get_proxy_methods
 from Utils.代理.数据库操作.SqlAlcheyObj.ProxyModel import ProxyTab
-from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import SQLHelper
+from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
+    SQLHelper,
+    SelectionStats,
+)
 
 # 一轮抓取（拉取 + 入库 + 去重）动辄几十秒到几分钟，绝不能挂在业务请求路径上。
 # 这里用「后台任务 + 单飞」把补充代理的动作挪出 worker：请求侧取不到代理就快速失败，
@@ -36,7 +38,16 @@ async def get_available_proxy(
     tier: ProxyTier | None = None,
     exclude: frozenset[str] | set[str] | None = None,
 ) -> tuple[ProxyTab | None, bool]:
-    """按档位从 MySQL 随机取一条代理；slow 档口径接近老版本 ``select_proxy("rand")``。
+    """按档位从 MySQL 随机取一条代理（兼容旧调用签名）。"""
+    proxy_tab, _ = await get_available_proxy_detailed(tier=tier, exclude=exclude)
+    return proxy_tab, False
+
+
+async def get_available_proxy_detailed(
+    tier: ProxyTier | None = None,
+    exclude: frozenset[str] | set[str] | None = None,
+) -> tuple[ProxyTab | None, SelectionStats]:
+    """按档位从 MySQL 随机取一条代理，并返回选择过程的诊断计数。
 
     取代理只有一条路径：``proxy_tab`` 随机（随机主键起点，实测 ~15ms）。
     slow 档（爬虫默认车道）默认随机取一条 status 可用的就用：地址冷却**优先规避**
@@ -48,26 +59,26 @@ async def get_available_proxy(
 
     :param tier: 代理档位；None = 跟随当前上下文的档位（无上下文默认 slow）
     :param exclude: 本次任务内已失败的代理串（换代理用）
-    :return: (代理行, 是否来自 available_proxy)；第二个值恒为 False，仅为兼容旧调用签名。
     """
     effective_tier = tier or current_proxy_tier()
     try:
-        proxy_tab: Optional[ProxyTab] = await SQLHelper.select_proxy(
+        proxy_tab, stats = await SQLHelper.select_proxy_detailed(
             "rand", tier=effective_tier, exclude=exclude
         )
     except Exception as e:  # noqa: BLE001 取代理失败不能直接把异常抛进请求路径
         sql_log.exception(f"从 MySQL 随机取代理失败：{type(e).__name__} {e}")
-        proxy_tab = None
+        proxy_tab, stats = None, SelectionStats(tier=effective_tier.value)
     if proxy_tab:
-        return proxy_tab, False
+        return proxy_tab, stats
     # slow 档的冷却/EWMA 都会回退，所以走到这里只可能是：池子真空（没有 status 可用行），
     # 或候选全被本任务内失败的代理 / 前缀排除。
     sql_log.debug(
         f"代理池没有 status 可用的行（tier={effective_tier.value}，"
-        f"已排除 {len(exclude or ())} 个本任务失败代理），已触发后台补池"
+        f"已排除 {len(exclude or ())} 个本任务失败代理）：{stats.to_log_str()}，"
+        "已触发后台补池"
     )
     _trigger_proxy_fetch()
-    return None, False
+    return None, stats
 
 
 if __name__ == "__main__":

@@ -68,10 +68,12 @@ class _FakeHealthStore:
         self.cooling = cooling
         self.failures: list[tuple[str, object]] = []
 
-    async def is_prefix_cooling(self, prefix: str) -> bool:
+    async def is_prefix_cooling(self, prefix: str, scope: str | None = None) -> bool:
         return self.cooling
 
-    async def record_failure(self, key: str, kind: object) -> None:
+    async def record_failure(
+        self, key: str, kind: object, *, scope: str | None = None
+    ) -> None:
         self.failures.append((key, kind))
 
 

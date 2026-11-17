@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass, field
-from typing import Any, List
+from typing import Any, List, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from log.base_log import (
@@ -114,6 +114,23 @@ class CrawlerConfig(BaseModel):
     # 重入队上限（重试预算耗尽后的处置上限）：None = 跟随 CONFIG.crawler_runtime
     max_requeue_per_task: int | None = Field(default=None)
     requeue_max_task_seconds: float | None = Field(default=None)
+    # 本轮失败后的重入队策略（按爬虫声明，基类不硬编码任何业务名）：
+    # - immediate_front：立即插队首（历史行为，默认，避免其他爬虫回归）；
+    # - delayed：按指数退避延迟后再插队首；
+    # - next_round：本轮不重排、不计 max_retries，留在 crawl_failed_task pending，
+    #   由下一轮 main 的 load_retry_params() 补跑（需要 retry_task_type 才生效）。
+    requeue_strategy: Literal["immediate_front", "delayed", "next_round"] = Field(
+        default="immediate_front", description="本轮失败任务的重入队策略"
+    )
+    # 失败推送里「业务 id」的取值范围（按顺序取第一个命中的字段）：
+    # 留空则自动取 params 里第一个以 ``_id`` 结尾的字段。业务差异只在各爬虫 Config 声明。
+    business_id_fields: List[str] = Field(
+        default_factory=list, description="从任务参数提取 business_id 的候选字段名"
+    )
+    # 失败推送里附带的「最近 N 个失败 id 摘要」条数（0 = 不附带）
+    failure_push_id_limit: int = Field(
+        default=5, description="失败汇总推送里附带最近多少个失败业务 id"
+    )
 
     # 日志对象（由 Config 集中管理；运行时可用对应环境变量覆盖其子字段前的 logger 选择）
     logger: Any = myfastapi_logger
@@ -143,6 +160,8 @@ class DynDetailScrapyConfig(CrawlerConfig):
     # 该爬虫的任务量巨大且可容忍等待：走 slow 车道（= 老版本免费池口径，
     # 随机取一条 status 可用的就用；健康度只记账不挡人）。
     proxy_tier: ProxyTier = ProxyTier.SLOW
+    # 失败推送里的业务 id：动态详情用 rid（其余字段名只在各爬虫 Config 声明）
+    business_id_fields: List[str] = ["rid", "dynamic_id"]
     logger: Any = official_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("status_plugin", StatsPlugin, {"push_result": True}),
@@ -188,6 +207,8 @@ class TopicRobotConfig(CrawlerConfig):
     # 至少一次（马上重试）：同上
     requeue_on_fetch_fail: bool = True
     max_requeue_per_task: int | None = 20
+    # 失败推送里的业务 id：话题抽奖用 topic_id
+    business_id_fields: List[str] = ["topic_id"]
     logger: Any = topic_lot_logger
     plugins: List[PluginConfig] = [
         PluginConfig("stats_plugin", StatsPlugin, {"push_result": True}),

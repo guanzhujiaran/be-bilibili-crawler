@@ -181,6 +181,7 @@ class RouterPaths(StrEnumAutoDoc):
     GET_LIVE_LOTS = "/v1/get/live_lots"  # 获取直播抽奖
     TEST = "/test"  # 服务可用性测试
     GC = "/gc"  # 垃圾回收
+    DEBUG_MEMORY = "/debug/memory"  # 进程内存观测（内部接口，网关白名单不转发）
     POST_RM_FOLLOWING_LIST = "/v1/post/RmFollowingList"  # 取关列表
     UPSERT_LOT_DETAIL = "/lot/upsert_lot_detail"  # 插入/更新抽奖详情
     GET_OTHERS_LOT_DYN = "/get_others_lot_dyn"  # 获取他人动态抽奖
@@ -302,6 +303,7 @@ class RouterNames(StrEnumAutoDoc):
     GET_LIVE_LOTS = "v1_get_live_lots"  # 获取直播抽奖
     TEST = "test"  # 服务可用性测试
     GC = "gc"  # 垃圾回收
+    DEBUG_MEMORY = "debug_memory"  # 进程内存观测
     POST_RM_FOLLOWING_LIST = "v1_post_rm_following_list"  # 取关列表
     UPSERT_LOT_DETAIL = "upsert_lot_detail"  # 插入/更新抽奖详情
     GET_OTHERS_LOT_DYN = "get_others_lot_dyn"  # 获取他人动态抽奖

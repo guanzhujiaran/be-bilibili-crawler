@@ -149,6 +149,35 @@ def _stub_db_rows(monkeypatch, rows_by_key: dict | None = None):
 # ---------------------------------------------------------------------------
 
 
+async def test_fast_expands_sampling_when_candidates_hit_task_exclusion(monkeypatch):
+    """任务级排除必须参与扩样判定：不能因为「候选全被本任务排除」而永远不扩样。"""
+    _stub_health(monkeypatch, mapping={}, verified=[])
+    calls: list[int] = []
+
+    async def _range(self):
+        return 1, 10_000
+
+    async def _cand(self, start_id: int, limit: int):
+        calls.append(limit)
+        # 候选全部落在「本任务已失败」名单里：blocked_ratio=100%
+        return [_FakeProxyRow(f"http://10.9.{i // 250}.{i % 250}:80") for i in range(limit)]
+
+    monkeypatch.setattr(type(SQLHelper), "_get_proxy_id_range", _range)
+    monkeypatch.setattr(type(SQLHelper), "_select_candidate_rows", _cand)
+    excluded = frozenset(
+        f"http://10.9.{i // 250}.{i % 250}:80" for i in range(200)
+    )
+
+    proxy, stats = await SQLHelper.select_random_proxy_detailed(
+        tier=ProxyTier.FAST, exclude=excluded
+    )
+
+    assert proxy is None
+    assert stats.task_excluded > 0
+    # 第一次 32 条被全排除后扩到 64 / 128（candidate_batch_max）
+    assert max(calls) > calls[0], f"未触发扩样，采样序列={calls}"
+
+
 async def test_select_random_proxy_uses_random_id_start(monkeypatch):
     """第一次随机起点就命中：只查一次库。"""
     row = _FakeProxyRow()

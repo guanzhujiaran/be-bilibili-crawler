@@ -69,8 +69,11 @@ _COOLING_KEY = "proxy_health:v1:cooling"
 _PREFIX_DETAIL_PREFIX = "proxy_health:v1:prefix_detail:"
 #: 前缀级状态集合 key 前缀
 _PREFIX_STATE_SET_PREFIX = "proxy_health:v1:prefix_state:"
-#: 前缀级冷却集合（zset：member=前缀，score=冷却到期时间戳）
+#: 前缀级冷却集合（zset：member=前缀，score=冷却到期时间戳）。
+#: 兼容口径：这是 **全局桶** ``*``；按 scope 记账时用 ``prefix_cooling:<scope>``。
 _PREFIX_COOLING_KEY = "proxy_health:v1:prefix_cooling"
+#: 按 scope 的前缀级冷却集合前缀（``prefix_cooling:<scope>``）
+_PREFIX_COOLING_SCOPE_PREFIX = "proxy_health:v1:prefix_cooling:"
 #: 前缀在途并发计数 key 前缀
 _PREFIX_IN_FLIGHT_PREFIX = "proxy_health:v1:prefix_inflight:"
 #: 前缀 → 该段内被实际使用过的代理串（冷却时把整段写回 MySQL 的依据）
@@ -202,7 +205,11 @@ class ProxyHealthCounts(CustomBaseModel):
     prefix_suspect: int = 0
     prefix_quarantine: int = 0
     prefix_dead: int = 0
-    prefix_cooling: int = Field(default=0, description="当前处于冷却中的前缀数")
+    prefix_cooling: int = Field(default=0, description="当前处于冷却中的前缀数（全局桶）")
+    prefix_cooling_by_scope: dict[str, int] = Field(
+        default_factory=dict,
+        description="按风控域（scope）统计的冷却前缀数；键 ``*`` 为历史全局桶",
+    )
     update_ts: int = 0
 
     @property
@@ -225,13 +232,17 @@ class ProxyHealthCounts(CustomBaseModel):
         )
 
     def to_log_str(self) -> str:
+        scope_text = ",".join(
+            f"{scope}={count}" for scope, count in sorted(self.prefix_cooling_by_scope.items())
+        )
         return (
             f"hot={self.hot} warm={self.warm} suspect={self.suspect} "
             f"quarantine={self.quarantine} dead={self.dead} "
             f"cooling={self.cooling} cold={self.cold} | "
             f"prefix(hot={self.prefix_hot} warm={self.prefix_warm} "
             f"suspect={self.prefix_suspect} quarantine={self.prefix_quarantine} "
-            f"dead={self.prefix_dead} cooling={self.prefix_cooling})"
+            f"dead={self.prefix_dead} cooling={self.prefix_cooling}"
+            f"{'; by_scope=' + scope_text if scope_text else ''})"
         )
 
 
@@ -392,8 +403,25 @@ class ProxyHealthStore:
         return f"{_IN_FLIGHT_PREFIX}{proxy_key}"
 
     @staticmethod
-    def _prefix_detail_key(prefix: str) -> str:
-        return f"{_PREFIX_DETAIL_PREFIX}{prefix}"
+    def _normalize_scope(scope: str | None) -> str:
+        """scope 归一化：空值 / ``*`` 都是历史全局桶。"""
+        return str(scope) if scope else "*"
+
+    @classmethod
+    def _prefix_detail_key(cls, prefix: str, scope: str | None = None) -> str:
+        """前缀明细 key：全局桶沿用旧 key，scope 桶用 ``prefix_detail:<scope>|<prefix>``。"""
+        scope_name = cls._normalize_scope(scope)
+        if scope_name == "*":
+            return f"{_PREFIX_DETAIL_PREFIX}{prefix}"
+        return f"{_PREFIX_DETAIL_PREFIX}{scope_name}|{prefix}"
+
+    @classmethod
+    def _prefix_cooling_key(cls, scope: str | None = None) -> str:
+        """前缀冷却 zset key：``*`` 用旧 key，其余用 ``prefix_cooling:<scope>``。"""
+        scope_name = cls._normalize_scope(scope)
+        if scope_name == "*":
+            return _PREFIX_COOLING_KEY
+        return f"{_PREFIX_COOLING_SCOPE_PREFIX}{scope_name}"
 
     @staticmethod
     def _prefix_state_set_key(state: ProxyHealthState) -> str:
@@ -407,9 +435,13 @@ class ProxyHealthStore:
     def _prefix_members_key(prefix: str) -> str:
         return f"{_PREFIX_MEMBERS_PREFIX}{prefix}"
 
-    @staticmethod
-    def _prefix_episode_key(prefix: str) -> str:
-        return f"{_PREFIX_EPISODE_PREFIX}{prefix}"
+    @classmethod
+    def _prefix_episode_key(cls, prefix: str, scope: str | None = None) -> str:
+        """「本轮风控冷却」互斥标记：scope 桶必须独立，否则 A 接口的冷却会挡住 B 接口。"""
+        scope_name = cls._normalize_scope(scope)
+        if scope_name == "*":
+            return f"{_PREFIX_EPISODE_PREFIX}{prefix}"
+        return f"{_PREFIX_EPISODE_PREFIX}{scope_name}|{prefix}"
 
     # endregion
 
@@ -467,19 +499,23 @@ class ProxyHealthStore:
         except Exception:  # noqa: BLE001 脏数据按 cold 处理
             return ProxyHealthRecord()
 
-    async def get_prefix(self, prefix: str) -> ProxyPrefixRecord:
+    async def get_prefix(
+        self, prefix: str, scope: str | None = None
+    ) -> ProxyPrefixRecord:
         """单个前缀的明细（无记录 = 未冷却，返回默认值）。"""
         if not prefix:
             return ProxyPrefixRecord()
         try:
             client = self._get_client()
-            raw = await client.hgetall(self._prefix_detail_key(prefix))
+            raw = await client.hgetall(self._prefix_detail_key(prefix, scope))
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀明细失败：{type(e).__name__} {e}")
             return ProxyPrefixRecord()
         return self._parse_prefix(raw)
 
-    async def get_prefixes(self, prefixes: Sequence[str]) -> ProxyPrefixMap:
+    async def get_prefixes(
+        self, prefixes: Sequence[str], scope: str | None = None
+    ) -> ProxyPrefixMap:
         """批量读取前缀明细（选代理时一次 pipeline 取回，O(候选数)）。"""
         unique = [p for p in dict.fromkeys(prefixes) if p]
         if not unique:
@@ -488,7 +524,7 @@ class ProxyHealthStore:
             client = self._get_client()
             async with client.pipeline(transaction=False) as pipe:
                 for prefix in unique:
-                    pipe.hgetall(self._prefix_detail_key(prefix))
+                    pipe.hgetall(self._prefix_detail_key(prefix, scope))
                 results = await pipe.execute()
         except Exception as e:  # noqa: BLE001
             self._warn(f"批量读取前缀明细失败：{type(e).__name__} {e}")
@@ -547,6 +583,29 @@ class ProxyHealthStore:
         for state, value in zip(ordered, results[split:-1]):
             setattr(counts, f"prefix_{state.value}", int(value or 0))
         counts.prefix_cooling = int(results[-1] or 0)
+        # 按 scope 的前缀冷却统计：key 数量 = 用过的 scope 数（个位数），
+        # 但为了不把扫描放在热路径，只在本次真正回源时做一次。
+        try:
+            scope_keys = [
+                key
+                async for key in client.scan_iter(
+                    match=f"{_PREFIX_COOLING_SCOPE_PREFIX}*", count=100
+                )
+            ]
+            by_scope: dict[str, int] = {"*": counts.prefix_cooling}
+            if scope_keys:
+                async with client.pipeline(transaction=False) as pipe:
+                    for key in scope_keys:
+                        pipe.zcount(key, ts, "+inf")
+                    scope_counts = await pipe.execute()
+                for key, value in zip(scope_keys, scope_counts):
+                    scope_name = key[len(_PREFIX_COOLING_SCOPE_PREFIX) :]
+                    if scope_name:
+                        by_scope[scope_name] = int(value or 0)
+            counts.prefix_cooling_by_scope = by_scope
+        except Exception as e:  # noqa: BLE001 观测失败不影响主统计
+            self._warn(f"统计按 scope 的前缀冷却失败：{type(e).__name__} {e}")
+            counts.prefix_cooling_by_scope = {"*": counts.prefix_cooling}
         self._counts_cache = counts
         self._counts_cache_ts = now
         return counts
@@ -779,63 +838,81 @@ class ProxyHealthStore:
     # endregion
 
     # region 前缀级读取 / 冷却
-    async def prefix_cooldown_until(self, prefix: str) -> int:
-        """该前缀的冷却到期时间（unix 秒，0 = 不在冷却；Redis 异常按 0 降级）。
+    def _effective_scope(self, scope: str | None) -> str:
+        """本次实际生效的 scope：灰度关闭时一律回退全局桶 ``*``。"""
+        if not bool(getattr(self.cfg, "risk_scope_enforce", True)):
+            return "*"
+        return self._normalize_scope(scope)
+
+    async def prefix_cooldown_until(
+        self, prefix: str, scope: str | None = None
+    ) -> int:
+        """该前缀在指定风控域的冷却到期时间（unix 秒，0 = 不在冷却）。
 
         同时负责**冷却起止的可观测性**：首次观测到冷却打一条 WARNING，
         冷却到期后再打一条「冷却结束」WARNING（懒探测，不需要定时任务）。
         """
         if not prefix:
             return 0
+        effective = self._effective_scope(scope)
         try:
             client = self._get_client()
-            raw = await client.hget(self._prefix_detail_key(prefix), "cd")
+            raw = await client.hget(self._prefix_detail_key(prefix, effective), "cd")
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀冷却失败：{type(e).__name__} {e}")
             return 0
         now = int(time.time())
         until = int(float(raw or 0))
-        self._note_prefix_cooldown(prefix, until > now, until, now)
+        self._note_prefix_cooldown(prefix, until > now, until, now, effective)
         return until if until > now else 0
 
     def _note_prefix_cooldown(
-        self, prefix: str, cooling: bool, until: int, now: int
+        self,
+        prefix: str,
+        cooling: bool,
+        until: int,
+        now: int,
+        scope: str = "*",
     ) -> None:
-        """前缀冷却状态迁移日志（懒探测：只在被查询时才能发现状态变化）。"""
+        """前缀冷却状态迁移日志（按 scope 独立记录，避免一个接口的日志掩盖另一个）。"""
+        key = f"{scope}|{prefix}"
         if cooling:
-            if prefix in self._cooling_prefixes:
+            if key in self._cooling_prefixes:
                 return
-            self._cooling_prefixes.add(prefix)
+            self._cooling_prefixes.add(key)
             # 防御性上限：长期运行后集合不应无限增长
             if len(self._cooling_prefixes) > 10000:
                 self._cooling_prefixes.clear()
-                self._cooling_prefixes.add(prefix)
+                self._cooling_prefixes.add(key)
             sql_log.warning(
-                f"前缀 {prefix} 处于风控冷却中，剩余 {max(0, until - now)}s"
-                f"（到期后本条前缀才会重新参与选代理；不换地址绕 412/352）"
+                f"前缀 {prefix} 在风控域 {scope} 处于风控冷却中，剩余 {max(0, until - now)}s"
+                f"（到期后该前缀才会在该接口重新参与选代理；不换地址绕 412/352）"
             )
             return
-        if prefix not in self._cooling_prefixes:
+        if key not in self._cooling_prefixes:
             return
-        self._cooling_prefixes.discard(prefix)
+        self._cooling_prefixes.discard(key)
         sql_log.warning(
-            f"前缀 {prefix} 风控冷却结束，恢复可用（观测时间 {now}），"
-            f"该前缀重新参与选代理"
+            f"前缀 {prefix} 在风控域 {scope} 的风控冷却结束，恢复可用（观测时间 {now}），"
+            f"该前缀重新参与该接口的选代理"
         )
 
-    async def is_prefix_cooling(self, prefix: str) -> bool:
-        """该前缀当前是否在冷却（专线闸门用，一次 HGET）。"""
-        return await self.prefix_cooldown_until(prefix) > 0
+    async def is_prefix_cooling(
+        self, prefix: str, scope: str | None = None
+    ) -> bool:
+        """该前缀在指定风控域是否处于冷却（专线闸门用，一次 HGET）。"""
+        return await self.prefix_cooldown_until(prefix, scope) > 0
 
-    async def list_prefix_cooling(self, limit: int = 1000) -> list[str]:
-        """当前仍在冷却的前缀（按到期时间升序，最多 ``limit`` 条）。"""
+    async def list_prefix_cooling(
+        self, limit: int = 1000, scope: str | None = None
+    ) -> list[str]:
+        """指定风控域下仍在冷却的前缀（按到期时间升序，最多 ``limit`` 条）。"""
         now = int(time.time())
+        key = self._prefix_cooling_key(self._effective_scope(scope))
         try:
             client = self._get_client()
-            await client.zremrangebyscore(_PREFIX_COOLING_KEY, "-inf", now)
-            return await client.zrangebyscore(
-                _PREFIX_COOLING_KEY, now, "+inf", start=0, num=limit
-            )
+            await client.zremrangebyscore(key, "-inf", now)
+            return await client.zrangebyscore(key, now, "+inf", start=0, num=limit)
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取前缀冷却集合失败：{type(e).__name__} {e}")
             return []
@@ -950,32 +1027,43 @@ class ProxyHealthStore:
 
     # region 状态迁移
     async def record_success(
-        self, proxy_key: str, previous: ProxyHealthRecord | None = None
+        self,
+        proxy_key: str,
+        previous: ProxyHealthRecord | None = None,
+        *,
+        scope: str | None = None,
     ) -> ProxyHealthRecord:
-        """成功：地址级与中国级一起更新（一次读 + 一次写，不额外增加往返）。
+        """成功：地址级 + 前缀级一起更新（一次 pipeline 读、一次 pipeline 写）。
 
-        - 地址级：EWMA 上升、连续失败清零、状态回 hot（明细，供日志 / 排障）；
-        - 前缀级：同段一起恢复；但**风控冷却期内不解冻**（见 ``_prefix_success_transition``）。
+        前缀级要更新两个维度：
+
+        - 全局桶 ``*``：网络层 EWMA / 连续失败 / 网络冷却（与风控域无关）；
+        - 当前风控域：解除/递减该接口的风控冷却与阶梯（``risk_level`` 按 scope 独立）。
+
+        风控冷却期内的成功**不解冻**（见 ``_prefix_success_transition``）。
         """
         if not proxy_key:
             return ProxyHealthRecord()
         prefix = proxy_prefix_of(proxy_key)
         now = int(time.time())
-        record, prefix_record = await self._read_pair(proxy_key, prefix, previous)
+        scopes = self._prefix_scopes_for_success(scope)
+        record, prefix_records = await self._read_state(
+            proxy_key, prefix, scopes, previous
+        )
         # 必须在改字段**之前**记下旧状态：previous 与 record 常常是同一个对象，
         # 改完再读 previous.state 只会拿到 hot，旧状态集合就清不掉了。
         previous_state = record.state
-        prefix_previous_state = prefix_record.state
+        prefix_previous = {name: item.state for name, item in prefix_records.items()}
         self._success_transition(record, now)
-        if prefix:
+        for prefix_record in prefix_records.values():
             self._prefix_success_transition(prefix_record, now)
-        await self._save_pair(
+        await self._save_state(
             proxy_key=proxy_key,
             record=record,
             previous_state=previous_state,
             prefix=prefix,
-            prefix_record=prefix_record,
-            prefix_previous_state=prefix_previous_state,
+            prefix_records=prefix_records,
+            prefix_previous_states=prefix_previous,
         )
         return record
 
@@ -984,48 +1072,84 @@ class ProxyHealthStore:
         proxy_key: str,
         kind: ProxyFailureKind = ProxyFailureKind.NETWORK,
         previous: ProxyHealthRecord | None = None,
+        *,
+        scope: str | None = None,
     ) -> ProxyHealthRecord:
         """失败：地址级降档 + **前缀级冷却**。
 
-        412/352 是段级风控信号：冷却记在 /64、/24 上（阶梯 2h→6h→24h），
-        同段内的其它地址一并被挡，避免「换个地址继续撞墙」。
+        412/352 是段级风控信号，且各接口风控相互独立：
+
+        - 风控层（``RISK_CONTROL``）只记在 ``(scope, 前缀)`` 上，阶梯按 scope 独立推进；
+        - 网络层（``NETWORK`` / ``RESPONSE`` / ``UNKNOWN``）仍记在全局前缀上，
+          与风控域无关（scope 只影响风控冷却维度）。
         """
         if not proxy_key:
             return ProxyHealthRecord()
         prefix = proxy_prefix_of(proxy_key)
         now = int(time.time())
-        record, prefix_record = await self._read_pair(proxy_key, prefix, previous)
+        scopes = self._prefix_scopes_for_failure(kind, scope)
+        record, prefix_records = await self._read_state(
+            proxy_key, prefix, scopes, previous
+        )
         previous_state = record.state
         self._failure_transition(record, kind, now)
-        prefix_previous_state = prefix_record.state
-        plan = self.plan_prefix_failure(prefix_record, kind, now)
-        # 抢不到「本轮冷却」时不能写 state / cd / rl：并发命中 412 时，
-        # 后到的请求读到的是旧值，直接写回去会把别人刚施加的冷却与阶梯冲掉。
-        write_prefix_state = True
+        prefix_previous = {name: item.state for name, item in prefix_records.items()}
+        prefix_write_state = {name: True for name in prefix_records}
         if prefix:
-            claimed = True
-            if plan.claim_episode:
-                claimed = await self._claim_prefix_episode(prefix, plan.cooldown)
-            self._apply_prefix_failure(prefix_record, plan, claimed, kind, now)
-            write_prefix_state = (not plan.claim_episode) or claimed
-            # 同一轮冷却只打印一次：并发命中时只有抢到标记的那条会升级阶梯，
-            # 日志里就能看到「该前缀进入冷却」唯一一条，便于核对「不再换地址撞墙」。
-            if plan.claim_episode and claimed:
-                sql_log.warning(
-                    f"前缀 {prefix} 命中风控（{kind.value}）：冷却 {plan.cooldown}s"
-                    f"（阶梯 {plan.next_risk_level}/{len(self.prefix_risk_ladder())}），"
-                    f"同段内不再换地址重试；触发地址 {proxy_key}"
+            for scope_name, prefix_record in prefix_records.items():
+                # 抢不到「本轮冷却」时不能写 state / cd / rl：并发命中 412 时，
+                # 后到的请求读到的是旧值，直接写回去会把别人刚施加的冷却与阶梯冲掉。
+                plan = self.plan_prefix_failure(prefix_record, kind, now, scope=scope_name)
+                claimed = True
+                if plan.claim_episode:
+                    claimed = await self._claim_prefix_episode(
+                        prefix, plan.cooldown, scope_name
+                    )
+                self._apply_prefix_failure(
+                    prefix_record, plan, claimed, kind, now, scope=scope_name
                 )
-        await self._save_pair(
+                prefix_write_state[scope_name] = (not plan.claim_episode) or claimed
+                # 同一轮冷却只打印一次：并发命中时只有抢到标记的那条会升级阶梯。
+                if plan.claim_episode and claimed:
+                    sql_log.warning(
+                        f"前缀 {prefix} 在风控域 {scope_name} 命中风控（{kind.value}）："
+                        f"冷却 {plan.cooldown}s"
+                        f"（阶梯 {plan.next_risk_level}/{len(self.prefix_risk_ladder())}），"
+                        f"同段内不再换地址重试；触发地址 {proxy_key}"
+                    )
+        await self._save_state(
             proxy_key=proxy_key,
             record=record,
             previous_state=previous_state,
             prefix=prefix,
-            prefix_record=prefix_record,
-            prefix_previous_state=prefix_previous_state,
-            prefix_write_state=write_prefix_state,
+            prefix_records=prefix_records,
+            prefix_previous_states=prefix_previous,
+            prefix_write_state=prefix_write_state,
         )
         return record
+
+    def _prefix_scopes_for_failure(
+        self, kind: ProxyFailureKind, scope: str | None
+    ) -> list[str]:
+        """失败要落到的前缀维度：风控按 scope，网络层按全局桶。"""
+        if kind is not ProxyFailureKind.RISK_CONTROL:
+            return ["*"]
+        effective = self._effective_scope(scope)
+        scopes = [effective]
+        if (
+            effective != "*"
+            and bool(getattr(self.cfg, "risk_scope_dual_write", False))
+        ):
+            scopes.append("*")
+        return scopes
+
+    def _prefix_scopes_for_success(self, scope: str | None) -> list[str]:
+        """成功要更新的前缀维度：网络层全局桶 + 当前风控域（去重）。"""
+        effective = self._effective_scope(scope)
+        scopes = ["*"]
+        if effective != "*":
+            scopes.append(effective)
+        return list(dict.fromkeys(scopes))
 
     def _success_transition(self, record: ProxyHealthRecord, now: int) -> None:
         """地址级成功迁移（纯计算，便于单测）。"""
@@ -1083,10 +1207,13 @@ class ProxyHealthStore:
         record: ProxyPrefixRecord,
         kind: ProxyFailureKind,
         now: int | None = None,
+        *,
+        scope: str | None = None,
     ) -> PrefixFailurePlan:
         """前缀级失败决策（纯计算）。
 
         - 412/352：QUARANTINE + 阶梯冷却，需要抢占「本轮冷却」标记；
+          阶梯档位 ``record.risk_level`` 来自**该 scope 的记录**，因此各接口独立推进；
         - 网络层：连续失败达到 ``prefix_network_fail_threshold`` 才冷却，
           时长沿用 10~30min 区间（单个坏代理掉线不该停掉整段）。
         """
@@ -1117,8 +1244,10 @@ class ProxyHealthStore:
         claimed: bool,
         kind: ProxyFailureKind,
         now: int,
+        *,
+        scope: str | None = None,
     ) -> None:
-        """把前缀级失败决策落到记录上（纯计算，写库由 ``_save_pair`` 统一做）。"""
+        """把前缀级失败决策落到记录上（纯计算，写库由 ``_save_state`` 统一做）。"""
         alpha = min(max(self.cfg.ewma_alpha, 0.01), 1.0)
         record.ewma_success = max(0.0, record.ewma_success * (1 - alpha))
         record.consecutive_fail += 1
@@ -1155,8 +1284,10 @@ class ProxyHealthStore:
         ladder = self.prefix_risk_ladder()
         return ladder[min(max(int(risk_level), 0), len(ladder) - 1)]
 
-    async def _claim_prefix_episode(self, prefix: str, cooldown: int) -> bool:
-        """抢占「本轮风控冷却」的互斥标记（``SET NX EX``）。
+    async def _claim_prefix_episode(
+        self, prefix: str, cooldown: int, scope: str | None = None
+    ) -> bool:
+        """抢占「本轮风控冷却」的互斥标记（``SET NX EX``，按 scope 独立）。
 
         并发命中 412 时只有第一条会升级阶梯，其余只累加计数；
         否则同一秒内的 10 个在途请求会把 2h→6h→24h 直接打满。
@@ -1166,7 +1297,7 @@ class ProxyHealthStore:
         try:
             client = self._get_client()
             claimed = await client.set(
-                self._prefix_episode_key(prefix),
+                self._prefix_episode_key(prefix, scope),
                 int(time.time()),
                 nx=True,
                 ex=max(60, int(cooldown)),
@@ -1281,63 +1412,79 @@ class ProxyHealthStore:
         else:
             pipe.zrem(_COOLING_KEY, proxy_key)
 
-    async def _read_pair(
+    async def _read_state(
         self,
         proxy_key: str,
         prefix: str,
+        scopes: Sequence[str],
         previous: ProxyHealthRecord | None,
-    ) -> tuple[ProxyHealthRecord, ProxyPrefixRecord]:
-        """一次 pipeline 读取「地址 + 前缀」两条明细（各自失败时降级为 cold）。"""
-        wants: list[str] = []
+    ) -> tuple[ProxyHealthRecord, dict[str, ProxyPrefixRecord]]:
+        """一次 pipeline 读取「地址 + 多个 scope 的前缀」明细（失败降级为 cold）。"""
+        unique_scopes = [s for s in dict.fromkeys(scopes) if s]
+        wants: list[tuple[str, str]] = []
         if previous is None:
-            wants.append("address")
+            wants.append(("address", ""))
         if prefix:
-            wants.append("prefix")
+            wants.extend(("prefix", scope) for scope in unique_scopes)
         if not wants:
-            return previous or ProxyHealthRecord(), ProxyPrefixRecord()
+            return previous or ProxyHealthRecord(), {}
         try:
             client = self._get_client()
             async with client.pipeline(transaction=False) as pipe:
-                if previous is None:
-                    pipe.hgetall(self._detail_key(proxy_key))
-                if prefix:
-                    pipe.hgetall(self._prefix_detail_key(prefix))
+                for kind, scope_name in wants:
+                    if kind == "address":
+                        pipe.hgetall(self._detail_key(proxy_key))
+                    else:
+                        pipe.hgetall(self._prefix_detail_key(prefix, scope_name))
                 results = await pipe.execute()
         except Exception as e:  # noqa: BLE001
             self._warn(f"读取健康明细失败：{type(e).__name__} {e}")
-            return previous or ProxyHealthRecord(), ProxyPrefixRecord()
-        raw_by_kind = dict(zip(wants, results))
-        address = (
-            previous
-            if previous is not None
-            else self._parse(raw_by_kind.get("address") or {})
-        )
-        return address, self._parse_prefix(raw_by_kind.get("prefix") or {})
+            return previous or ProxyHealthRecord(), {
+                scope: ProxyPrefixRecord() for scope in unique_scopes
+            }
+        address = previous or ProxyHealthRecord()
+        prefix_records: dict[str, ProxyPrefixRecord] = {}
+        cursor = 0
+        for kind, scope_name in wants:
+            raw = results[cursor]
+            cursor += 1
+            if kind == "address":
+                if previous is None:
+                    address = self._parse(raw or {})
+            else:
+                prefix_records[scope_name] = self._parse_prefix(raw or {})
+        return address, prefix_records
 
-    async def _save_pair(
+    async def _save_state(
         self,
         proxy_key: str,
         record: ProxyHealthRecord,
         previous_state: ProxyHealthState | None,
         prefix: str,
-        prefix_record: ProxyPrefixRecord,
-        prefix_previous_state: ProxyHealthState | None,
-        prefix_write_state: bool = True,
+        prefix_records: dict[str, ProxyPrefixRecord],
+        prefix_previous_states: dict[str, ProxyHealthState | None],
+        prefix_write_state: dict[str, bool] | None = None,
     ) -> None:
-        """一次 pipeline 写完「地址 + 前缀」两级状态。"""
+        """一次 pipeline 写完「地址 + 多个 scope 的前缀」状态。"""
         try:
             client = self._get_client()
             async with client.pipeline(transaction=False) as pipe:
                 self._queue_state_write(pipe, proxy_key, record, previous_state)
                 if prefix:
-                    self._queue_prefix_write(
-                        pipe,
-                        proxy_key,
-                        prefix,
-                        prefix_record,
-                        prefix_previous_state,
-                        write_state=prefix_write_state,
-                    )
+                    for scope_name, prefix_record in prefix_records.items():
+                        self._queue_prefix_write(
+                            pipe,
+                            proxy_key,
+                            prefix,
+                            prefix_record,
+                            prefix_previous_states.get(scope_name),
+                            write_state=(
+                                True
+                                if prefix_write_state is None
+                                else prefix_write_state.get(scope_name, True)
+                            ),
+                            scope=scope_name,
+                        )
                 await pipe.execute()
         except Exception as e:  # noqa: BLE001
             self._warn(f"写入健康记录失败：{type(e).__name__} {e}")
@@ -1350,13 +1497,15 @@ class ProxyHealthStore:
         record: ProxyPrefixRecord,
         previous_state: ProxyHealthState | None,
         write_state: bool = True,
+        scope: str | None = None,
     ) -> None:
-        """把前缀级写入排进 pipeline。
+        """把前缀级写入排进 pipeline（明细 / 状态集合 / 冷却 zset 均按 scope 分开）。
 
         ``write_state=False`` 时只写计数 / EWMA / 时间戳，**不写** state / cd / rl：
         并发命中同一轮风控时，后到的请求读到的是旧值，写回会把冷却与阶梯冲掉。
         """
-        detail_key = self._prefix_detail_key(prefix)
+        scope_name = self._normalize_scope(scope)
+        detail_key = self._prefix_detail_key(prefix, scope_name)
         pipe.hset(
             detail_key,
             mapping=self._prefix_record_mapping(record, write_state=write_state),
@@ -1364,6 +1513,9 @@ class ProxyHealthStore:
         pipe.expire(detail_key, _RECORD_TTL)
         if write_state:
             new_set = self._prefix_state_set_key(record.state)
+            # 状态集合是跨 scope 共享的：member 必须带 scope，否则同一前缀在
+            # A 接口 hot、B 接口 quarantine 时会同时挂在两个集合里，统计失真。
+            member = prefix if scope_name == "*" else f"{scope_name}|{prefix}"
             states = (
                 [previous_state]
                 if previous_state is not None
@@ -1372,13 +1524,14 @@ class ProxyHealthStore:
             for state in states:
                 if state is ProxyHealthState.COLD or state is record.state:
                     continue
-                pipe.srem(self._prefix_state_set_key(state), prefix)
-            pipe.sadd(new_set, prefix)
+                pipe.srem(self._prefix_state_set_key(state), member)
+            pipe.sadd(new_set, member)
             pipe.expire(new_set, _RECORD_TTL)
+            cooling_key = self._prefix_cooling_key(scope_name)
             if record.cooldown_until:
-                pipe.zadd(_PREFIX_COOLING_KEY, {prefix: record.cooldown_until})
+                pipe.zadd(cooling_key, {prefix: record.cooldown_until})
             else:
-                pipe.zrem(_PREFIX_COOLING_KEY, prefix)
+                pipe.zrem(cooling_key, prefix)
         # 成员集合：前缀冷却时据此把整段写回 MySQL（只记「实际用过」的代理）
         members_key = self._prefix_members_key(prefix)
         pipe.sadd(members_key, proxy_key)
@@ -1500,6 +1653,7 @@ class ProxyHealthStore:
             deleted += int(await client.delete(_COOLING_KEY) or 0)
             deleted += int(await client.delete(_PREFIX_COOLING_KEY) or 0)
             for pattern in (
+                f"{_PREFIX_COOLING_SCOPE_PREFIX}*",
                 f"{_DETAIL_PREFIX}*",
                 f"{_PREFIX_DETAIL_PREFIX}*",
                 f"{_PREFIX_MEMBERS_PREFIX}*",

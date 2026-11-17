@@ -23,6 +23,7 @@
 
 import asyncio
 import time
+from collections import deque
 from collections.abc import Callable
 
 from pydantic import BaseModel, Field
@@ -104,7 +105,13 @@ class ProxyCircuitBreaker:
         # 探测名额租约到期时间：协程被取消后不会回到 record_*，租约到期强制归还
         self._probe_lease_until = 0.0
         # 成功率窗口：(单调时钟, 是否成功)
-        self._window: list[tuple[float, bool]] = []
+        # 必须用 deque + popleft：list.pop(0) 是 O(n)，稳态上万样本时 snapshot 会退化成
+        # O(n²)（2026-11-17 线上事件循环卡顿 15.17s）。
+        self._window: deque[tuple[float, bool]] = deque()
+        # 窗口内成功样本数（增量维护）：snapshot 只读计数器，O(1)，不再遍历窗口。
+        # 注意不要改成 asyncio.Queue：它是任务协作原语，不能 O(1) 统计，也无法避免
+        # CPU 计算占用事件循环（async 函数里的纯计算同样会阻塞 loop）。
+        self._window_ok = 0
         self._last_open_log_ts = 0.0
 
     # region 观测
@@ -135,21 +142,52 @@ class ProxyCircuitBreaker:
             logger.info(f"[{self.name}] {msg}")
 
     def _window_stats(self, now: float) -> tuple[int, float]:
-        """裁剪并统计成功率窗口：``(样本数, 成功率)``。"""
+        """裁剪并统计成功率窗口：``(样本数, 成功率)``。
+
+        统计走增量计数器（``_window_ok``），整体 **O(1)**，不会在 snapshot 时遍历窗口。
+        """
         window = max(0.0, float(self.cfg.window_seconds))
         if window <= 0:
             self._window.clear()
+            self._window_ok = 0
             return 0, 0.0
         cutoff = now - window
+        # deque.popleft 是 O(1)；`_window` 按时间递增，裁剪到第一条未过期即可
         while self._window and self._window[0][0] < cutoff:
-            self._window.pop(0)
+            _, success = self._window.popleft()
+            if success:
+                self._window_ok = max(0, self._window_ok - 1)
         samples = len(self._window)
         if not samples:
             return 0, 0.0
-        ok = sum(1 for _, success in self._window if success)
-        return samples, ok / samples
+        return samples, self._window_ok / samples
 
-    def snapshot(self) -> BreakerSnapshot:
+    def _prune_window(self, now: float) -> None:
+        """记录新样本后裁剪窗口：时间窗口 + 样本数硬上限（防止高 QPS 下无限增长）。"""
+        window = max(0.0, float(self.cfg.window_seconds))
+        if window <= 0:
+            self._window.clear()
+            self._window_ok = 0
+            return
+        cutoff = now - window
+        while self._window and self._window[0][0] < cutoff:
+            _, success = self._window.popleft()
+            if success:
+                self._window_ok = max(0, self._window_ok - 1)
+        max_samples = int(getattr(self.cfg, "window_max_samples", 2000) or 0)
+        if max_samples > 0:
+            while len(self._window) > max_samples:
+                _, success = self._window.popleft()
+                if success:
+                    self._window_ok = max(0, self._window_ok - 1)
+
+    async def snapshot(self) -> BreakerSnapshot:
+        """熔断状态快照（异步接口：显式让出一次事件循环，避免调用方同步阻塞）。
+
+        统计本身是 O(1)（增量计数器），``await asyncio.sleep(0)`` 只是让其它协程
+        有机会插入，不代表把 CPU 计算移出了事件循环。
+        """
+        await asyncio.sleep(0)
         now = self._clock()
         samples, rate = self._window_stats(now)
         retry_after = (
@@ -170,21 +208,28 @@ class ProxyCircuitBreaker:
     # endregion
 
     # region 状态迁移
-    def record_success(self) -> None:
-        """一次成功取数：清空连续计数；半开状态下累计探测成功次数。"""
+    async def record_success(self) -> None:
+        """一次成功取数：清空连续计数；半开状态下累计探测成功次数。
+
+        异步接口：先 ``await asyncio.sleep(0)`` 让出一次事件循环。
+        """
         if not self.cfg.enabled:
             return
+        await asyncio.sleep(0)
         now = self._clock()
         self._release_probe()
         self._window.append((now, True))
+        self._window_ok += 1
+        # 成功也要参与裁剪：高 QPS 稳态下全是成功样本，只有失败分支裁剪会无限增长
+        self._prune_window(now)
         self._consecutive_pool_failures = 0
         if self._state is ProxyCircuitState.HALF_OPEN:
             self._probe_successes += 1
             if self._probe_successes >= max(1, self.cfg.probe_successes):
                 self._close()
 
-    def record_failure(self, reason: str, *, pool_level: bool = False) -> None:
-        """一次失败取数。
+    async def record_failure(self, reason: str, *, pool_level: bool = False) -> None:
+        """一次失败取数（异步接口：先让出一次事件循环）。
 
         Args:
             reason: 失败原因（写进日志，便于区分超时 / 预算耗尽 / 网络错误）；
@@ -192,9 +237,11 @@ class ProxyCircuitBreaker:
         """
         if not self.cfg.enabled:
             return
+        await asyncio.sleep(0)
         now = self._clock()
         self._release_probe()
         self._window.append((now, False))
+        self._prune_window(now)
         if pool_level:
             self._consecutive_pool_failures += 1
         if self._state is ProxyCircuitState.HALF_OPEN:

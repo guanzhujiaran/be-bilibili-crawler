@@ -169,6 +169,88 @@ def test_dedup_batch_across_sources():
     assert seen == {"http://1.1.1.1:80", "http://2.2.2.2:80"}
 
 
+class _FakeDedupPipeline:
+    def __init__(self, store: "_FakeDedupRedis") -> None:
+        self.store = store
+        self.ops: list = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def sadd(self, key: str, member: str):
+        def _add():
+            bucket = self.store.sets.setdefault(key, set())
+            before = len(bucket)
+            bucket.add(member)
+            return 1 if len(bucket) > before else 0
+
+        self.ops.append(_add)
+
+    def expire(self, key: str, ttl: int):
+        self.ops.append(lambda: True)
+
+    async def execute(self):
+        return [op() for op in self.ops]
+
+
+class _FakeDedupRedis:
+    """只实现单轮去重需要的 SET 子集。"""
+
+    def __init__(self) -> None:
+        self.sets: dict[str, set[str]] = {}
+
+    def pipeline(self, transaction: bool = False):
+        return _FakeDedupPipeline(self)
+
+    async def scard(self, key: str) -> int:
+        return len(self.sets.get(key, ()))
+
+    async def delete(self, key: str) -> int:
+        return 1 if self.sets.pop(key, None) is not None else 0
+
+    async def aclose(self) -> None:
+        return None
+
+
+async def test_round_deduper_uses_redis_and_deletes_key(monkeypatch):
+    """跨源去重走 Redis SET；轮末 DEL，统计用 SCARD（不读回成员）。"""
+    deduper = mod._RoundDeduper()
+    fake = _FakeDedupRedis()
+    deduper._client = fake
+    monkeypatch.setattr(deduper, "_get_client", lambda: fake)
+
+    first = await deduper.filter_batch([_PROXY_NEW, _PROXY_ALIVE])
+    second = await deduper.filter_batch([_PROXY_NEW, _PROXY_DEAD])
+
+    assert first == [_PROXY_NEW, _PROXY_ALIVE]
+    assert second == [_PROXY_DEAD]
+    assert await deduper.count() == 3
+    assert deduper.seen_so_far == 3
+    await deduper.close()
+    assert deduper.key not in fake.sets
+
+
+async def test_round_deduper_falls_back_to_memory(monkeypatch):
+    """Redis 不可用必须降级内存去重，抓取不中断且同源重复仍被过滤。"""
+    deduper = mod._RoundDeduper()
+
+    def _boom():
+        raise RuntimeError("redis down")
+
+    monkeypatch.setattr(deduper, "_get_client", _boom)
+
+    first = await deduper.filter_batch([_PROXY_NEW, _PROXY_ALIVE])
+    second = await deduper.filter_batch([_PROXY_NEW])
+
+    assert first == [_PROXY_NEW, _PROXY_ALIVE]
+    assert second == []
+    assert deduper.using_fallback is True
+    assert await deduper.count() == 2
+
+
 async def test_ingest_proxies_uses_batch_lookup(monkeypatch):
     """每批次先批量预筛一次，再逐条入库（lookup 从参数传入，不再走实例缓存）。"""
     worker = mod.get_proxy_methods

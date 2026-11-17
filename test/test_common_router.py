@@ -61,6 +61,38 @@ async def test_gc_returns_ok(client):
 
 
 # ============================================================================
+# GET /debug/memory — 进程内存观测（内部接口）
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_debug_memory_returns_proc_cgroup_and_gc(client):
+    response = await client.get("/debug/memory")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["trace_enabled"] is False
+    assert "VmRSS" in data["proc_status"]
+    assert "cgroup_memory" in data
+    assert isinstance(data["gc"]["top_types"], list)
+    assert data["gc"]["top_types"], "GC 类型统计不能为空"
+
+
+@pytest.mark.asyncio
+async def test_debug_memory_trace_on_and_off(client):
+    try:
+        on = await client.get("/debug/memory?trace=on")
+        assert on.status_code == 200
+        data = on.json()
+        assert data["trace_enabled"] is True
+        assert "tracemalloc" in data
+        assert isinstance(data["tracemalloc"]["top"], list)
+    finally:
+        off = await client.get("/debug/memory?trace=off")
+        assert off.status_code == 200
+        assert off.json()["trace_enabled"] is False
+
+
+# ============================================================================
 # GET /v1/get/live_lots — 获取直播抽奖
 # ============================================================================
 
