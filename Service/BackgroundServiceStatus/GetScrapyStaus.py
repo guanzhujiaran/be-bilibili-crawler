@@ -14,6 +14,27 @@ from Service.GetOthersLotDyn import (
 from Service.GrpcModule.GrpcSrc.getDynDetail import dyn_detail_scrapy
 
 
+def _proxy_block_fields(robot) -> dict:
+    """从爬虫实例的熔断状态 / 池级失败计数推导「等待代理恢复」字段。
+
+    观测口径放在接口层，爬虫内部只提供 ``proxy_blocked`` / ``pool_level_fail_count``：
+    熔断开启说明代理池整体不可用，此时任务并没有失败，只是被挡住。
+    """
+    if robot is None:
+        return {}
+    breaker = getattr(robot, "_breaker", None)
+    state = getattr(getattr(breaker, "state", None), "value", "")
+    if not bool(getattr(robot, "proxy_blocked", False)):
+        return {"waiting_for_proxy": False, "blocked_reason": ""}
+    return {
+        "waiting_for_proxy": True,
+        "blocked_reason": (
+            f"代理池不可用（熔断状态 {state}），池级失败 "
+            f"{getattr(robot, 'pool_level_fail_count', 0)} 次"
+        ),
+    }
+
+
 def get_scrapy_status(
     scrapy_type: Literal[
         "dyn",
@@ -42,6 +63,7 @@ def get_scrapy_status(
                     is_running=other_lot_class.robot.space_succ_counter.is_running,
                     update_ts=other_lot_class.robot.space_succ_counter.update_ts,
                     running_params=other_lot_class.robot.space_succ_counter.running_params,
+                    **_proxy_block_fields(other_lot_class.robot),
                 )
             else:
                 return ProgressStatusResp()
@@ -55,6 +77,7 @@ def get_scrapy_status(
                     is_running=other_lot_class.robot.dyn_succ_counter.is_running,
                     update_ts=other_lot_class.robot.dyn_succ_counter.update_ts,
                     running_params=other_lot_class.robot.dyn_succ_counter.running_params,
+                    **_proxy_block_fields(other_lot_class.robot),
                 )
             else:
                 # 状态对象缺失时返回默认状态，避免 data 为 None 被 response_model_exclude_none 剔除

@@ -97,6 +97,9 @@ class BiliSpaceUserItem:
     # 本轮实际抓到的动态数量（用于轮次汇总「本轮无产出用户」，不再逐条打 warning）
     fetched_dyn_count: int = field(default=0)
     is_use_available_proxy: bool = field(default=_is_use_available_proxy)
+    # 代理档位由使用方（GetOthersLotDynRobot）从 Config 注入，抓取器内不硬编码档位：
+    # 需要改档位时只改 GetOthersLotDynRobotConfig.proxy_tier。
+    proxy_tier: ProxyTier = field(default=ProxyTier.FAST)
     params: BiliSpaceUserParamsType | None = field(default=None)
 
     def __post_init__(self):
@@ -230,10 +233,10 @@ class BiliSpaceUserItem:
                             is_use_available_proxy=self.is_use_available_proxy,
                             is_use_cookie=True,
                             # 只走公共代理池的 hot/warm：他人动态需要换 IP，
-                            # 不能用固定自建出口；历史 is_use_available_proxy
-                            # 会优先解析成 slow，因此显式 tier=FAST
+                            # 不能用固定自建出口；档位由 Config（self.proxy_tier）
+                            # 注入，历史 is_use_available_proxy 会优先解析成 slow。
                             pool_only=True,
-                            tier=ProxyTier.FAST,
+                            tier=self.proxy_tier,
                         ),
                     )
                 )
@@ -446,7 +449,12 @@ class BiliSpaceUserItem:
             return
         self._pub_lot_uids.add(uid_str)
         self.pub_lot_users.add(
-            BiliSpaceUserItem(uid=str(uid), lot_round_id=self.lot_round_id)
+            BiliSpaceUserItem(
+                uid=str(uid),
+                lot_round_id=self.lot_round_id,
+                # 阶段二沿用阶段一的档位（来自 Config，不在抓取器里硬编码）
+                proxy_tier=self.proxy_tier,
+            )
         )
 
     async def _solve_space_dynamic(

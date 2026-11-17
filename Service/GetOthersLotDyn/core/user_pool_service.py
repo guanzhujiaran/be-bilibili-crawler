@@ -81,14 +81,18 @@ class LotUserPoolService:
     """用户池的剔除 / 补充 / 推送"""
 
     async def manage_user_list(
-        self, low_active_uids: list[int] | None = None
+        self,
+        low_active_uids: list[int] | None = None,
+        exclude_from_cull: set[int] | None = None,
     ) -> LotUserPoolSummary:
         """管理用户列表：剔除 -> 超容量裁剪 -> 补充，聚合各阶段摘要用于推送。
 
         :param low_active_uids: 本轮抓到 0 条动态的用户（由 robot 阶段一统计），
             仅用于轮次总结展示；是否剔除仍由 ``cull_users`` 的窗口统计决定。
+        :param exclude_from_cull: 本轮**因代理池不可用**而 0 产出的用户，
+            剔除阶段必须豁免：低产出是环境问题，不是用户质量问题。
         """
-        cull = await self.cull_users()
+        cull = await self.cull_users(exclude_uids=exclude_from_cull)
         supp = await self.supplement_users()
         return LotUserPoolSummary(
             # 进入管理前的列表长度：剔除阶段的 before_count
@@ -107,15 +111,19 @@ class LotUserPoolService:
             low_active_uids=low_active_uids or [],
         )
 
-    async def cull_users(self) -> UserPoolCullSummary:
+    async def cull_users(
+        self, exclude_uids: set[int] | None = None
+    ) -> UserPoolCullSummary:
         """剔除阶段：剔除低产出用户，并把列表裁剪到容量上限。
 
         - 剔除：按最近 N 天内「转发的原动态命中抽奖数」淘汰；统计窗口内抓到 0 条动态的
           用户视为「数据未知」（新补充用户/本轮抓取失败），不参与剔除，避免误杀；
+        - 豁免：``exclude_uids`` 里的用户（本轮因代理池不可用而未取到数）不参与剔除；
         - 超容量裁剪：豁免剔除不能突破容量上限，写回 Redis 前把列表裁剪到
           ``max_user_list_size``，位置在剔除之后、补充之前。
         """
         uid_list = await get_other_lot_redis_manager.get_target_uid_list()
+        excluded = exclude_uids or set()
         summary = UserPoolCullSummary(
             before_count=len(uid_list),
             after_count=0,
@@ -141,7 +149,12 @@ class LotUserPoolService:
             if (stat := stat_map.get(item.uid)) is not None
             and stat.total > 0
             and stat.lot <= threshold
+            and item.uid not in excluded
         ]
+        if excluded:
+            get_others_lot_log.info(
+                f"[剔除阶段] 豁免{len(excluded)}个本轮因代理池不可用未取到数的用户"
+            )
         if removed_items:
             removed_uids = {item.uid for item in removed_items}
             summary.removed = [item.uid for item in removed_items]

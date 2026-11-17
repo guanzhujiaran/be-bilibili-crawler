@@ -17,6 +17,7 @@ from Service.BaseCrawler.resilience import (
     FailureAlertThrottle,
     FinalFailTally,
     ProxyCircuitBreaker,
+    ProxyCircuitState,
     is_pool_level_error,
 )
 from Service.BaseCrawler.retry_queue import (
@@ -200,6 +201,14 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self.requeue_max_task_seconds = _resolve(
             self.config.requeue_max_task_seconds, runtime.requeue_max_task_seconds
         )
+        # 池级失败（代理池整体不可用）语义：强制本轮重入队 + 轮次级等待上限
+        self.requeue_on_pool_unavailable = bool(
+            self.config.requeue_on_pool_unavailable
+        )
+        self.pool_unavailable_max_waits = int(self.config.pool_unavailable_max_waits)
+        self.pool_unavailable_wait_seconds = float(
+            self.config.pool_unavailable_wait_seconds
+        )
         # 重入队策略：按爬虫 Config 声明；默认 immediate_front（保持历史行为）
         self.requeue_strategy: str = self.config.requeue_strategy
 
@@ -259,6 +268,15 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         self._recent_fail_ids: deque[str] = deque(
             maxlen=max(0, int(self.config.failure_push_id_limit))
         )
+        # ===== 池级失败（代理池整体不可用）统计：供子类轮末判定「真跑完 / 被挡住」=====
+        # 注意：**不在 run() 里复位** —— 一个业务轮次可能分多次 run（如
+        # GetOthersLotDyn 的三个阶段），复位由轮次入口显式调用
+        # ``reset_pool_level_stats()``，否则最后一阶段的统计会覆盖前几阶段。
+        self._pool_level_fail_count: int = 0
+        self._fetch_attempt_count: int = 0
+        self._pool_level_error_kinds: Counter[str] = Counter()
+        # 池级失败重入队的日志节流计数（避免代理故障期间每条任务刷一行 INFO）
+        self._pool_requeue_logs: int = 0
 
         self._plugins = []
         for plugin_cfg in self.config.plugins:
@@ -287,6 +305,111 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             f"插件 {plugin_cls.__name__} 未在 {self.__class__.__name__} 中注册，"
             f"请检查其 Config.plugins 是否包含对应工厂。"
         )
+
+    # ===== 池级失败（代理池整体不可用）观测 / 轮末判定 =====
+    def reset_pool_level_stats(self) -> None:
+        """复位池级失败统计（由**业务轮次入口**调用，如 ``main()`` 开头）。
+
+        基类 ``run()`` 不复位：同一业务轮次可能分多个阶段各跑一次 ``run()``，
+        在 ``run()`` 里复位会让轮末只剩最后一个阶段的统计。
+        """
+        self._pool_level_fail_count = 0
+        self._fetch_attempt_count = 0
+        self._pool_level_error_kinds = Counter()
+        self._pool_requeue_logs = 0
+
+    @property
+    def pool_level_fail_count(self) -> int:
+        """自上次 ``reset_pool_level_stats()`` 起，代理池级取数失败次数。"""
+        return self._pool_level_fail_count
+
+    @property
+    def pool_level_fail_ratio(self) -> float:
+        """池级失败占全部取数尝试的比例（0~1）。
+
+        注意这是**按尝试次数**的口径：同一任务被重入队重试会重复计入，
+        代理故障期间会明显放大。业务侧做「本轮是否被挡住」判定时，
+        应结合自己的「任务/用户维度」口径（如按 uid 去重）一起看。
+        """
+        if self._fetch_attempt_count <= 0:
+            return 0.0
+        return self._pool_level_fail_count / self._fetch_attempt_count
+
+    @property
+    def pool_level_error_kinds_text(self) -> str:
+        """池级失败按异常类型分类的摘要（日志 / 推送用）。"""
+        if not self._pool_level_error_kinds:
+            return "无"
+        return "、".join(
+            f"{name}={count}"
+            for name, count in self._pool_level_error_kinds.most_common()
+        )
+
+    @property
+    def proxy_blocked(self) -> bool:
+        """当前是否被代理池挡住（熔断开启）：供状态接口显示「等待代理恢复」。"""
+        return self._breaker.is_open
+
+    def _note_pool_level_failure(
+        self, worker_model: WorkerModel, reason: str
+    ) -> None:
+        """登记一次池级失败：打标到任务 + 计入本轮统计。"""
+        worker_model.pool_level_fail = True
+        self._pool_level_fail_count += 1
+        self._pool_level_error_kinds[reason] += 1
+
+    async def _wait_for_pool(self, worker_model: WorkerModel) -> bool:
+        """熔断退避等待（``await asyncio.sleep``，绝不阻塞事件循环）。
+
+        Returns:
+            True = 可以继续取数（熔断已恢复 / 等待到切片上限，仍需尝试）；
+            False = 本任务本轮等待次数已用尽，调用方应直接按池级失败处理。
+
+        轮次级等待上限：单个任务一轮最多等待 ``pool_unavailable_max_waits`` 次、
+        每次最长 ``pool_unavailable_wait_seconds`` 秒，防止代理长期不可用时
+        整轮无限期挂住（用尽后任务按池级失败重入队，由重入队上限决定何时收尾）。
+        """
+        # CLOSED 不等待；HALF_OPEN 仍需走 wait_until_ready 抢探测名额，但不计入等待次数
+        if self._breaker.state is ProxyCircuitState.CLOSED:
+            return True
+        is_open = self._breaker.state is ProxyCircuitState.OPEN
+        if is_open:
+            max_waits = int(self.pool_unavailable_max_waits)
+            if max_waits >= 0 and worker_model.pool_wait_count >= max_waits:
+                if self._pool_requeue_logs < 20:
+                    self._pool_requeue_logs += 1
+                    self.log.warning(
+                        self.format_log(
+                            f"代理池不可用等待次数已达上限({max_waits})，不再等待，"
+                            f"任务按池级失败重入队：{worker_model.params}"
+                        )
+                    )
+                else:
+                    self.log.debug(
+                        self.format_log(
+                            f"代理池等待次数已达上限，任务按池级失败重入队"
+                            f"（日志已节流）：{worker_model.params}"
+                        )
+                    )
+                return False
+            worker_model.pool_wait_count += 1
+        wait_seconds = max(0.0, float(self.pool_unavailable_wait_seconds))
+        try:
+            if wait_seconds > 0:
+                # 切片等待：避免一次熔断退避把整个任务挂死在这里
+                await asyncio.wait_for(
+                    self._breaker.wait_until_ready(), timeout=wait_seconds
+                )
+            else:
+                await self._breaker.wait_until_ready()
+        except asyncio.TimeoutError:
+            self.log.info(
+                self.format_log(
+                    f"等待代理池恢复已达单次上限({wait_seconds:.0f}s)，先尝试取数："
+                    f"{worker_model.params}"
+                )
+            )
+        return True
 
     @property
     def plugins(self) -> List[CrawlerPlugin[ParamsType]]:
@@ -817,11 +940,22 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
     async def _execute_fetch(self, worker_model: WorkerModel) -> WorkerStatus:
         """执行 fetch 操作，处理超时和异常，返回任务状态。
 
-        代理池整体不可用时（熔断开启）先 ``await`` 退避到可用为止，**继续取数**
+        代理池整体不可用时（熔断开启）先 ``await`` 退避等待，**继续取数**
         只会制造失败风暴；退避结束后再走正常流程。
+
+        池级失败（``is_pool_level_error``）与业务失败严格区分：
+        - 打标 ``worker_model.pool_level_fail``，供 ``_should_requeue`` 走
+          「强制本轮重入队等代理恢复」分支；
+        - 不走 ``worker_error_delay``（0 或 300 都没有意义），退避交给熔断器；
+        - 计入实例级池级失败统计，供业务轮末判断「真跑完 / 被代理挡住」。
         """
-        # 熔断退避：必须 await（禁止 time.sleep），期间不产生任何上游请求
-        await self._breaker.wait_until_ready()
+        self._fetch_attempt_count += 1
+        worker_model.pool_level_fail = False
+        # 熔断退避：必须 await（禁止 time.sleep），期间不产生任何上游请求；
+        # 等待次数受轮次级上限约束，用尽后直接按池级失败交回队列。
+        if not await self._wait_for_pool(worker_model):
+            self._note_pool_level_failure(worker_model, "wait_budget_exhausted")
+            return WorkerStatus.fail
         try:
             async with asyncio.timeout(self.worker_max_timeout):
                 fetch_result = await self.handle_fetch(worker_model.params)
@@ -837,12 +971,14 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
             await self._breaker.record_failure(
                 f"{type(e).__name__}: {e}", pool_level=pool_level
             )
+            if pool_level:
+                self._note_pool_level_failure(worker_model, type(e).__name__)
             if self.log_error:
                 self.log.exception(self.format_log(f"爬取异常：{e}"))
                 await self._push_failure_alert(worker_model, e)
-            # 熔断已开启时不再叠加 worker_error_delay：
+            # 熔断已开启 / 池级失败时不再叠加 worker_error_delay：
             # 退避等待本身就是冷却，双重等待会让任务时长无谓翻倍。
-            if not self._breaker.is_open:
+            if not self._breaker.is_open and not pool_level:
                 await asyncio.sleep(self.worker_error_delay)
             return WorkerStatus.fail
 
@@ -934,7 +1070,7 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         )
 
     def _requeue_limit_reason(
-        self, worker_model: WorkerModel
+        self, worker_model: WorkerModel, *, include_max_retries: bool = True
     ) -> tuple[str, str] | None:
         """重入队上限判定：返回 ``(原因代码, 人话说明)``，未到上限返回 ``None``。
 
@@ -944,11 +1080,19 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
         - ``max_requeue_per_task``：预算耗尽后「预算之外」的处置上限（新增）；
         - ``requeue_max_task_seconds``：单个任务的累计时长上限（新增）。
 
+        ``include_max_retries=False`` 用于**池级失败**分支：任务本身没有问题，
+        ``max_retries=0``（如 GetOthersLotDyn 的「业务失败不重试」）不应该
+        把「等代理恢复」也一起拦掉，但仍保留后两道防死循环的兜底。
+
         注意：``retry_count`` 只在 ``_handle_requeue`` 中自增一次，这里读到的是
         「已经重入队过多少次」，因此 ``>=`` 判定刚好允许 cap 次重入队。
         """
         retries = max(0, int(worker_model.retry_count))
-        if self.max_retries >= 0 and retries >= self.max_retries:
+        if (
+            include_max_retries
+            and self.max_retries >= 0
+            and retries >= self.max_retries
+        ):
             return "max_retries", f"已达到最大重试次数({self.max_retries})"
         requeue_cap = int(self.max_requeue_per_task)
         if requeue_cap >= 0 and retries >= requeue_cap:
@@ -970,13 +1114,58 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         ``next_round`` 策略直接返回 False：本轮不重排、不计 max_retries，
         失败任务由 ``_settle_retry_task`` 留在 pending，下一轮 ``main()`` 补跑。
+
+        **池级失败优先于一切业务重试配置**：代理池整体不可用不是任务失败，
+        只要 ``requeue_on_pool_unavailable`` 为真就必须留在本轮队列等代理恢复，
+        跳过 ``requeue_on_fetch_fail`` / ``requeue_on_timeout`` / ``max_retries``
+        与 ``requeue_strategy``（``next_round`` 也不例外：那样会让整轮提前结束）；
+        仅保留重入队次数与累计时长两道兜底，防止代理长期不可用时无限挂住。
         """
         status = worker_model.fetchStatus
+        if status not in (WorkerStatus.fail, WorkerStatus.timeoutError):
+            return False
+        if self.requeue_on_pool_unavailable and worker_model.pool_level_fail:
+            limit = self._requeue_limit_reason(
+                worker_model, include_max_retries=False
+            )
+            if limit is None:
+                # 日志节流：代理故障期间每条任务都打 INFO 会刷屏
+                if self._pool_requeue_logs < 20:
+                    self._pool_requeue_logs += 1
+                    self.log.warning(
+                        self.format_log(
+                            f"池级失败，任务重入队等待代理恢复"
+                            f"（第 {worker_model.retry_count + 1} 次）："
+                            f"{worker_model.params}"
+                        )
+                    )
+                else:
+                    self.log.debug(
+                        self.format_log(
+                            f"池级失败，任务重入队等待代理恢复（日志已节流）："
+                            f"{worker_model.params}"
+                        )
+                    )
+                return True
+            code, text = limit
+            total = self._final_fail_tally.add(code)
+            self.log.warning(
+                self.format_log(
+                    f"池级失败任务本轮重试用尽（{text}），已留在重试队列待下一轮补跑："
+                    f"{worker_model.params}；本轮累计 {self._final_fail_tally.to_log_str()}"
+                )
+            )
+            if total % 20 == 0:
+                self.log.warning(
+                    self.format_log(
+                        f"池级失败任务重试用尽的数量持续增长："
+                        f"{self._final_fail_tally.to_log_str()}"
+                    )
+                )
+            return False
         if status == WorkerStatus.fail and not self.requeue_on_fetch_fail:
             return False
         if status == WorkerStatus.timeoutError and not self.requeue_on_timeout:
-            return False
-        if status not in (WorkerStatus.fail, WorkerStatus.timeoutError):
             return False
         if getattr(self, "requeue_strategy", "immediate_front") == "next_round":
             return False

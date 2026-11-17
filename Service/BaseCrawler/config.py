@@ -122,6 +122,37 @@ class CrawlerConfig(BaseModel):
     requeue_strategy: Literal["immediate_front", "delayed", "next_round"] = Field(
         default="immediate_front", description="本轮失败任务的重入队策略"
     )
+    # ===== 代理池整体不可用（池级失败）时的重入队语义 =====
+    # 池级失败（``RequestProxyUnavailableError`` / ``ProxyRetryBudgetExhausted``，
+    # 判定统一走 ``resilience.is_pool_level_error``）说明「换哪个代理都取不到数」，
+    # 任务本身没有问题，不能按业务失败直接丢弃 —— 必须留在本轮重试队列，
+    # 等代理恢复后继续抓（至少一次）。开启后该分支跳过
+    # requeue_on_fetch_fail / requeue_on_timeout / max_retries，
+    # 但仍受 max_requeue_per_task / requeue_max_task_seconds 两道兜底上限约束。
+    requeue_on_pool_unavailable: bool = Field(
+        default=True,
+        description="池级失败是否强制本轮重入队，不受 requeue_on_fetch_fail / "
+        "requeue_on_timeout / max_retries 限制（仍受重入队次数与累计时长上限约束）",
+    )
+    # 轮次级等待上限（防止代理长期不可用时无限期挂住）：
+    # 单个任务一轮内最多因熔断等待 ``pool_unavailable_max_waits`` 次，
+    # 每次最长 ``pool_unavailable_wait_seconds`` 秒；用尽后不再等待，
+    # 直接按池级失败交回队列（由上面的重入队上限决定何时收尾）。
+    pool_unavailable_max_waits: int = Field(
+        default=10,
+        description="单个任务一轮内因代理池不可用最多等待次数；0 = 不等待，-1 = 不限",
+    )
+    pool_unavailable_wait_seconds: float = Field(
+        default=900.0,
+        description="单次等待代理池恢复的最长秒数（应不小于熔断退避上限，"
+        "避免一次退避被切碎成多轮等待）；<=0 表示不限制单次等待时长",
+    )
+    # 轮末判定「被代理挡住」的池级失败占比阈值：
+    # 达到时保持本轮未完成，下一轮复用该轮次继续抓（业务侧用自己更精确的口径时可覆盖）。
+    proxy_blocked_ratio_threshold: float = Field(
+        default=0.5,
+        description="池级失败占比达到该阈值即视为本轮被代理池挡住（0~1）",
+    )
     # 失败推送里「业务 id」的取值范围（按顺序取第一个命中的字段）：
     # 留空则自动取 params 里第一个以 ``_id`` 结尾的字段。业务差异只在各爬虫 Config 声明。
     business_id_fields: List[str] = Field(
@@ -279,9 +310,15 @@ class GetOthersLotDynRobotConfig(CrawlerConfig):
     requeue_on_timeout: bool = False
     max_retries: int = 0
     worker_error_delay: int = 0
+    # 但「代理池整体不可用」不是业务失败（见 requeue_on_pool_unavailable）：
+    # 任务必须留在本轮重试队列，等代理恢复后继续抓，不能把整轮用户当失败丢弃。
+    # 下面两道上限是池级失败专用兜底：单任务累计 6 小时内最多重入队 100 次，
+    # 超过才交给下一轮（轮次保持未完成，下一轮复用该轮次继续抓）。
+    max_requeue_per_task: int | None = 100
+    requeue_max_task_seconds: float | None = 6 * 3600
     # 抽奖判定对时效有要求（他人刚转发的动态要尽快落库），走 fast 车道：
     # 只从已验证的 hot/warm 代理里取，避免把时间耗在 cold 代理探测上。
-    # 注：内部空间动态 / 动态详情 / 评论的 RequestConf 显式带 tier=FAST，
+    # 注：内部空间动态 / 动态详情 / 评论的 RequestConf 都从本配置取档位，
     # 否则历史参数 is_use_available_proxy=True 会把档位重新解析成 slow。
     proxy_tier: ProxyTier = ProxyTier.FAST
     logger: Any = get_others_lot_logger

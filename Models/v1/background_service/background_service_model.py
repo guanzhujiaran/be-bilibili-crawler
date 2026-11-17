@@ -47,6 +47,11 @@ class ProgressStatusResp(CustomBaseModel):
     is_running: bool = False
     update_ts: int = 0  # 最后更新时间
     running_params: set = Field(default_factory=set, description="运行中的参数")
+    # ===== 代理池阻塞状态（前端据此显示「等待代理恢复」而不是「已停止」）=====
+    waiting_for_proxy: bool = Field(
+        default=False, description="是否正在等待代理池恢复（熔断开启）"
+    )
+    blocked_reason: str = Field(default="", description="被阻塞的原因（空串 = 未被阻塞）")
 
     @computed_field
     def update_time(self) -> str:

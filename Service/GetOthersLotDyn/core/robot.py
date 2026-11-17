@@ -23,12 +23,13 @@ from Service.GetOthersLotDyn.Sql.sql_helper import (
 from Service.opus新版官方抽奖.Model.BaseLotModel import ProgressCounter
 from Utils.通用.Common import sem_gen
 from Utils.通用.Tool import format_duration
+from Utils.推送.PushMe import a_push_error
 from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
 
 from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
 from Service.BaseCrawler.config import GetOthersLotDynRobotConfig
 from Service.MQ.base.MQClient.BiliLotDataPublisher import BiliLotDataPublisher
-from Service.BaseCrawler.model.base import WorkerStatus
+from Service.BaseCrawler.model.base import WorkerModel, WorkerStatus
 from pydantic import Field
 
 
@@ -74,6 +75,11 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self._phase: int = 1
         # 本轮抓到 0 条动态的用户，用于轮次总结（避免逐条 warning 刷屏）
         self._low_active_uids: list[int] = []
+        # 本轮因「代理池整体不可用」而取数失败的用户：这些人的 0 产出是环境问题，
+        # 不是用户质量问题 —— 既不算「低活跃」，也不能参与用户池剔除（T3）。
+        self._proxy_blocked_uids: set[int] = set()
+        # 本轮各阶段的目标用户（按 uid 去重），用于计算「被代理挡住」的占比
+        self._round_target_uids: set[int] = set()
         self._current_phase_objs: list[BiliSpaceUserItem | BiliDynamicItem] = []
         # 配置（logger / 超时 / 重试 / 插件等）统一由 GetOthersLotDynRobotConfig 控制；
         # max_sem 由 main() 中的 _set_concurrency 按阶段动态调整，故此处无需传入
@@ -122,6 +128,26 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 self.dyn_succ_counter.running_params.discard(self.__hash__())
             self.dyn_succ_counter.succ_count += 1
         return WorkerStatus.complete
+
+    async def on_worker_end(self, worker_model: WorkerModel):
+        """收集「本轮被代理池挡住」的用户 uid（T3 剔除豁免 + 轮末判定用）。
+
+        只有阶段 1/2（抓用户空间动态）的失败与用户质量相关；阶段 3 是按动态判定，
+        不参与用户池剔除。
+        """
+        if self._phase in (1, 2) and worker_model.params is not None:
+            uid = getattr(getattr(worker_model.params, "obj", None), "uid", None)
+            if uid is not None:
+                uid = int(uid)
+                if worker_model.pool_level_fail:
+                    self._proxy_blocked_uids.add(uid)
+                elif worker_model.fetchStatus in (
+                    WorkerStatus.complete,
+                    WorkerStatus.nullData,
+                ):
+                    # 后续重试成功：该用户已经正常取到数，不再算「被代理挡住」
+                    self._proxy_blocked_uids.discard(uid)
+        await super().on_worker_end(worker_model)
 
     def _collect_run_dyn_ids(
         self, judge_result: BiliDynamicItemJudgeLotteryResult
@@ -194,6 +220,13 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 )
                 latest_round = _new_round(old_round_id + 1)
                 self.isPreviousRoundFinished = True
+            else:
+                # 上一轮未完成（被代理池挡住而收尾，或进程被杀）：直接复用该轮次继续跑。
+                # 用户的 isUserSpaceFinished=0 会让空间动态从上次 offset 断点续爬。
+                get_others_lot_log.warning(
+                    f"复用未完成轮次{latest_round.lotRound_id}继续抓取"
+                    f"（isRoundFinished=0；上一轮可能被代理池挡住）"
+                )
             self.nowRound = latest_round
             get_others_lot_log.info(
                 f"当前抽奖获取轮次信息：{sqlalchemy_model_2_dict(latest_round)}"
@@ -205,7 +238,10 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 self.bili_space_user_items_set.update(
                     [
                         BiliSpaceUserItem(
-                            uid=x.uid, lot_round_id=self.nowRound.lotRound_id
+                            uid=x.uid,
+                            lot_round_id=self.nowRound.lotRound_id,
+                            # 档位统一来自 Config，抓取器内不再硬编码
+                            proxy_tier=self.proxy_tier,
                         )
                         for x in redis_data
                     ]
@@ -268,7 +304,11 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
                 ]
                 self.bili_space_user_items_set.update(
                     [
-                        BiliSpaceUserItem(uid=x, lot_round_id=self.nowRound.lotRound_id)
+                        BiliSpaceUserItem(
+                            uid=x,
+                            lot_round_id=self.nowRound.lotRound_id,
+                            proxy_tier=self.proxy_tier,
+                        )
                         for x in default_list
                     ]
                 )
@@ -285,12 +325,18 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self.bili_dynamic_items_set.clear()
         self.goto_check_dynamic_item_set.clear()
         self.scrapy_info = RobotScrapyInfo()
+        # 池级失败统计按「业务轮次」累计：分三个阶段各跑一次 run()，
+        # 统计只能在轮次入口复位（基类 run() 不复位）。
+        self.reset_pool_level_stats()
+        self._proxy_blocked_uids = set()
+        self._round_target_uids = set()
         await self.__init()
         # ---- 第一阶段：获取抽奖号的空间动态 ----
         self._phase = 1
         self._current_phase_objs: list[BiliSpaceUserItem] = list(
             self.bili_space_user_items_set
         )
+        self._round_target_uids.update(int(x.uid) for x in self._current_phase_objs)
         self.space_succ_counter = ProgressCounter()
         self.space_succ_counter.total_num = len(self._current_phase_objs)
         self.space_succ_counter.is_running = True
@@ -300,13 +346,21 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
 
         # 本轮一条动态都没抓到的用户（低活跃号）：逐条打 warning 会刷屏，
         # 统一在这里汇总一条日志，并作为轮次总结的一部分推送。
+        # 因代理池不可用而取数失败的用户不算「低活跃」：那是环境问题，不是用户质量。
         self._low_active_uids = sorted(
-            int(x.uid) for x in self.bili_space_user_items_set if x.fetched_dyn_count == 0
+            int(x.uid)
+            for x in self.bili_space_user_items_set
+            if x.fetched_dyn_count == 0 and int(x.uid) not in self._proxy_blocked_uids
         )
         if self._low_active_uids:
             get_others_lot_log.info(
                 f"第一阶段：{len(self._low_active_uids)}个用户本轮无新增动态（低活跃），"
                 f"uid={self._low_active_uids[:50]}"
+            )
+        if self._proxy_blocked_uids:
+            get_others_lot_log.warning(
+                f"第一阶段：{len(self._proxy_blocked_uids)}个用户因代理池不可用未能取数"
+                f"（不计入低活跃、不参与剔除）"
             )
 
         pub_lot_uid_set: Set[BiliSpaceUserItem] = set()
@@ -319,6 +373,7 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         # ---- 第二阶段：获取发起抽奖用户的空间动态 ----
         self._phase = 2
         self._current_phase_objs = list(pub_lot_uid_set)
+        self._round_target_uids.update(int(x.uid) for x in self._current_phase_objs)
         self.space_succ_counter = ProgressCounter()
         self.space_succ_counter.total_num = len(self._current_phase_objs)
         self.space_succ_counter.is_running = True
@@ -350,20 +405,83 @@ class GetOthersLotDynRobot(UnlimitedCrawler[RobotTaskParams]):
         self._set_concurrency(settings.concurrency.judge_dyn)
         await self.run(init_params=None)
         self.dyn_succ_counter.is_running = False
+        proxy_blocked = False
         try:
             await self._after_scrapy()
         finally:
-            # 收尾等待异常 / 被调度器取消时也要关闭轮次：否则下一轮（甚至跨进程）
-            # 会一直复用这个未完成轮次，历史动态持续挂在上面。
-            self.nowRound.isRoundFinished = 1
+            # 收尾判定「真跑完」还是「被代理池挡住」：
+            # 被挡住时轮次必须保持未完成，下一轮复用该轮次继续抓；
+            # 收尾等待异常 / 被调度器取消（且没有池级失败）时仍按老行为关闭轮次，
+            # 否则下一轮（甚至跨进程）会一直复用这个未完成轮次。
+            proxy_blocked = self._is_proxy_blocked_round()
+            self.nowRound.isRoundFinished = 0 if proxy_blocked else 1
             await SqlHelper.addLotMainInfo(self.nowRound)
+        if proxy_blocked:
+            # T3：代理故障轮不得触发用户池剔除（低产出是环境问题，不是用户质量问题），
+            # 也不能按本轮的 partial 结果做「补充」。
+            await self._push_proxy_blocked_summary()
+            get_others_lot_log.warning(
+                f"轮次{self.nowRound.lotRound_id}被代理池挡住：保持 isRoundFinished=0，"
+                f"跳过用户池剔除 / 补充，下一轮复用该轮次继续抓"
+            )
+            return
         # 用户池管理（剔除低产出用户 + 从评论区补充参与者）与总结推送。
         # 必须放在调度入口里执行：此前只在 HTTP 触发的 get_new_dyn() 中调用，
         # 定时任务走本方法时用户列表从不更新，池子长期停留在默认名单。
         pool_summary = await lot_user_pool_service.manage_user_list(
-            low_active_uids=self._low_active_uids
+            low_active_uids=self._low_active_uids,
+            exclude_from_cull=self._proxy_blocked_uids,
         )
         await lot_user_pool_service.push_round_summary(pool_summary)
+
+    def _is_proxy_blocked_round(self) -> bool:
+        """本轮是否因「代理池整体不可用」而未真正跑完。
+
+        判定口径（任一条成立即视为被挡住）：
+
+        1. 本轮目标用户里「因池级失败取数失败」的占比 >=
+           ``Config.proxy_blocked_ratio_threshold``（默认 0.5）。按 **uid 去重**
+           而不是取数尝试次数：重入队会把同一用户的失败放大成几十次；
+        2. 本轮一条动态都没抓到（``allNum == 0``）且存在池级失败 —— 兜底覆盖
+           「阶段 2 才开始大面积失败」这类占比算不出来 / 分母偏小的场景。
+        """
+        if self.pool_level_fail_count <= 0:
+            return False
+        total = len(self._round_target_uids)
+        blocked = len(self._proxy_blocked_uids & self._round_target_uids)
+        ratio = blocked / total if total > 0 else 0.0
+        threshold = float(self.config.proxy_blocked_ratio_threshold)
+        if total > 0 and ratio >= threshold:
+            get_others_lot_log.warning(
+                f"轮次{self.nowRound.lotRound_id}池级失败占比 {blocked}/{total}"
+                f"（{ratio:.0%}）>= 阈值 {threshold:.0%}，判定为被代理池挡住"
+            )
+            return True
+        if int(self.nowRound.allNum or 0) == 0:
+            get_others_lot_log.warning(
+                f"轮次{self.nowRound.lotRound_id}本轮 0 条动态且存在 "
+                f"{self.pool_level_fail_count} 次池级失败，判定为被代理池挡住"
+            )
+            return True
+        return False
+
+    async def _push_proxy_blocked_summary(self) -> None:
+        """推送「代理不可用，轮次未完成」（带代理档位 / 失败原因分类 / 失败数）。"""
+        await a_push_error(
+            subject="代理不可用，轮次未完成",
+            content=(
+                f"爬虫[{self.crawler_name}] 轮次{self.nowRound.lotRound_id}被代理池挡住，"
+                f"保持未完成，下一轮复用该轮次继续抓：\n"
+                f"proxy_tier={self.proxy_tier.value}；"
+                f"池级失败 {self.pool_level_fail_count} 次 / 取数尝试 "
+                f"{self._fetch_attempt_count} 次（按尝试 {self.pool_level_fail_ratio:.0%}）；"
+                f"受影响用户 {len(self._proxy_blocked_uids)}/{len(self._round_target_uids)}；"
+                f"失败原因分类：{self.pool_level_error_kinds_text}；"
+                f"熔断状态 {self._breaker.state.value}；"
+                f"本轮动态数 allNum={int(self.nowRound.allNum or 0)}；"
+                f"已跳过用户池剔除"
+            ),
+        )
 
     _MQ_POLL_INTERVAL = 30  # 秒：轮询 extra_info 间隔
     _MQ_POLL_MAX_IDLE = 360  # 秒：连续无新增记录时放弃等待

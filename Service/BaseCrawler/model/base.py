@@ -25,6 +25,16 @@ class WorkerModel(CustomGenericModel, Generic[ParamsType]):
     created_at: datetime = Field(default_factory=datetime.now, description="创建时间")
     updated_at: datetime = Field(default_factory=datetime.now, description="更新时间")
     retry_count: int = Field(0, description="重试次数")
+    # 最近一次取数失败是否属于「代理池整体不可用」（判定见 resilience.is_pool_level_error）：
+    # 池级失败要按「至少一次」重入队等待代理恢复，不能被当成业务失败丢弃。
+    pool_level_fail: bool = Field(
+        default=False, description="最近一次取数失败是否属于代理池级失败"
+    )
+    # 本任务因熔断等待代理恢复的次数（轮次级等待上限用，见
+    # CrawlerConfig.pool_unavailable_max_waits）。
+    pool_wait_count: int = Field(
+        default=0, description="本任务因代理池不可用已等待的次数"
+    )
 
     @property
     def fetchStatusStr(self) -> str:
