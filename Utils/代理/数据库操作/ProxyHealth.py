@@ -18,8 +18,11 @@
 - 连续失败 ``warm_after_fails`` / ``suspect_after_fails`` 触发降档与指数冷却，
   成功一次即清零并回到 hot；
 - 风控层（412/352）按 IP 冷却 2~6h，网络层冷却 10~30min；
-- 明细放 Redis（热缓存），MySQL 仍只写 ``proxy_tab`` 原有的
-  status / score / success_times 语义，**不新增列、不改字段含义**；
+- 明细放 Redis（热缓存），负责**取用准入**（分档 / 连续失败 / EWMA / 冷却 / 在途）；
+- MySQL 侧 ``proxy_tab`` 负责**行的真值与清理判定**：status / score / success_times
+  记录可用性与净累计，``fail_network_times`` / ``fail_response_times`` /
+  ``fail_unknown_times`` / ``quarantine_times`` 按失败原因分桶（窗口内滚动），
+  只供 ``clear_unusable_proxy`` 判定，**不参与取用**；
 - 冷却中的代理由 ``SQLHelper.flush_proxy_health`` 定期回写 ``update_ts``，
   使 ``refresh_proxy`` 的「update_ts 超过 2 小时才复位」条件不成立 —— 冷却不会被复位。
 

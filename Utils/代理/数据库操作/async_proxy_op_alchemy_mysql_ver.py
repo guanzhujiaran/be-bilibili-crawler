@@ -1683,9 +1683,10 @@ class SQLHelperClass(SqlHelperBase):
     async def flush_proxy_health(self) -> int:
         """把 Redis 里的冷却状态定期「落盘」到 MySQL（心跳）。
 
-        MySQL 侧**不新增字段**，只复用 ``proxy_tab`` 原有的 status / update_ts：
-        冷却中的代理保持 ``status != 0``，并持续刷新 ``update_ts``，
-        使 ``refresh_proxy`` 的「update_ts 超过 2 小时才复位」条件永远不成立。
+        本方法**不写失败原因计数**（``fail_*_times`` 只由 ``ProxyEvent`` 记账），
+        只复用 ``proxy_tab`` 的 status / update_ts：冷却中的代理保持 ``status != 0``，
+        并持续刷新 ``update_ts``，使 ``refresh_proxy`` 的「update_ts 超过 2 小时
+        才复位」条件永远不成立。
 
         明细（连续失败、EWMA、冷却到期时间）留在 Redis 热缓存 —— 它本来就是
         「可重建的观测数据」，丢失只会让代理退回 cold（需重新探测），不会破坏业务。
