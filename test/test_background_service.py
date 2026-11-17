@@ -11,6 +11,8 @@
     POST /BackgroundService/Restart
 """
 
+import asyncio
+
 import pytest
 from unittest import mock
 from httpx import ASGITransport, AsyncClient
@@ -138,13 +140,37 @@ class TestServiceControl:
         assert response.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_start_valid_enum(self, client):
-        """验证服务控制端点存在（非 404）"""
-        response = await client.post(
-            f"{PREFIX}/BackgroundService/Start",
-            json={"background_service_name": "GET_DYN"},
-        )
-        assert response.status_code != 404
+    async def test_start_forces_one_round(self, client):
+        """start = 排到 cron 下次触发 + 立即强制跑一轮（绕过间隔节流）。"""
+        from Service.BackgroundService.CrawlerScheduler import background_service
+        from Service.BaseCrawler.launcher.scheduler_launcher import BaseScheduler
+        from Utils.通用.Common import GLOBAL_SCHEDULER
+
+        scheduler = background_service.GET_DYN
+        if GLOBAL_SCHEDULER.get_job(scheduler.job_id):
+            GLOBAL_SCHEDULER.remove_job(scheduler.job_id)
+        try:
+            with mock.patch.object(
+                BaseScheduler, "run_now", new=mock.AsyncMock()
+            ) as run_now:
+                response = await client.post(
+                    f"{PREFIX}/BackgroundService/Start",
+                    params={"background_service_name": "GET_DYN"},
+                )
+                # 强制触发是异步任务，让出一次事件循环再断言
+                await asyncio.sleep(0)
+            assert response.status_code == 200
+            body = response.json()
+            assert body["code"] == 0
+            assert "已强制触发一轮执行" in body["msg"]
+            assert "下次定时触发" in body["msg"]
+            run_now.assert_awaited_once()
+            job = GLOBAL_SCHEDULER.get_job(scheduler.job_id)
+            assert job is not None
+            assert job.next_run_time is not None
+        finally:
+            if GLOBAL_SCHEDULER.get_job(scheduler.job_id):
+                GLOBAL_SCHEDULER.remove_job(scheduler.job_id)
 
     @pytest.mark.asyncio
     async def test_stop_valid_enum(self, client):
@@ -155,12 +181,33 @@ class TestServiceControl:
         assert response.status_code != 404
 
     @pytest.mark.asyncio
-    async def test_restart_valid_enum(self, client):
-        response = await client.post(
-            f"{PREFIX}/BackgroundService/Restart",
-            json={"background_service_name": "GET_DYN"},
-        )
-        assert response.status_code != 404
+    async def test_restart_forces_one_round(self, client):
+        """restart = 杀掉旧任务并立即强制重跑，文案要明确说明已触发。"""
+        from Service.BackgroundService.CrawlerScheduler import background_service
+        from Service.BaseCrawler.launcher.scheduler_launcher import BaseScheduler
+        from Utils.通用.Common import GLOBAL_SCHEDULER
+
+        scheduler = background_service.GET_DYN
+        try:
+            with mock.patch.object(
+                BaseScheduler, "run_now", new=mock.AsyncMock()
+            ) as run_now:
+                response = await client.post(
+                    f"{PREFIX}/BackgroundService/Restart",
+                    params={"background_service_name": "GET_DYN"},
+                )
+                # 强制触发是异步任务，让出一次事件循环再断言
+                await asyncio.sleep(0)
+            assert response.status_code == 200
+            body = response.json()
+            assert body["code"] == 0
+            assert "已强制触发一轮执行" in body["msg"]
+            assert "下次定时触发" in body["msg"]
+            run_now.assert_awaited_once()
+            assert GLOBAL_SCHEDULER.get_job(scheduler.job_id) is not None
+        finally:
+            if GLOBAL_SCHEDULER.get_job(scheduler.job_id):
+                GLOBAL_SCHEDULER.remove_job(scheduler.job_id)
 
     @pytest.mark.asyncio
     async def test_missing_field(self, client):

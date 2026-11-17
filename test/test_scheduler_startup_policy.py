@@ -205,7 +205,8 @@ async def test_startup_catchup_still_goes_through_is_need_to_execute():
         in record["message"],
     )
     try:
-        # 刚抓过：节流判定不通过，不能创建抓取任务；首次跳过要留 WARNING 痕迹
+        # 首次触发 = 启动补跑：刚抓过，节流判定不通过，不能创建抓取任务；
+        # 首次跳过要留 WARNING 痕迹
         recent = StubExecInfo(False)
         scheduler.exec_info = recent
         await scheduler.run()
@@ -215,13 +216,9 @@ async def test_startup_catchup_still_goes_through_is_need_to_execute():
         assert len(skipped_lines) == 1
         assert "is_need_to_execute 节流跳过" in skipped_lines[0]
 
-        # 之后同一任务再被触发而跳过，不该刷 WARNING
-        scheduler.exec_info = StubExecInfo(False)
-        await scheduler.run()
-        assert len(skipped_lines) == 1
-
-        # 距上次执行足够久：正常补跑一次，并保存执行时间
+        # 距上次执行足够久：补跑一次，并保存执行时间
         stale = StubExecInfo(True)
+        scheduler._first_fire = True  # 模拟进程重启后的首次触发
         scheduler.exec_info = stale
         await scheduler.run()
         assert scheduler.crawler_asyncio_task is not None
@@ -230,6 +227,155 @@ async def test_startup_catchup_still_goes_through_is_need_to_execute():
         assert stale.saved == 1
     finally:
         myfastapi_logger.remove(sink_id)
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_high_freq_cron_trigger_still_throttled():
+    """高频任务（cron 周期 < interval）：常规 cron 触发仍按 interval 节流。"""
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_high_freq",
+            default_interval_seconds=12 * 3600,
+            last_attempt_time=None,
+        )
+
+        async def is_need_to_execute(self) -> bool:
+            return False
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 */5 * * *",
+        default_interval_seconds=12 * 3600,
+        crawler_name="test_high_freq",
+    )
+    scheduler.exec_info = StubExecInfo()
+    scheduler._first_fire = False  # 本次是 cron 常规触发
+    try:
+        await scheduler.run()
+        await asyncio.sleep(0)
+        assert scheduler.crawler_asyncio_task is None
+        assert calls == 0
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_daily_cron_trigger_bypasses_interval_throttle():
+    """日级任务（cron 周期 >= interval）：常规 cron 触发直接执行。
+
+    回归：手动触发把 last_exec/attempt 打漂后，次日 08:00 的 cron 曾被 15h
+    节流整轮跳过（GET_OTHERS_LOT_DYN 实际间隔 32h）。
+    """
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    async def fake_push(crawler_name, stage, content) -> bool:
+        return True
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_daily_cron",
+            default_interval_seconds=15 * 3600,
+            last_attempt_time=None,
+        )
+
+        async def is_need_to_execute(self) -> bool:
+            raise AssertionError("日级任务的常规 cron 触发不应再询问 interval 节流")
+
+        async def save_last_exec_time(self) -> None:
+            return None
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 8 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name="test_daily_cron",
+        run_on_startup=True,
+    )
+    scheduler._push_stage = fake_push
+    scheduler._first_fire = False  # 启动补跑已消费，本次是 cron 常规触发
+    scheduler.exec_info = StubExecInfo()
+    try:
+        await scheduler.run()
+        assert scheduler.crawler_asyncio_task is not None
+        await scheduler.crawler_asyncio_task
+        assert calls == 1
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_run_now_force_bypasses_throttle_and_advances_attempt(fake_redis):
+    """管理端 start / restart 走 run_now(force=True)：刚跑完也立即再跑一轮。"""
+    crawler_name = "test_force_run"
+    now = datetime.datetime.now()
+    exec_info = CrawlerExecutionInfo(
+        crawler_name=crawler_name, default_interval_seconds=15 * 3600
+    )
+    # 刚跑完：普通 run() 会被节流
+    fake_redis.store[exec_info._exec_info_redis_key] = str(now.timestamp())
+    fake_redis.store[exec_info._attempt_info_redis_key] = str(now.timestamp())
+
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 8 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name=crawler_name,
+        run_on_startup=True,
+    )
+    scheduler._push_stage = _false_push
+    try:
+        assert await scheduler.exec_info.is_need_to_execute() is False
+
+        await scheduler.run_now(force=True)
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await task
+        assert calls == 1
+        # 强制触发会立即推进 last_attempt_time
+        assert abs(
+            float(fake_redis.store[exec_info._attempt_info_redis_key])
+            - datetime.datetime.now().timestamp()
+        ) < 10
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_reschedule_cron_next_puts_job_on_next_cron_fire():
+    """控制面 start / restart 只把 job 排到 cron 下次触发，不再 next_run_time=now。"""
+    scheduler = BaseScheduler(
+        func=_noop,
+        cron_expr="0 8 * * *",
+        crawler_name="test_reschedule",
+        run_on_startup=True,
+    )
+    try:
+        next_fire = scheduler.reschedule_cron_next()
+        job = GLOBAL_SCHEDULER.get_job(scheduler.job_id)
+        assert job is not None
+        assert job.next_run_time is not None
+        assert job.next_run_time.timestamp() == next_fire.timestamp()
+        assert job.next_run_time > datetime.datetime.now(
+            scheduler.trigger.timezone
+        ) + datetime.timedelta(minutes=1)
+    finally:
         _remove_job(scheduler.job_id)
 
 

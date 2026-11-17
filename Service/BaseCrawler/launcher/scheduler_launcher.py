@@ -281,8 +281,23 @@ class BaseScheduler:
         self.trigger = CronTrigger(
             minute=minute, hour=hour, day=day, month=month, day_of_week=day_of_week
         )
+        # cron 相邻两次触发的间隔（秒）：
+        # - 周期 < default_interval_seconds（高频任务，如 5 分钟 cron + 12h 间隔）：
+        #   cron 只负责唤醒，是否真的执行仍由 interval 节流决定；
+        # - 周期 >= default_interval_seconds（日级 / 月级任务）：cron 触发本身就是
+        #   期望的执行节拍，再叠加 interval 会把手动触发后的下一次 cron 整轮跳过。
+        self.cron_period_seconds = self._compute_cron_period_seconds()
         # 添加或更新任务
         self._add_or_update_job()
+
+    def _compute_cron_period_seconds(self) -> float:
+        """计算 cron 相邻两次触发的间隔（秒）；算不出来时按「低频」处理。"""
+        now = datetime.now(self.trigger.timezone)
+        first = self.trigger.get_next_fire_time(None, now)
+        second = self.trigger.get_next_fire_time(first, first) if first else None
+        if first is None or second is None:
+            return float("inf")
+        return (second - first).total_seconds()
 
     def _add_or_update_job(self):
         job = GLOBAL_SCHEDULER.get_job(self.job_id)
@@ -328,8 +343,50 @@ class BaseScheduler:
                 f"jitter={jitter:.0f}s —— {policy_detail}"
             )
 
+    async def run_now(self, force: bool = True) -> None:
+        """控制面入口：立即触发一轮执行（供管理端 start / restart 调用）。
+
+        ``force=True`` 时绕过 ``is_need_to_execute`` 间隔节流；正在运行的旧任务
+        仍由 ``run()`` 的「杀旧开新」逻辑 cancel 后重跑。``run()`` 内部不 await
+        抓取本身（只创建后台任务），因此本方法很快返回。
+        """
+        await self.run(force=force)
+
+    def reschedule_cron_next(self) -> datetime:
+        """确保 job 在调度器上，且下一次触发严格取 cron 的下一次触发时间。
+
+        控制面 start / restart 专用：立即执行交给 ``run_now()``，这里只维护排期。
+        - 不用 ``next_run_time=now``：会和强制触发叠成两次执行；
+        - 不用启动抖动（``_first_run_time``）：日级任务会在几秒后再次触发，
+          把刚起的强制任务杀掉重跑。
+        """
+        now = datetime.now(self.trigger.timezone)
+        next_fire = self.trigger.get_next_fire_time(None, now) or (
+            now + timedelta(days=1)
+        )
+        if GLOBAL_SCHEDULER.get_job(self.job_id) is None:
+            GLOBAL_SCHEDULER.add_job(
+                self.run,
+                name=self.job_id,
+                trigger=self.trigger,
+                id=self.job_id,
+                next_run_time=next_fire,
+                coalesce=True,
+                max_instances=1,
+                misfire_grace_time=24 * 3600,
+            )
+        else:
+            GLOBAL_SCHEDULER.reschedule_job(job_id=self.job_id, trigger=self.trigger)
+        return next_fire
+
     @async_pushme_try_catch_decorator
-    async def run(self):
+    async def run(self, force: bool = False):
+        """调度入口（cron 触发 / 启动补跑 / 控制面强制触发共用）。
+
+        ``force=True``（管理端 start / restart 走 ``run_now``）时绕过
+        ``is_need_to_execute`` 的间隔节流，保证「立即跑一轮」；
+        正在运行的旧任务仍先按「杀旧开新」cancel 后再重跑。
+        """
         # 定时任务每次触发都会走到这里，属于正常调度流程，用 debug 记录即可，
         # 避免污染 CRITICAL 级别（只应保留真正的严重故障）。
         is_first_fire = self._first_fire
@@ -351,7 +408,28 @@ class BaseScheduler:
                 pass
             self.crawler_asyncio_task = None
 
-        if await self.exec_info.is_need_to_execute():
+        if force:
+            # 控制面（管理端 start / restart）要求「立即跑一轮」，绕过间隔节流。
+            # last_attempt_time 仍由 _run_and_save_exec_time 在执行前立即推进。
+            self.logger.info(
+                f"[{self.exec_info.info.crawler_name}] 控制面强制触发，跳过间隔节流"
+            )
+            should_execute = True
+        elif is_first_fire and self.run_on_startup:
+            # 启动补跑不是 cron 的正常节拍，仍按「上次执行 / 尝试时间」节流，
+            # 避免每次重启都把刚跑过的爬虫再压一遍。
+            should_execute = await self.exec_info.is_need_to_execute()
+        elif self.cron_period_seconds < self.exec_info.info.default_interval_seconds:
+            # 高频任务（cron 周期短于节流间隔）：cron 只负责唤醒，
+            # 真正的执行节拍由 default_interval_seconds 控制。
+            should_execute = await self.exec_info.is_need_to_execute()
+        else:
+            # 日级 / 月级任务：cron 周期本身已 >= 节流间隔，常规触发直接执行。
+            # 否则「手动触发把时间打漂」后，下一次 cron 会因 delta < interval
+            # 被静默跳过（线上 GET_OTHERS_LOT_DYN 实际间隔 32h 的根因）。
+            should_execute = True
+
+        if should_execute:
             try:
                 self.logger.debug(
                     f"[{self.exec_info.info.crawler_name}] 开始执行爬虫任务..."

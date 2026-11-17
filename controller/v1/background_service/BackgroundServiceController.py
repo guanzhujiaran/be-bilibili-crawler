@@ -1,9 +1,9 @@
 from fastapi import Query
 import asyncio
 import inspect
-from datetime import datetime
 from typing import Union, Any
 from bili_common.models.response import StandardResponse as CommonResponseModel
+from log.base_log import myfastapi_logger
 from Models.v1.background_service.background_service_model import (
     BackgroundServiceName,
     ProxyStatusResp,
@@ -45,6 +45,33 @@ def start_monitor_tasks(show_log: bool):
         asyncio.create_task(bili_space_monitor.main(show_log=show_log))
     ]
     return back_ground_tasks
+
+
+#: 控制面强制触发的后台任务引用（避免任务被 GC；完成后自动移除）
+_control_tasks: set[asyncio.Task] = set()
+
+
+def _run_scheduler_now(scheduler: BaseScheduler) -> None:
+    """控制面异步触发一轮执行：不阻塞接口返回。
+
+    ``run_now(force=True)`` 会绕过 ``is_need_to_execute`` 间隔节流，
+    并在 ``run()`` 里先 cancel 正在跑的旧任务再开新任务。
+    异常已由 ``run()`` 的推送装饰器记录 / 告警，这里只兜底留一条 WARNING。
+    """
+    task = asyncio.create_task(scheduler.run_now(force=True))
+    _control_tasks.add(task)
+
+    def _on_done(done_task: asyncio.Task) -> None:
+        _control_tasks.discard(done_task)
+        if done_task.cancelled():
+            return
+        error = done_task.exception()
+        if error is not None:
+            myfastapi_logger.warning(
+                f"event=crawler_run_now_failed job={scheduler.job_id} err={error!r}"
+            )
+
+    task.add_done_callback(_on_done)
 
 
 @router.get(
@@ -103,9 +130,12 @@ def background_service_status():
     name=RouterNames.START_SERVICE,
     description="启动特定的后台爬虫服务",
 )
-def start_background_service(background_service_name: BackgroundServiceName):
+async def start_background_service(background_service_name: BackgroundServiceName):
     """
     启动指定的后台爬虫服务
+
+    语义是「启动并立即强制跑一轮」：job 只负责排到 cron 的下一次触发时间，
+    立即执行由 run_now(force=True) 触发，绕过 is_need_to_execute 的间隔节流。
     :param background_service_name: 服务名称枚举，必须是 BackgroundServiceName 枚举值
     :return: 操作结果
     """
@@ -127,18 +157,15 @@ def start_background_service(background_service_name: BackgroundServiceName):
                 code=400, msg=f"服务 {background_service_name.value} 已经在运行中"
             )
 
-        GLOBAL_SCHEDULER.add_job(
-            scheduler.run,
-            name=scheduler.job_id,
-            trigger=scheduler.trigger,
-            id=scheduler.job_id,
-            next_run_time=datetime.now(),
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=3600,
-        )
+        next_fire = scheduler.reschedule_cron_next()
+        _run_scheduler_now(scheduler)
         return CommonResponseModel(
-            code=0, msg=f"成功启动服务 {background_service_name.value}"
+            code=0,
+            msg=(
+                f"成功启动服务 {background_service_name.value}："
+                f"已强制触发一轮执行（绕过间隔节流），"
+                f"下次定时触发 {next_fire:%Y-%m-%d %H:%M:%S}"
+            ),
         )
     except Exception as e:
         return CommonResponseModel(code=500, msg=f"启动服务失败: {str(e)}")
@@ -186,9 +213,13 @@ def stop_background_service(background_service_name: BackgroundServiceName):
     name=RouterNames.RESTART_SERVICE,
     description="重启特定的后台爬虫服务",
 )
-def restart_background_service(background_service_name: BackgroundServiceName):
+async def restart_background_service(background_service_name: BackgroundServiceName):
     """
     重启指定的后台爬虫服务
+
+    语义是「杀旧开新并立即强制跑一轮」：先移除旧排期，再由 run_now(force=True)
+    cancel 正在跑的旧任务并立即重跑，绕过 is_need_to_execute 的间隔节流；
+    稍后重新排到 cron 的下一次触发时间。
     :param background_service_name: 服务名称枚举，必须是 BackgroundServiceName 枚举值
     :return: 操作结果
     """
@@ -205,23 +236,19 @@ def restart_background_service(background_service_name: BackgroundServiceName):
         )
 
     try:
-        # 先停止（移除任务）
+        # 先移除旧排期（对正在执行的任务无影响，kill 由 run_now 负责）
         if GLOBAL_SCHEDULER.get_job(scheduler.job_id) is not None:
             scheduler.remove()
 
-        # 再启动（添加任务）
-        GLOBAL_SCHEDULER.add_job(
-            scheduler.run,
-            name=scheduler.job_id,
-            trigger=scheduler.trigger,
-            id=scheduler.job_id,
-            next_run_time=datetime.now(),
-            coalesce=True,
-            max_instances=1,
-            misfire_grace_time=3600,
-        )
+        next_fire = scheduler.reschedule_cron_next()
+        _run_scheduler_now(scheduler)
         return CommonResponseModel(
-            code=0, msg=f"成功重启服务 {background_service_name.value}"
+            code=0,
+            msg=(
+                f"成功重启服务 {background_service_name.value}："
+                f"已强制触发一轮执行（旧任务会被终止后重跑，绕过间隔节流），"
+                f"下次定时触发 {next_fire:%Y-%m-%d %H:%M:%S}"
+            ),
         )
     except Exception as e:
         return CommonResponseModel(code=500, msg=f"重启服务失败: {str(e)}")
