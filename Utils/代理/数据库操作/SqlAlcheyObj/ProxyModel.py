@@ -63,11 +63,12 @@ class ProxyTab(Base):
     )
     # 当前计数窗口的起点（unix 秒）。下一次失败若已超出 zombie_window_days，
     # 先把四个计数一起清零再累加，保证计数始终是「近 N 天」的失败次数。
-    fail_window_start_ts = mapped_column(Integer)
-    last_fail_ts = mapped_column(Integer)
+    # 默认 0（而不是 NULL）：入库行构造时统一由代码补 0，DDL 侧也给默认值双保险。
+    fail_window_start_ts = mapped_column(Integer, server_default=text("'0'"))
+    last_fail_ts = mapped_column(Integer, server_default=text("'0'"))
     # 最近一次成功时间：清理要求「窗口内 success_total == 0」，
     # 即 last_success_ts 为空或早于 fail_window_start_ts。
-    last_success_ts = mapped_column(Integer)
+    last_success_ts = mapped_column(Integer, server_default=text("'0'"))
     computed_proxy_str = mapped_column(
         String(255),
         Computed(

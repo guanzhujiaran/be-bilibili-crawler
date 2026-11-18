@@ -97,6 +97,32 @@ CLEANUP_DELETE_KINDS: tuple[ProxyFailureKind, ...] = (
     ProxyFailureKind.UNKNOWN,
 )
 
+#: 入库时必须由代码补齐的「计数 / 时间」列。
+#:
+#: 上游只构造 ``ProxyTab(proxy=..., status=..., update_ts=..., score=..., add_ts=...)``，
+#: 其余列在 ORM 实例上是 ``None``，而 ``sqlalchemy_model_2_dict`` 会把它们原样带进
+#: INSERT 的 VALUES —— SQLAlchemy 对显式 ``None`` 渲染的是 ``NULL``，不会回退到
+#: ``server_default``，于是 MySQL 报 1048（``Column 'fail_network_times' cannot be null``）。
+#: 这里统一归一为 0，**不依赖 DB 默认值兜底**（DB 默认值只对「列未出现在 INSERT 中」生效）。
+PROXY_TAB_ZERO_DEFAULT_COLUMNS: tuple[str, ...] = (
+    "success_times",
+    "fail_network_times",
+    "fail_response_times",
+    "fail_unknown_times",
+    "quarantine_times",
+    "fail_window_start_ts",
+    "last_fail_ts",
+    "last_success_ts",
+)
+
+
+def normalize_proxy_tab_insert_values(data_dict: dict) -> dict:
+    """把 proxy_tab 入库行里的 ``None`` 计数 / 时间列归一为 0（原地修改并返回）。"""
+    for column_name in PROXY_TAB_ZERO_DEFAULT_COLUMNS:
+        if column_name in data_dict and data_dict[column_name] is None:
+            data_dict[column_name] = 0
+    return data_dict
+
 
 def build_success_values(columns, now: int) -> dict:
     """成功时对计数列的更新值。
@@ -1373,6 +1399,8 @@ class SQLHelperClass(SqlHelperBase):
                 data_dict = sqlalchemy_model_2_dict(proxy_tab)
                 # 过滤掉 MySQL 生成列，避免 (3105) 错误
                 data_dict.pop("computed_proxy_str", None)
+                # 计数 / 时间列不能显式写 NULL（1048）；统一归一为 0
+                data_dict = normalize_proxy_tab_insert_values(data_dict)
                 stmt = mysql_insert(ProxyTab.__table__).values(**data_dict)
                 # 非主键字段使用 INSERT 值更新，同时排除生成列
                 update_cols = {
@@ -1712,8 +1740,14 @@ class SQLHelperClass(SqlHelperBase):
             sql_log.debug("proxy_tab 批量写正被 refresh_proxy 占用，本轮心跳跳过")
             return 0
         try:
-            # 地址级 + 前缀级一次性取回（2 次 pipeline），后面的过滤全在内存里做。
-            snapshot = await proxy_health_store.read_persist_snapshot(limit=limit)
+            # 地址级 + 前缀级一次性取回（2 段 pipeline），后面的过滤全在内存里做。
+            # heartbeat_seconds 让「明细读取」也遵守 30min 心跳：每轮只读到期项，
+            # 不再每 60s 把 1900+ 地址 / 1600+ 前缀的 HGETALL+SMEMBERS 全量拉一遍。
+            snapshot_started = time.monotonic()
+            snapshot = await proxy_health_store.read_persist_snapshot(
+                limit=limit, heartbeat_seconds=cfg.persist_heartbeat_seconds
+            )
+            snapshot_ms = (time.monotonic() - snapshot_started) * 1000
             # 写库前再确认一次：读快照到写库之间代理可能已经成功解冻，
             # 不能把刚恢复的好代理误标成不可用（否则要等 refresh 才回来）。
             keys = await self._filter_still_cooling(
@@ -1737,6 +1771,17 @@ class SQLHelperClass(SqlHelperBase):
                     f"前缀冷却落盘：{prefix_keys} 个网段冷却中，回写 {prefix_touched} 行"
                     f"（同 /64、/24 内所有代理一并置为不可用）"
                 )
+            # 只有 MySQL 写成功后才记账：写失败时下一轮仍会重新读取并重试。
+            proxy_health_store.mark_persist_seen(
+                snapshot.cooling_keys,
+                snapshot.cooling_prefixes,
+                heartbeat_seconds=cfg.persist_heartbeat_seconds,
+            )
+            sql_log.debug(
+                f"代理健康心跳完成：快照读取 {snapshot_ms:.1f}ms，"
+                f"地址 {len(snapshot.cooling_keys)} 条 / 前缀 {len(snapshot.cooling_prefixes)} 个到期，"
+                f"回写 {touched + prefix_touched} 行"
+            )
             return touched + prefix_touched
         finally:
             await self._release_batch_write_lock(token)

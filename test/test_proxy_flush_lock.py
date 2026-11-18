@@ -114,3 +114,105 @@ async def test_zero_or_negative_interval_means_no_dedup(interval: int):
     stmt = SQLHelper._build_unavailable_stmt(["http://1.2.3.4:8080"], -412, ts, interval)
     compiled = str(stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "update_ts <" not in compiled
+
+
+# ---------------------------------------------------------------------------
+# 心跳读快照：到期筛选 + pipeline 分片
+# ---------------------------------------------------------------------------
+
+
+class _FakePipeline:
+    """记录命令并按 execute 批次返回预设结果的 pipeline 桩。"""
+
+    def __init__(self, client: "_FakeRedis") -> None:
+        self._client = client
+        self.commands: list[tuple[str, tuple]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    def zremrangebyscore(self, *args, **kwargs):
+        self.commands.append(("zrem", args))
+
+    def zrangebyscore(self, *args, **kwargs):
+        self.commands.append(("zrange", args))
+
+    def hgetall(self, key: str):
+        self.commands.append(("h", (key,)))
+
+    def smembers(self, key: str):
+        self.commands.append(("s", (key,)))
+
+    async def execute(self):
+        batch = list(self.commands)
+        self.commands.clear()
+        self._client.batch_sizes.append(len(batch))
+        # callable 表示「后续所有分片都按同一规则生成响应」，保留在队首复用
+        if callable(self._client.responses[0]):
+            response = self._client.responses[0]
+        else:
+            response = self._client.responses.pop(0)
+        if callable(response):
+            return [response(command) for command in batch]
+        return response
+
+
+class _FakeRedis:
+    def __init__(self, *responses) -> None:
+        self.responses = list(responses)
+        self.batch_sizes: list[int] = []
+
+    def pipeline(self, transaction: bool = False):
+        return _FakePipeline(self)
+
+
+async def test_persist_due_filter_uses_heartbeat_interval():
+    """到期筛选按 heartbeat 记账；地址级 / 前缀级命名空间互不干扰。"""
+    store = ProxyHealthStore()
+    assert store._due_persist_members(["a", "b"], "a", 1800) == ["a", "b"]
+
+    store.mark_persist_seen(["a"], ["p1"], heartbeat_seconds=1800)
+    assert store._due_persist_members(["a", "b"], "a", 1800) == ["b"]
+    assert store._due_persist_members(["p1", "p2"], "p", 1800) == ["p2"]
+    # 同一字符串在不同命名空间下互不影响
+    assert store._due_persist_members(["a"], "p", 1800) == ["a"]
+    # 非正间隔 = 不做到期筛选（历史行为）
+    assert store._due_persist_members(["a", "b"], "a", 0) == ["a", "b"]
+
+
+async def test_read_persist_snapshot_chunks_pipeline(monkeypatch):
+    """5000+ 命令必须拆成固定大小的批次逐组 await（单段同步解析 <100ms）。"""
+    from CONFIG import CONFIG
+
+    monkeypatch.setattr(CONFIG.proxy_health, "persist_pipeline_chunk", 2)
+    now = int(time.time())
+    detail = {"cd": str(now + 3600), "state": "quarantine", "cf": "1"}
+    prefix_detail = {"cd": str(now + 3600), "state": "quarantine", "rl": "1"}
+
+    def _second_pipeline_response(command: tuple[str, tuple]):
+        kind, args = command
+        if kind == "h" and "prefix_detail" in args[0]:
+            return prefix_detail
+        if kind == "h":
+            return detail
+        return {"http://1.2.3.4:8080"}
+
+    fake = _FakeRedis(
+        [0, ["k1", "k2"], 0, ["p1", "p2"]],
+        _second_pipeline_response,
+    )
+    store = ProxyHealthStore()
+    monkeypatch.setattr(store, "_get_client", lambda: fake, raising=False)
+
+    snapshot = await store.read_persist_snapshot(limit=10, heartbeat_seconds=1800)
+
+    assert snapshot.cooling_keys == ["k1", "k2"]
+    assert snapshot.cooling_prefixes == ["p1", "p2"]
+    assert snapshot.address.has("k1") and snapshot.address.has("k2")
+    assert snapshot.prefixes.has("p1") and snapshot.prefixes.has("p2")
+    assert snapshot.prefix_members["p1"] == ["http://1.2.3.4:8080"]
+    # 第 1 段 4 条（zrem/zrange ×2）；第 2 段 6 条命令按 chunk=2 拆成 3 批
+    assert fake.batch_sizes == [4, 2, 2, 2]

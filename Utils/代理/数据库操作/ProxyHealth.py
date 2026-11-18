@@ -381,6 +381,10 @@ class ProxyHealthStore:
         # 已观测到「处于冷却」的前缀：只用于冷却结束打一条 WARNING。
         # 冷却开始的那条 WARNING 在 record_failure 里（带阶梯档次）。
         self._cooling_prefixes: set[str] = set()
+        # 冷却成员最近一次「明细被心跳读取」的单调时钟：按 persist_heartbeat_seconds
+        # 只读到期项，避免每 60s 把上千个前缀的 HGETALL / SMEMBERS 全量解析一遍。
+        # 键是 (命名空间, 成员)：命名空间 "a"=地址级、"p"=前缀级，两者不会互相覆盖。
+        self._persist_seen: dict[tuple[str, str], float] = {}
 
     # region 基础设施
     @property
@@ -963,15 +967,25 @@ class ProxyHealthStore:
             return []
 
     async def read_persist_snapshot(
-        self, limit: int, scope: str | None = None
+        self,
+        limit: int,
+        scope: str | None = None,
+        heartbeat_seconds: float = 0.0,
     ) -> ProxyPersistSnapshot:
-        """一轮心跳所需的全部 Redis 数据：**2 次 pipeline** 取回。
+        """一轮心跳所需的全部 Redis 数据：**2 段 pipeline** 取回（第二段按分片执行）。
 
-        第 1 次：地址级 + 前缀级冷却集合（各自清过期、取未过期的前 ``limit`` 条）；
-        第 2 次：对第 1 次取到的成员批量读明细 + 前缀成员集合（``SMEMBERS`` 全量）。
+        第 1 段：地址级 + 前缀级冷却集合（各自清过期、取未过期的前 ``limit`` 条）；
+        第 2 段：对第 1 段取到的成员批量读明细 + 前缀成员集合（``SMEMBERS`` 全量），
+        按 ``persist_pipeline_chunk`` 拆成多批逐组 await，避免单次解析 5000+ 响应。
 
         旧实现是「1 次取地址级 + 1 次取前缀级 + 每个前缀一次 SRANDMEMBER 串行 await」，
         187 个前缀就是近 190 次往返 —— 单轮心跳超过 60s 的直接原因。
+
+        :param heartbeat_seconds: >0 时只读取「距上次成功读取已超过该间隔」的成员明细
+            （与 ``_mark_proxy_unavailable`` 的 ``min_interval`` 同一语义）。调用方在
+            写库成功后必须调用 :meth:`mark_persist_seen`，否则下一轮会重复读 ——
+            这里刻意选择「宁可重复读、不可漏写」：漏写会让 refresh_proxy 在 2h 后
+            把仍在冷却的代理复位成可用。
         """
         limit = max(1, int(limit))
         now = int(time.time())
@@ -992,47 +1006,61 @@ class ProxyHealthStore:
             return ProxyPersistSnapshot()
         cooling_keys = [key for key in (raw_keys or []) if key]
         cooling_prefixes = [prefix for prefix in (raw_prefixes or []) if prefix]
+        if heartbeat_seconds > 0:
+            cooling_keys = self._due_persist_members(
+                cooling_keys, "a", heartbeat_seconds
+            )
+            cooling_prefixes = self._due_persist_members(
+                cooling_prefixes, "p", heartbeat_seconds
+            )
         if not cooling_keys and not cooling_prefixes:
             return ProxyPersistSnapshot()
+        # 第二段命令按固定大小分片执行：redis-py 对每条响应都在**事件循环线程**上
+        # 同步解析，5000+ 条一次 execute 会独占 loop 1s 以上（生产 event_loop_stall 的
+        # 直接原因）；分片后每段只解析 ~persist_pipeline_chunk 条，单段同步耗时 <100ms，
+        # 段与段之间 await 让出事件循环。
+        chunk_size = max(1, int(getattr(self.cfg, "persist_pipeline_chunk", 100)))
+        # (类别, 成员)：a=地址明细 HGETALL，p=前缀明细 HGETALL，m=前缀成员 SMEMBERS。
+        commands: list[tuple[str, str]] = [("a", key) for key in cooling_keys]
+        commands.extend(("p", prefix) for prefix in cooling_prefixes)
+        commands.extend(("m", prefix) for prefix in cooling_prefixes)
+        # 直接往容器的 records / dict 里写，避免所有分片读完后在事件循环上再做一次
+        # 3600+ 条记录的集中模型构造（那同样是一段无法让出的同步 CPU）。
+        address = ProxyHealthMap()
+        prefixes = ProxyPrefixMap()
+        prefix_members: dict[str, list[str]] = {}
         try:
-            async with client.pipeline(transaction=False) as pipe:
-                for key in cooling_keys:
-                    pipe.hgetall(self._detail_key(key))
-                for prefix in cooling_prefixes:
-                    pipe.hgetall(self._prefix_detail_key(prefix, effective_scope))
-                for prefix in cooling_prefixes:
-                    pipe.smembers(self._prefix_members_key(prefix))
-                results = await pipe.execute()
+            for start in range(0, len(commands), chunk_size):
+                batch = commands[start : start + chunk_size]
+                async with client.pipeline(transaction=False) as pipe:
+                    for command, member in batch:
+                        if command == "a":
+                            pipe.hgetall(self._detail_key(member))
+                        elif command == "p":
+                            pipe.hgetall(
+                                self._prefix_detail_key(member, effective_scope)
+                            )
+                        else:
+                            pipe.smembers(self._prefix_members_key(member))
+                    results = await pipe.execute()
+                # 本分片的原始响应立即解析：parse 开销也被摊到各个分片里
+                for (command, member), raw in zip(batch, results):
+                    if command == "a":
+                        if raw:
+                            address.records[member] = self._parse(raw)
+                    elif command == "p":
+                        if raw:
+                            prefixes.records[member] = self._parse_prefix(raw)
+                    else:
+                        prefix_members[member] = [
+                            item for item in (raw or []) if item
+                        ]
         except Exception as e:  # noqa: BLE001
             # 明细读不到：按「仍在冷却」保守处理（与旧的 get_many 降级口径一致）
             self._warn(f"读取心跳明细失败：{type(e).__name__} {e}")
             return ProxyPersistSnapshot(
                 cooling_keys=cooling_keys, cooling_prefixes=cooling_prefixes
             )
-        key_count = len(cooling_keys)
-        prefix_count = len(cooling_prefixes)
-        address = ProxyHealthMap(
-            records={
-                key: self._parse(raw)
-                for key, raw in zip(cooling_keys, results[:key_count])
-                if raw
-            }
-        )
-        prefixes = ProxyPrefixMap(
-            records={
-                prefix: self._parse_prefix(raw)
-                for prefix, raw in zip(
-                    cooling_prefixes, results[key_count : key_count + prefix_count]
-                )
-                if raw
-            }
-        )
-        prefix_members = {
-            prefix: [member for member in (members or []) if member]
-            for prefix, members in zip(
-                cooling_prefixes, results[key_count + prefix_count :]
-            )
-        }
         return ProxyPersistSnapshot(
             cooling_keys=cooling_keys,
             address=address,
@@ -1040,6 +1068,43 @@ class ProxyHealthStore:
             prefixes=prefixes,
             prefix_members=prefix_members,
         )
+
+    def _due_persist_members(
+        self, members: Sequence[str], namespace: str, heartbeat_seconds: float
+    ) -> list[str]:
+        """筛出「距上次成功读取 >= heartbeat_seconds」的成员（进程内记账）。"""
+        now = time.monotonic()
+        due: list[str] = []
+        for member in members:
+            last = self._persist_seen.get((namespace, member))
+            if last is None or now - last >= heartbeat_seconds:
+                due.append(member)
+        return due
+
+    def mark_persist_seen(
+        self,
+        keys: Sequence[str],
+        prefixes: Sequence[str],
+        heartbeat_seconds: float = 0.0,
+    ) -> None:
+        """记下本轮已成功写库的成员，供 ``_due_persist_members`` 做到期筛选。
+
+        必须在 **MySQL 写成功之后** 调用：提前记账会让写失败的成员在接下来一个
+        心跳周期内被跳过，虽然仍不会触发 2h 复位，但没有必要地延长了冷却代理的
+        update_ts 空窗。
+        """
+        now = time.monotonic()
+        for key in keys:
+            self._persist_seen[("a", key)] = now
+        for prefix in prefixes:
+            self._persist_seen[("p", prefix)] = now
+        # 防御性上限：冷却集合本身有界（几千），但历史成员可能长期堆积。
+        # 超过 2× 心跳间隔没再被读到的条目已不可能影响「到期」判断，可以直接清掉。
+        if len(self._persist_seen) > 20000:
+            ttl = max(3600.0, heartbeat_seconds * 2)
+            self._persist_seen = {
+                member: ts for member, ts in self._persist_seen.items() if now - ts < ttl
+            }
 
     # endregion
 

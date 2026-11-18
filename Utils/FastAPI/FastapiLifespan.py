@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import gc
 import re
 import socket
 import time
@@ -53,6 +54,45 @@ class _StageMarker:
             f"{f' {extra}' if extra else ''}"
         )
         self._last = now
+
+
+def _apply_gc_tuning() -> None:
+    """启动完成后的 GC 调优（``CONFIG.loop_monitor``），并落一行改前/改后对照。
+
+    为什么放在 ``startup_done`` 之后：模块 / 类 / 函数 / 常量表在启动期已创建完毕，
+    它们几乎不会变成垃圾，却每次都参与 gen2 全量扫描。``gc.freeze()`` 把这些对象
+    移到「永久代」后，后续 gen2 只扫运行期动态对象，单次回收耗时显著下降。
+    代价：启动期已经形成的循环垃圾会被永久保留（一次性、可接受）。
+
+    gen2 阈值默认从解释器的 10 调到 50（由 ``LOOP_MONITOR__GC_GEN2_THRESHOLD`` 覆盖），
+    把全量回收频率降到 1/5；gen0 / gen1 不传时保持解释器默认。
+    """
+    cfg = CONFIG.loop_monitor
+    before_threshold = gc.get_threshold()
+    before_count = gc.get_count()
+    before_stats = [dict(stat) for stat in gc.get_stats()]
+    before_frozen = gc.get_freeze_count()
+    desired = (
+        cfg.gc_gen0_threshold if cfg.gc_gen0_threshold > 0 else before_threshold[0],
+        cfg.gc_gen1_threshold if cfg.gc_gen1_threshold > 0 else before_threshold[1],
+        cfg.gc_gen2_threshold if cfg.gc_gen2_threshold > 0 else before_threshold[2],
+    )
+    if desired != before_threshold:
+        gc.set_threshold(*desired)
+    if cfg.gc_freeze_on_startup:
+        gc.freeze()
+    after_frozen = gc.get_freeze_count()
+    gen2_collections = (
+        int(before_stats[2].get("collections", 0)) if len(before_stats) > 2 else -1
+    )
+    myfastapi_logger.warning(
+        f"event=gc_startup_tuning freeze={'on' if cfg.gc_freeze_on_startup else 'off'} "
+        f"frozen_objects={after_frozen - before_frozen} "
+        f"total_frozen={after_frozen} "
+        f"threshold={before_threshold}->{gc.get_threshold()} "
+        f"count={before_count} gen2_collections_before={gen2_collections} "
+        f"（freeze 把启动期模块/类/函数移出 GC 扫描集合；gen2 阈值调大可降低全量回收频率）"
+    )
 
 
 @contextlib.asynccontextmanager
@@ -149,6 +189,9 @@ async def life_span(app: FastAPI):
         myfastapi_logger.info("其他服务已开启！可以开启服务了喵~")
     # 汇总一行：启动到此结束，yield 之后服务对外可用
     stage.mark("startup_done", extra=f"background_tasks={len(back_ground_tasks)}")
+    # 启动完成、模块 / 类 / 函数等对象已经稳定：把它们移出 GC 扫描集合，
+    # 并（按需）放缓 gen2 全量回收，降低「分配内存时触发 gen2 GC」造成的事件循环停顿。
+    _apply_gc_tuning()
     yield
     myfastapi_logger.info("正在取消其他服务")
     # 这里 elapsed 就是「服务已运行多久」（上一个里程碑是 startup_done），不是卡顿

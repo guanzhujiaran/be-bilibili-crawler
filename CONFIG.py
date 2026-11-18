@@ -437,6 +437,11 @@ class ProxyHealthConfig(BaseModel):
         description="冷却代理的 update_ts 心跳间隔（秒）：每轮只重写「比这更旧」的行。"
         "必须远小于 refresh_proxy 的 2h 复位窗口；调大能显著减少行锁数量",
     )
+    persist_pipeline_chunk: int = Field(
+        default=100,
+        description="心跳读快照时每批 pipeline 的命令数上限：避免 redis-py 在事件循环线程上"
+        "一次性同步解析上千条响应造成 >1s 的卡顿（拆分后每段同步耗时约几十毫秒）",
+    )
     # ---- proxy_tab 批量写的建议锁（Redis）：refresh_proxy 与 flush_proxy_health 互斥 ----
     # 两个批量 UPDATE 顺着不同索引（status / computed_proxy_str）加锁，
     # 并发时会去改同一批行的二级索引条目，形成 AB-BA 循环等待 → MySQL 1213 死锁。
@@ -861,6 +866,41 @@ class LoopMonitorConfig(BaseModel):
     )
     stack_max_frames: int = Field(
         default=40, description="单条栈最多保留的帧数（只保留最靠近阻塞点的尾部）"
+    )
+    sample_interval: float = Field(
+        default=0.1,
+        description="卡顿期间取证线程连续采样事件循环栈的间隔（秒）：恢复后把重复出现的"
+        "最内层帧聚合成 event=event_loop_stall_stack_sampled",
+    )
+    sample_max_samples: int = Field(
+        default=60, description="单轮卡顿最多保留的连续采样数（防止长时间卡死时无限占内存）"
+    )
+    sample_top_frames: int = Field(
+        default=3, description="采样聚合日志里最多列出的「最内层帧」条数（按重复次数降序）"
+    )
+    gc_observe: bool = Field(
+        default=True,
+        description="是否用 gc.callbacks 观测单次 GC 耗时（>gc_pause_threshold 记 "
+        "event=event_loop_gc_pause），并在卡顿恢复日志里附带 gen2 collections 增量",
+    )
+    gc_pause_threshold: float = Field(
+        default=0.1, description="单次 GC 超过该秒数才记 event=event_loop_gc_pause"
+    )
+    gc_freeze_on_startup: bool = Field(
+        default=True,
+        description="startup_done 后调用 gc.freeze()：把启动期创建的模块 / 类 / 函数等"
+        "移出 GC 扫描集合，降低每次 gen2 全量回收的耗时",
+    )
+    gc_gen0_threshold: int = Field(
+        default=0, description="GC gen0 阈值；<=0 保持解释器默认（700）"
+    )
+    gc_gen1_threshold: int = Field(
+        default=0, description="GC gen1 阈值；<=0 保持解释器默认（10）"
+    )
+    gc_gen2_threshold: int = Field(
+        default=50,
+        description="GC gen2 阈值（默认 10 → 50，gen2 全量回收频率降为 1/5）；"
+        "<=0 保持解释器默认。配合 gc.freeze 使用，避免每次全量回收扫描启动期对象",
     )
     faulthandler_enabled: bool = Field(
         default=False,

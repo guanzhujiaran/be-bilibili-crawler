@@ -303,3 +303,36 @@ async def test_network_failure_uses_independent_status(monkeypatch):
     assert ProxyEvent.NETWORK_FAIL_STATUS == -1
     assert captured["status"] == -1
     assert captured["kind"] is ProxyFailureKind.NETWORK
+
+
+# ---------------------------------------------------------------------------
+# 入库行：未赋值的计数 / 时间列必须是 0，而不是显式 NULL（MySQL 1048）
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_tab_insert_values_normalize_none_to_zero():
+    from Utils.代理.数据库操作.async_proxy_op_alchemy_mysql_ver import (
+        PROXY_TAB_ZERO_DEFAULT_COLUMNS,
+        normalize_proxy_tab_insert_values,
+    )
+    from Utils.数据库.SqlalchemyTool import sqlalchemy_model_2_dict
+
+    row = sqlalchemy_model_2_dict(
+        ProxyTab(
+            proxy={"http": "http://1.2.3.4:8080"},
+            status=0,
+            update_ts=1,
+            score=50,
+            add_ts=1,
+        )
+    )
+    row.pop("computed_proxy_str", None)
+    # 构造出来的行里计数 / 时间列全是 None（上游只填了 5 个字段）
+    assert all(row[name] is None for name in PROXY_TAB_ZERO_DEFAULT_COLUMNS)
+
+    normalize_proxy_tab_insert_values(row)
+
+    assert all(row[name] == 0 for name in PROXY_TAB_ZERO_DEFAULT_COLUMNS)
+    # 主键仍为 None（交给 MySQL AUTO_INCREMENT），代理串不被误改
+    assert row["proxy_id"] is None
+    assert row["proxy"] == {"http": "http://1.2.3.4:8080"}
