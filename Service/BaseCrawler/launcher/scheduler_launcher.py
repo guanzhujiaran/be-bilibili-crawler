@@ -149,6 +149,19 @@ class CrawlerExecutionInfo:
             f"[{self.info.crawler_name}] 已回滚 last_attempt_time：{prev}"
         )
 
+    async def last_exec_gap_seconds(self) -> float | None:
+        """距上一次**成功**执行结束的秒数；从未成功执行过返回 ``None``。
+
+        与 ``is_need_to_execute`` 的区别：这里不看 ``last_attempt_time``，
+        失败 / 被中断的一轮不算「上一轮结束」，不能因此把下一次 cron 跳过。
+        """
+        await self.load_last_exec_time()
+        last_end = self.info.last_exec_time
+        if last_end is None or last_end <= datetime.fromtimestamp(86400):
+            # 86400 = 1970-01-02 00:00:00，load_last_exec_time 的「无记录」默认值
+            return None
+        return max(0.0, (datetime.now() - last_end).total_seconds())
+
     async def is_need_to_execute(self) -> bool:
         """判断是否需要执行爬虫（按「上次尝试时间」与「上次成功时间」的较大者节流）。"""
         await self.load_last_exec_time()
@@ -183,6 +196,11 @@ class CrawlerExecutionInfo:
 POLICY_STARTUP_CATCHUP: Final[str] = "startup_catchup"
 POLICY_HIGH_FREQ_JITTER: Final[str] = "high_freq_jitter"
 POLICY_CRON_ONLY: Final[str] = "cron_only"
+
+#: 「最短轮次间隔」只对日级 / 月级任务生效。
+#: 高频 cron（如 STUCK_CHECK 每 10 分钟）的周期可能恰好等于 default_interval_seconds，
+#: 也会走 run() 的 else 分支，不能把它们的正常节拍当成「轮次过短」跳过。
+_MIN_ROUND_CRON_PERIOD_SECONDS: Final[float] = 24 * 3600
 
 
 def _should_run_on_startup_by_cron(cron_expr: str) -> bool:
@@ -245,6 +263,7 @@ class BaseScheduler:
         crawler_name: str = "",
         logger=default_logger,
         run_on_startup: bool | None = None,
+        min_round_gap_seconds: float | None = None,
     ):
         self.func = func
         self.crawler_asyncio_task = None
@@ -275,6 +294,14 @@ class BaseScheduler:
             default_interval_seconds=default_interval_seconds,
             logger=self.logger,
         )
+        # 日级 / 月级任务的最小轮次间隔（秒）：上一轮成功结束到本次 cron 触发
+        # 小于该值时跳过本次触发，顺延到下一次 cron。
+        # None = 跟随 CONFIG.crawler_runtime；<=0 = 关闭（维护类任务可显式传 0）。
+        self.min_round_gap_seconds = (
+            max(0.0, float(CONFIG.crawler_runtime.min_round_gap_seconds))
+            if min_round_gap_seconds is None
+            else max(0.0, float(min_round_gap_seconds))
+        )
 
         # 构建cron trigger
         minute, hour, day, month, day_of_week = cron_expr.split()
@@ -285,7 +312,8 @@ class BaseScheduler:
         # - 周期 < default_interval_seconds（高频任务，如 5 分钟 cron + 12h 间隔）：
         #   cron 只负责唤醒，是否真的执行仍由 interval 节流决定；
         # - 周期 >= default_interval_seconds（日级 / 月级任务）：cron 触发本身就是
-        #   期望的执行节拍，再叠加 interval 会把手动触发后的下一次 cron 整轮跳过。
+        #   期望的执行节拍；但若距上一轮成功结束不足 min_round_gap_seconds，
+        #   本次触发仍会跳过（见 _skip_due_to_short_gap）。
         self.cron_period_seconds = self._compute_cron_period_seconds()
         # 添加或更新任务
         self._add_or_update_job()
@@ -379,13 +407,51 @@ class BaseScheduler:
             GLOBAL_SCHEDULER.reschedule_job(job_id=self.job_id, trigger=self.trigger)
         return next_fire
 
+    async def _skip_due_to_short_gap(self) -> bool:
+        """日级任务：距上一轮成功结束过短时，跳过本次 cron 触发。
+
+        上一轮如果一直追到下一轮启动前几个小时才结束，下一次 cron 能爬的新数据
+        只有几个小时；启动一轮会很快结束（甚至凑不够停止条数而空转），因此直接
+        跳过本次触发，顺延到下一次 cron（跳到下下轮），攒够一个完整窗口再跑。
+
+        只看 ``last_exec_time``（成功结束），不看 ``last_attempt_time``：
+        失败 / 被中断的一轮不算「上一轮结束」，不能因此跳过下一次 cron。
+
+        ``min_round_gap_seconds <= 0`` 时关闭该策略；``force=True`` 的控制面触发
+        也不会走这里（管理端明确要求立即跑）。
+        """
+        if self.min_round_gap_seconds <= 0:
+            return False
+        # 只对日级 / 月级任务生效：高频 cron 的周期可能恰好等于 interval，
+        # 也会走到这里，但不能把每 10 分钟一次的正常节拍当成「轮次过短」。
+        if self.cron_period_seconds < _MIN_ROUND_CRON_PERIOD_SECONDS:
+            return False
+        try:
+            gap = await self.exec_info.last_exec_gap_seconds()
+        except Exception as e:  # noqa: BLE001 读不到节流键时按「执行」处理，不能因此停爬
+            self.logger.warning(
+                f"[{self.exec_info.info.crawler_name}] 读取上次成功结束时间失败，"
+                f"本轮按需要执行处理：{e!r}"
+            )
+            return False
+        if gap is None or gap >= self.min_round_gap_seconds:
+            return False
+        myfastapi_logger.warning(
+            f"event=crawler_round_skipped_short_gap "
+            f"job={self.exec_info.info.crawler_name} "
+            f"gap={format_duration(gap)} "
+            f"min_gap={format_duration(self.min_round_gap_seconds)} "
+            "上一轮刚结束、本轮可爬数据量不足，跳过本次 cron，顺延到下一次"
+        )
+        return True
+
     @async_pushme_try_catch_decorator
     async def run(self, force: bool = False):
         """调度入口（cron 触发 / 启动补跑 / 控制面强制触发共用）。
 
         ``force=True``（管理端 start / restart 走 ``run_now``）时绕过
-        ``is_need_to_execute`` 的间隔节流，保证「立即跑一轮」；
-        正在运行的旧任务仍先按「杀旧开新」cancel 后再重跑。
+        ``is_need_to_execute`` 的间隔节流与 ``min_round_gap_seconds`` 的短间隔跳过，
+        保证「立即跑一轮」；正在运行的旧任务仍先按「杀旧开新」cancel 后再重跑。
         """
         # 定时任务每次触发都会走到这里，属于正常调度流程，用 debug 记录即可，
         # 避免污染 CRITICAL 级别（只应保留真正的严重故障）。
@@ -425,9 +491,9 @@ class BaseScheduler:
             should_execute = await self.exec_info.is_need_to_execute()
         else:
             # 日级 / 月级任务：cron 周期本身已 >= 节流间隔，常规触发直接执行。
-            # 否则「手动触发把时间打漂」后，下一次 cron 会因 delta < interval
-            # 被静默跳过（线上 GET_OTHERS_LOT_DYN 实际间隔 32h 的根因）。
-            should_execute = True
+            # 但若上一轮成功结束距本次触发过短（可爬数据量不足），跳过本次，
+            # 顺延到下一次 cron（见 _skip_due_to_short_gap）。
+            should_execute = not await self._skip_due_to_short_gap()
 
         if should_execute:
             try:
@@ -636,6 +702,7 @@ class GenericCrawlerScheduler(BaseScheduler):
         default_interval_seconds: int = 2 * 3600,
         crawler_name: Optional[str] = None,
         run_on_startup: bool | None = None,
+        min_round_gap_seconds: float | None = None,
     ):
         self.crawler = crawler
         # 统一「调度器名 == 爬虫实例名 == 卡住监控名」：
@@ -655,6 +722,7 @@ class GenericCrawlerScheduler(BaseScheduler):
             crawler_name=resolved_name,
             logger=self.crawler.log,
             run_on_startup=run_on_startup,
+            min_round_gap_seconds=min_round_gap_seconds,
         )
 
 

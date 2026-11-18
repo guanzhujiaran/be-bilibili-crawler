@@ -292,6 +292,10 @@ async def test_daily_cron_trigger_bypasses_interval_throttle():
         async def is_need_to_execute(self) -> bool:
             raise AssertionError("日级任务的常规 cron 触发不应再询问 interval 节流")
 
+        async def last_exec_gap_seconds(self) -> float:
+            # 距上一次成功结束足够久：不触发 min_round_gap_seconds 的跳过
+            return 20 * 3600
+
         async def save_last_exec_time(self) -> None:
             return None
 
@@ -312,6 +316,214 @@ async def test_daily_cron_trigger_bypasses_interval_throttle():
         assert calls == 1
     finally:
         _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_daily_cron_skipped_when_previous_round_ended_too_recently():
+    """上一轮结束距本次 cron 过短：整轮跳过，顺延到下一次 cron（下下轮）。
+
+    场景：上一轮一直追到下一轮启动前几个小时，本次只剩几个小时的新数据，
+    启动一轮数据量不足（甚至凑不够停止条数），应直接跳过，不发任务。
+    """
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_short_gap",
+            default_interval_seconds=15 * 3600,
+            last_attempt_time=None,
+        )
+
+        async def last_exec_gap_seconds(self) -> float:
+            return 3 * 3600  # 上一轮 3 小时前刚结束
+
+        async def save_last_exec_time(self) -> None:
+            return None
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 2 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name="test_short_gap",
+        run_on_startup=True,
+        min_round_gap_seconds=6 * 3600,
+    )
+    scheduler._first_fire = False  # 本次是 cron 常规触发
+    scheduler.exec_info = StubExecInfo()
+    lines: list[str] = []
+    sink_id = myfastapi_logger.add(
+        lambda message: lines.append(str(message)),
+        level="WARNING",
+        filter=lambda record: "event=crawler_round_skipped_short_gap"
+        in record["message"],
+    )
+    try:
+        await scheduler.run()
+        await asyncio.sleep(0)
+        assert scheduler.crawler_asyncio_task is None
+        assert calls == 0
+        assert len(lines) == 1
+        assert "job=test_short_gap" in lines[0]
+        assert "顺延到下一次" in lines[0]
+    finally:
+        myfastapi_logger.remove(sink_id)
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_equal_period_cron_is_not_treated_as_daily_round():
+    """cron 周期 == default_interval_seconds 的高频任务（如 STUCK_CHECK）不能被跳过。
+
+    "*/10 * * * *" + interval=600 会走 run() 的 else 分支（600 < 600 为 False），
+    但它不是「日级轮次」，不能套用 min_round_gap_seconds。
+    """
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_equal_period",
+            default_interval_seconds=600,
+            last_attempt_time=None,
+        )
+
+        async def last_exec_gap_seconds(self) -> float:
+            return 60.0  # 上一次刚结束
+
+        async def save_last_exec_time(self) -> None:
+            return None
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="*/10 * * * *",
+        default_interval_seconds=600,
+        crawler_name="test_equal_period",
+        run_on_startup=True,
+        min_round_gap_seconds=6 * 3600,
+    )
+    scheduler._push_stage = _false_push
+    scheduler._first_fire = False
+    scheduler.exec_info = StubExecInfo()
+    try:
+        await scheduler.run()
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await task
+        assert calls == 1
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_force_run_ignores_short_round_gap():
+    """管理端强制触发（force=True）不受 min_round_gap_seconds 限制。"""
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_force_short_gap",
+            default_interval_seconds=15 * 3600,
+            last_attempt_time=None,
+        )
+
+        async def last_exec_gap_seconds(self) -> float:
+            return 60.0  # 一分钟前刚结束
+
+        async def save_last_exec_time(self) -> None:
+            return None
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 2 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name="test_force_short_gap",
+        run_on_startup=True,
+        min_round_gap_seconds=6 * 3600,
+    )
+    scheduler._push_stage = _false_push
+    scheduler.exec_info = StubExecInfo()
+    try:
+        await scheduler.run(force=True)
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await task
+        assert calls == 1
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_daily_cron_runs_when_min_round_gap_disabled():
+    """min_round_gap_seconds<=0：关闭短间隔跳过，行为与改造前一致。"""
+    calls = 0
+
+    async def func() -> None:
+        nonlocal calls
+        calls += 1
+
+    class StubExecInfo:
+        info = SimpleNamespace(
+            crawler_name="test_gap_disabled",
+            default_interval_seconds=15 * 3600,
+            last_attempt_time=None,
+        )
+
+        async def last_exec_gap_seconds(self) -> float:
+            raise AssertionError("关闭短间隔跳过时不应读取 last_exec_time")
+
+        async def save_last_exec_time(self) -> None:
+            return None
+
+    scheduler = BaseScheduler(
+        func=func,
+        cron_expr="0 2 * * *",
+        default_interval_seconds=15 * 3600,
+        crawler_name="test_gap_disabled",
+        run_on_startup=True,
+        min_round_gap_seconds=0,
+    )
+    scheduler._push_stage = _false_push
+    scheduler._first_fire = False
+    scheduler.exec_info = StubExecInfo()
+    try:
+        await scheduler.run()
+        task = scheduler.crawler_asyncio_task
+        assert task is not None
+        await task
+        assert calls == 1
+    finally:
+        _remove_job(scheduler.job_id)
+
+
+@pytest.mark.asyncio
+async def test_last_exec_gap_seconds_uses_success_end_only(fake_redis):
+    """间隔只看 last_exec_time（成功结束），不被 last_attempt_time 影响。"""
+    exec_info = CrawlerExecutionInfo(
+        crawler_name="test_exec_gap", default_interval_seconds=15 * 3600
+    )
+    # 从未成功执行过：返回 None
+    assert await exec_info.last_exec_gap_seconds() is None
+
+    now = datetime.datetime.now()
+    fake_redis.store[exec_info._exec_info_redis_key] = str(
+        (now - datetime.timedelta(hours=3)).timestamp()
+    )
+    # 刚尝试过（失败 / 被中断）也不能改变「成功结束」口径
+    fake_redis.store[exec_info._attempt_info_redis_key] = str(now.timestamp())
+    gap = await exec_info.last_exec_gap_seconds()
+    assert gap is not None
+    assert 3 * 3600 - 5 <= gap <= 3 * 3600 + 5
 
 
 @pytest.mark.asyncio

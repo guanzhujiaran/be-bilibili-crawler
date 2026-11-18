@@ -115,6 +115,14 @@ class CrawlerRuntimeConfig(BaseModel):
     # cookie 预热同时开跑，把单核 CPU 打满、事件循环被饿死（HTTP 4.5 分钟无响应）。
     # 这里给每个调度器的首次运行加 0~N 秒随机偏移，把启动风暴摊平。
     startup_jitter_seconds: float = 60.0
+    # ===== 日级 / 月级任务的「最小轮次间隔」=====
+    # 上一轮**成功结束**到本次 cron 触发的间隔小于该值时，本轮直接跳过，
+    # 顺延到下一次 cron（跳到下下轮）。
+    # 场景：上一轮一直追到下一轮启动前几个小时才结束，下一轮只剩几个小时的新数据，
+    # 启动一轮会很快结束（甚至凑不够停止条数而空转），不如等下一次攒够再跑。
+    # <=0 关闭；单个调度器可在构造时显式覆盖（见 BaseScheduler.min_round_gap_seconds）。
+    # env 覆盖：CRAWLER_RUNTIME__MIN_ROUND_GAP_SECONDS
+    min_round_gap_seconds: float = 6 * 3600
 
 
 class CrawlerBreakerConfig(BaseModel):
