@@ -9,10 +9,10 @@ import asyncio
 import datetime
 import json
 import time
-from typing import Any, AsyncGenerator
+from typing import Any
 from CONFIG import CONFIG, settings
 from Models.base.custom_pydantic import CustomBaseModelHashable
-from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.CrawlerType import IncrementalIdCrawler
 from Service.BaseCrawler.config import DynDetailScrapyConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 from Service.BaseCrawler.retry_queue import RetryTaskType
@@ -59,11 +59,15 @@ class DynDetailParams(CustomBaseModelHashable):
         return hash(self.rid)
 
 
-class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
+class DynDetailScrapy(IncrementalIdCrawler[DynDetailParams]):
     Config = DynDetailScrapyConfig
     status_plugin: StatsPlugin | None = None
     # 至少一次：失败的 rid 必须落 crawl_failed_task，下一轮优先补跑（否则断点会越过它）
     retry_task_type = RetryTaskType.DYN_DETAIL.value
+    id_field = "rid"
+
+    def make_params(self, business_id: int) -> DynDetailParams:
+        return DynDetailParams(rid=business_id)
 
     def __init__(self):
         self.offset = 10  # 每次获取rid的数量，数值最好不要超过10，太大的话传输会出问题
@@ -105,20 +109,6 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
         if str(detail.get("dynamic_id")) == "-1":
             return WorkerStatus.nullData
         return WorkerStatus.complete
-
-    def retry_business_id(self, params: DynDetailParams | None) -> int | None:
-        return params.rid if params is not None else None
-
-    def retry_params(self, business_id: int) -> DynDetailParams:
-        return DynDetailParams(rid=business_id)
-
-    async def key_params_gen(
-        self, latest_params: DynDetailParams = None
-    ) -> AsyncGenerator[DynDetailParams, None]:
-        latest_rid = latest_params.rid
-        while 1:
-            yield DynDetailParams(rid=latest_rid)
-            latest_rid += 1
 
     async def is_stop(self) -> bool:
         return self.stop_counter.stop_flag

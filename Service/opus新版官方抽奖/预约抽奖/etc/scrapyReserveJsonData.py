@@ -8,7 +8,6 @@ import os
 import time
 from dataclasses import dataclass
 from functools import reduce
-from typing import AsyncGenerator
 import aiofiles
 import pandas
 
@@ -16,7 +15,7 @@ from Utils.通用.CommMethods import methods
 from dao.commStorageRedisObj import comm_storage_redis_obj
 from log.base_log import reserve_lot_logger
 from Models.base.custom_pydantic import CustomBaseModelHashable
-from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.CrawlerType import IncrementalIdCrawler
 from Service.BaseCrawler.config import ReserveScrapyRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus, WorkerModel
 from Service.BaseCrawler.retry_queue import RetryTaskType
@@ -63,12 +62,18 @@ class ReserveParams(CustomBaseModelHashable):
         return hash(self.reserve_id)
 
 
-class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
+class ReserveScrapyRobot(IncrementalIdCrawler[ReserveParams]):
     Config = ReserveScrapyRobotConfig
     stats_plugin: StatsPlugin | None = None
     null_stop_plugin: SequentialNullStopPlugin | None = None
     # 至少一次：失败的 sid 必须落 crawl_failed_task，下一轮优先补跑
     retry_task_type = RetryTaskType.RESERVE_SCRAPY.value
+    id_field = "reserve_id"
+    # 历史语义：传入的是「上一轮游标」，本轮从 +1 开始，不重复产出 seed
+    include_seed_in_key_params = False
+
+    def make_params(self, business_id: int) -> ReserveParams:
+        return ReserveParams(reserve_id=business_id)
 
     def __init__(self):
         # region 统计类数据
@@ -193,22 +198,8 @@ class ReserveScrapyRobot(UnlimitedCrawler[ReserveParams]):
                 )
         return False
 
-    async def key_params_gen(
-        self, params: ReserveParams
-    ) -> AsyncGenerator[ReserveParams, None]:
-        reserve_id = params.reserve_id
-        while 1:
-            reserve_id += 1
-            yield ReserveParams(reserve_id=reserve_id)
-
     async def handle_fetch(self, params: ReserveParams) -> WorkerStatus:
         return await self.resolve_reserve(params.reserve_id)
-
-    def retry_business_id(self, params: ReserveParams | None) -> int | None:
-        return params.reserve_id if params is not None else None
-
-    def retry_params(self, business_id: int) -> ReserveParams:
-        return ReserveParams(reserve_id=business_id)
 
     async def write_in_file(self):
         async def my_write(path_name, content_list: list, write_mode="a+"):

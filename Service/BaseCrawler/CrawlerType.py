@@ -1616,3 +1616,47 @@ class UnlimitedCrawler(BaseCrawler[ParamsType], Generic[ParamsType]):
 
         # 收尾回收：正常路径 worker 已收到哨兵退出，这里兜底清理被 cancel 的个别 worker。
         await self._reap_leftover_workers()
+
+
+class IncrementalIdCrawler(UnlimitedCrawler[ParamsType], Generic[ParamsType]):
+    """按自增业务 id 连续采集的爬虫基类。
+
+    多个爬虫（动态详情 / 话题 / 官方抽奖 / 预约）都在重复「自增 id + 重试参数还原」
+    这套模板。子类只需声明：
+
+    - ``id_field``：参数模型里的业务 id 字段名；
+    - ``make_params(business_id)``：用业务 id 构造参数对象；
+    - ``include_seed_in_key_params``：是否先产出传入的 seed（默认 True）。
+
+    ``retry_business_id`` / ``retry_params`` 直接由 ``id_field`` + ``make_params`` 派生，
+    避免每个爬虫各写一份相同的实现。
+    """
+
+    id_field: ClassVar[str] = "id"
+    include_seed_in_key_params: ClassVar[bool] = True
+
+    def make_params(self, business_id: int) -> ParamsType:
+        raise NotImplementedError
+
+    def business_id_of(self, params: ParamsType | None) -> int | None:
+        if params is None:
+            return None
+        return getattr(params, self.id_field, None)
+
+    def retry_business_id(self, params: ParamsType | None) -> int | None:
+        return self.business_id_of(params)
+
+    def retry_params(self, business_id: int) -> ParamsType:
+        return self.make_params(business_id)
+
+    async def key_params_gen(
+        self, params: ParamsType
+    ) -> AsyncGenerator[ParamsType, None]:
+        current = self.business_id_of(params)
+        if current is None:
+            return
+        if self.include_seed_in_key_params:
+            yield self.make_params(current)
+        while True:
+            current += 1
+            yield self.make_params(current)

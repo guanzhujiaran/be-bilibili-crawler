@@ -1,12 +1,12 @@
 import asyncio
 import time
-from typing import AsyncGenerator, Literal, Annotated
+from typing import Literal, Annotated
 
 from pydantic import Field
 
 from Models.base.custom_pydantic import CustomBaseModelHashable
 from CONFIG import CONFIG
-from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.CrawlerType import IncrementalIdCrawler
 from Service.BaseCrawler.config import LotteryApiRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 from Service.BaseCrawler.retry_queue import RetryTaskType
@@ -47,16 +47,16 @@ class RedisHelper(RedisManagerBase):
         await self._set(_type.value, value)
 
 
-class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
+class LotteryApiRobot(IncrementalIdCrawler[BusinessParams]):
     Config = LotteryApiRobotConfig
+    id_field = "business_id"
+    # 历史语义：传入的是「上一轮游标」，本轮从 +1 开始，不重复产出 seed
+    include_seed_in_key_params = False
 
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
 
-    def retry_business_id(self, params: BusinessParams | None) -> int | None:
-        return params.business_id if params is not None else None
-
-    def retry_params(self, business_id: int) -> BusinessParams:
+    def make_params(self, business_id: int) -> BusinessParams:
         """按本实例的业务类型还原参数（2=官方抽奖动态 id / 10=预约 sid）。"""
         return BusinessParams(
             business_type=self._LotteryApiRobot__business_type,
@@ -77,15 +77,6 @@ class LotteryApiRobot(UnlimitedCrawler[BusinessParams]):
         if not await self.can_advance_cursor(business_id):
             return
         await self.redis_helper.set_id(redis_map, business_id)
-
-    async def key_params_gen(
-        self, params: BusinessParams
-    ) -> AsyncGenerator[BusinessParams, None]:
-        while 1:
-            params = BusinessParams(
-                business_type=params.business_type, business_id=params.business_id + 1
-            )
-            yield params
 
     async def handle_fetch(self, params: BusinessParams) -> WorkerStatus:
         return await self.pipeline(params.business_type, params.business_id)

@@ -216,6 +216,7 @@ class BiliSpaceUserItem:
                 get_others_lot_log.info(
                     f"断点续爬：uid={self.uid}，从数据库恢复本轮offset={origin_offset}之后的空间动态{len(restored_items)}条，之后将继续从B站API获取"
                 )
+                time_list = _extract_space_dynamic_times(dyreq_dict)
             else:
                 if is_resume_from_db:
                     get_others_lot_log.warning(
@@ -264,7 +265,9 @@ class BiliSpaceUserItem:
                 get_others_lot_log.info(
                     f"获取用户uid={self.uid}空间动态成功，耗时{format_duration(time.time() - start_ts)}，获取到{len(dyreq_dict.get('data', {}).get('items', []))}条动态"
                 )
-                resp_dyn_ids = await self.__add_space_card_to_db(dyreq_dict)
+                resp_dyn_ids, time_list = await self.__add_space_card_to_db(
+                    dyreq_dict
+                )
                 if not first_dynamic_id and resp_dyn_ids:
                     first_dynamic_id = resp_dyn_ids[0]
             try:
@@ -317,7 +320,6 @@ class BiliSpaceUserItem:
                 )
                 break
             self.offset = cur_offset
-            time_list = _extract_space_dynamic_times(dyreq_dict)
             if not secondRound:  # 第二轮获取动态，不更新数据库
                 lot_user_info = TLotuserinfo(
                     uid=self.uid,
@@ -409,16 +411,19 @@ class BiliSpaceUserItem:
             f"用户uid={self.uid}空间动态获取完毕，本轮获取到的动态数量={n}条"
         )
 
-    async def __add_space_card_to_db(self, spaceResp: dict) -> List[int | str] | None:
-        """将空间动态响应保存到数据库
+    async def __add_space_card_to_db(
+        self, spaceResp: dict
+    ) -> tuple[List[int | str], list[int]]:
+        """将空间动态响应保存到数据库，同时返回动态 id 和发布时间戳。
 
-        优化：缓存 data/items，过滤置顶动态和保存数据库合并为单次遍历
+        优化：缓存 data/items，过滤置顶、收集动态 id、收集发布时间、保存数据库
+        合并为单次遍历（原先这三件事各遍历一次 items）。
         """
         try:
             data = spaceResp.get("data") or {}
             items = data.get("items") or []
-            # 过滤置顶动态并保存到数据库（单次遍历 + 整页一次提交）
             ret_list = []
+            time_list: list[int] = []
             batch: list[TLotuserspaceresp] = []
             for i in items:
                 if _is_pinned_dynamic(i):
@@ -433,13 +438,20 @@ class BiliSpaceUserItem:
                     )
                 )
                 ret_list.append(space_resp_card_dynamic_id)
+                module_author = (i.get("modules") or {}).get("module_author") or {}
+                pub_ts = module_author.get("pub_ts")
+                if pub_ts is not None:
+                    time_list.append(
+                        int(pub_ts) if isinstance(pub_ts, str) else pub_ts
+                    )
             await SqlHelper.addSpaceRespBatch(batch)
-            return ret_list
+            return ret_list, time_list
         except Exception as _e:
             get_others_lot_log.error(
                 f"保存空间动态响应到数据库失败，uid={self.uid}，error={_e}"
             )
             get_others_lot_log.exception(_e)
+            return [], []
 
     def _add_pub_lot_user(self, uid):
         """添加发布抽奖的用户

@@ -7,7 +7,7 @@ import time
 from typing import Union, List, AsyncGenerator
 
 from Models.base.custom_pydantic import CustomBaseModelHashable
-from Service.BaseCrawler.CrawlerType import UnlimitedCrawler
+from Service.BaseCrawler.CrawlerType import IncrementalIdCrawler
 from Service.BaseCrawler.config import TopicRobotConfig
 from Service.BaseCrawler.model.base import WorkerStatus
 from Service.BaseCrawler.retry_queue import RetryTaskType
@@ -68,12 +68,16 @@ class SuccCounter(BaseSuccCounter):
         super().__init__()
 
 
-class TopicRobot(UnlimitedCrawler[TopicParams]):
+class TopicRobot(IncrementalIdCrawler[TopicParams]):
     Config = TopicRobotConfig
     stats_plugin: StatsPlugin | None = None
     null_stop_plugin: SequentialNullStopPlugin | None = None
     # 至少一次：失败的话题 id 必须落 crawl_failed_task，下一轮优先补跑
     retry_task_type = RetryTaskType.TOPIC.value
+    id_field = "topic_id"
+
+    def make_params(self, business_id: int) -> TopicParams:
+        return TopicParams(topic_id=business_id)
 
     async def is_stop(self) -> bool:
         return self._cur_stop_times >= self.__max_stop_times
@@ -93,12 +97,6 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
 
     async def handle_fetch(self, params: TopicParams) -> WorkerStatus:
         return await self.pipeline(params.topic_id)
-
-    def retry_business_id(self, params: TopicParams | None) -> int | None:
-        return params.topic_id if params is not None else None
-
-    def retry_params(self, business_id: int) -> TopicParams:
-        return TopicParams(topic_id=business_id)
 
     def __init__(self):
         self.sem_limit = 1

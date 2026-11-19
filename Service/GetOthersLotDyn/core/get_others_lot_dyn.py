@@ -65,27 +65,24 @@ class GetOthersLotDyn:
         用户池管理（剔除 + 补充）与总结推送统一由 robot.main() 在采集结束后执行，
         这里不再重复调用，避免同一轮被处理两次。
         """
-        while 1:
-            async with self.is_getting_dyn_flag_lock:
-                if self.is_getting_dyn_flag:
-                    await asyncio.sleep(30)
-                    continue
-                else:
-                    self.is_getting_dyn_flag = True
-                    break
-        self.get_dyn_ts = await self.get_get_dyn_ts()
-        get_others_lot_log.info(
-            f"上次获取第三方抽奖动态时间：{datetime.datetime.fromtimestamp(self.get_dyn_ts)}"
-        )
-        if (
-            int(time.time()) - self.get_dyn_ts
-            >= settings.get_others_lot.get_dyn_interval
-        ):
-            # 复用构造时挂上的全局单例机器人（与其它爬虫保持一致，不再每次新建）
-            await self.robot.main()
-            await get_other_lot_redis_manager.set_get_dyn_ts(int(time.time()))
-        self.is_getting_dyn_flag = False
-        return await self.solve_return_lot()
+        # 同一时刻只允许一个采集轮次；并发调用直接排队，不再每 30 秒轮询标志位。
+        async with self.is_getting_dyn_flag_lock:
+            self.is_getting_dyn_flag = True
+            try:
+                self.get_dyn_ts = await self.get_get_dyn_ts()
+                get_others_lot_log.info(
+                    f"上次获取第三方抽奖动态时间：{datetime.datetime.fromtimestamp(self.get_dyn_ts)}"
+                )
+                if (
+                    int(time.time()) - self.get_dyn_ts
+                    >= settings.get_others_lot.get_dyn_interval
+                ):
+                    # 复用构造时挂上的全局单例机器人（与其它爬虫保持一致，不再每次新建）
+                    await self.robot.main()
+                    await get_other_lot_redis_manager.set_get_dyn_ts(int(time.time()))
+                return await self.solve_return_lot()
+            finally:
+                self.is_getting_dyn_flag = False
 
     async def _get_users_from_latest_lot_dyn_comment(
         self, pick_count: int = 5, exclude_uids: set[int] | None = None

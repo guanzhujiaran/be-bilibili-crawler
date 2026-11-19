@@ -31,6 +31,8 @@ class GetRmFollowingListV2(UnlimitedCrawler[BiliSpaceUserParamsType]):
         super().__init__()
         self.following_params_queue = asyncio.Queue()
         self._lock = asyncio.Lock()
+        # 等待「某批 uid 全部处理完」用条件变量，避免 10 秒轮询 running 集合。
+        self._running_cond = asyncio.Condition()
         self.check_up_sep_days = (
             15  # 每个uid的检查间隔的天数，超过这个时间就重新访问b站api检查
         )
@@ -102,6 +104,9 @@ class GetRmFollowingListV2(UnlimitedCrawler[BiliSpaceUserParamsType]):
 
     async def on_worker_end(self, worker_model: WorkerModel):
         running_uids.discard(worker_model.params.uid)
+        # 唤醒正在等待「这批 uid 全部处理完」的调用方
+        async with self._running_cond:
+            self._running_cond.notify_all()
         await super().on_worker_end(worker_model)
 
     def _judge_lot_up(self, uid: int, latest_lot_dyn: TLotdyninfo | None) -> LotUpInfo:
@@ -158,8 +163,10 @@ class GetRmFollowingListV2(UnlimitedCrawler[BiliSpaceUserParamsType]):
         following_list = list(set(following_list))  # 去个重
         await self.add_following_params(following_list)
         following_set = set(following_list)
-        while following_set & running_uids:
-            await asyncio.sleep(10)
+        async with self._running_cond:
+            await self._running_cond.wait_for(
+                lambda: not (following_set & running_uids)
+            )
         result = await self.check_lot_up_from_database_bulk(following_list)
         self.log.info(f"需要取关up主:{result}")
         res = [x.uid for x in result if not x.isLotUp]
