@@ -39,7 +39,7 @@ class GetRmFollowingListV2(UnlimitedCrawler[BiliSpaceUserParamsType]):
         self._is_use_available_proxy = False
 
     async def is_stop(self) -> bool:
-        pass
+        return False
 
     async def key_params_gen(
         self, _params: Any | None = None

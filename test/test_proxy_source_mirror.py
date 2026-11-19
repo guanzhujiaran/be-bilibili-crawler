@@ -252,8 +252,10 @@ def test_supplement_sources_discovered_by_runner():
     )
     names = [name for name, _ in methods if name.startswith("get_proxy_from")]
     assert "get_proxy_from_supplement_sources" in names
-    # 一个都不能漏：漏掉的源会永远不被调度
-    assert len(names) >= 90
+    # 纯 URL 源已迁移到 SUPPLEMENT_SOURCES（数据驱动），方法数会明显少于源数量；
+    # 这里分别校验「仍有专用方法」与「数据驱动源没有漏」。
+    assert len(names) >= 20
+    assert len(mod.SUPPLEMENT_SOURCES) >= 100
 
     sync_style = [
         name

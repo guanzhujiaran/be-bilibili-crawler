@@ -39,9 +39,6 @@ from Utils.通用.Common import log_max_count_retry_wrapper
 
 
 class GenerateTopicLotCv(GenerateCvBase):
-    def zhuanlan_data_sort_by_date(self, zhuanlan_data: list) -> list:
-        pass
-
     def __init__(self, cookie, ua, csrf, buvid, abstract: str = ""):
         super().__init__(cookie, ua, csrf, buvid)
         self.post_flag = True  # 是否直接发布

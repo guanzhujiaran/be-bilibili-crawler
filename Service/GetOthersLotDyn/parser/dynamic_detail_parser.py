@@ -100,21 +100,18 @@ def _extract_official_verify(module_author: dict) -> int:
         return -1
 
 
-def _comment_type_to_dynamic_type(comment_type: Any) -> str:
-    """将 comment_type 映射为内部动态类型字符串
+#: B 站评论区 comment_type → 内部动态类型（评论接口与动态接口不是同一套编码）
+COMMENT_TYPE_TO_DYNAMIC_TYPE: dict[str, str] = {
+    "17": "4",  # 转发
+    "1": "8",  # 视频
+    "11": "2",  # 图片
+    "12": "64",  # 文章
+}
 
-    '17' -> '4' (转发)
-    '1'  -> '8' (视频)
-    '11' -> '2' (图片)
-    '12' -> '64'(文章)
-    """
-    ct = str(comment_type)
-    return {
-        "17": "4",
-        "1": "8",
-        "11": "2",
-        "12": "64",
-    }.get(ct, "8")
+
+def comment_type_to_dynamic_type(comment_type: Any) -> str:
+    """将 comment_type 映射为内部动态类型字符串（默认视频 8）。"""
+    return COMMENT_TYPE_TO_DYNAMIC_TYPE.get(str(comment_type), "8")
 
 
 def _parse_orig_dynamic(orig_item: dict | None) -> dict:
@@ -201,7 +198,7 @@ def parse_dynamic_item(
 
     basic = dynamic_item.get("basic") or {}
     comment_type = basic.get("comment_type")
-    dynamic_type = _comment_type_to_dynamic_type(comment_type)
+    dynamic_type = comment_type_to_dynamic_type(comment_type)
     card_stype = dynamic_item.get("type")
     dynamic_data_dynamic_id = dynamic_item.get("id_str")
 

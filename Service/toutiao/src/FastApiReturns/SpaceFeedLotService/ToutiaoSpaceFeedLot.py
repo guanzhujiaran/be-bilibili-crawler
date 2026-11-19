@@ -63,7 +63,6 @@ class ToutiaoSpaceFeedLotService:
                 await spider.main()
                 self.last_get_lot_id_timestamp = int(time.time())
                 self.write_last_get_lot_id_timestamp()
-                self.is_getting_lot_id = True
             ret_list = self.generate_lot_id_list()
             logger.info(f"头条抽奖数据获取完成！共计{len(ret_list)}条！")
             return ret_list

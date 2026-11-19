@@ -29,6 +29,10 @@ from bili_common.core.log_mask import (
 
 _is_use_available_proxy = True
 
+# 单条动态详情 / 抽奖判定的最大重试深度：历史实现用无界递归自愈，
+# 遇到持续 412 / 响应异常时会无限递归，最终栈溢出或任务永久卡住。
+_MAX_DETAIL_RETRY = 3
+
 
 class FileMap(StrEnumAutoDoc):
     current_file_path = os.path.dirname(os.path.abspath(__file__))
@@ -88,16 +92,22 @@ class BiliDynamicItem:
             )
 
     async def __solve_dynamic_item_detail(
-        self, dynamic_detail_resp: dict
+        self, dynamic_detail_resp: dict, _retry_depth: int = 0
     ) -> DynamicDetailParsed:
         """
         使用代理获取动态详情，传入空间的动态响应前，需要先构建成单个动态的响应！！！
         委托给 dynamic_detail_parser.parse_dynamic_item 进行纯数据解析，
         本方法仅负责网络重试逻辑（412/None/动态ID不匹配等）。
         :param dynamic_detail_resp: 动态详情响应字典
+        :param _retry_depth: 内部重试深度（有界，避免持续异常时无限递归）
         :return: DynamicDetailParsed 解析结果模型
         """
         get_others_lot_log.debug(f"正在解析动态详情：{self.dynamic_id}")
+        if _retry_depth > _MAX_DETAIL_RETRY:
+            get_others_lot_log.error(
+                f"解析动态详情重试 {_retry_depth} 次仍失败，放弃：dynamic_id={self.dynamic_id}"
+            )
+            return DynamicDetailParsed()
         try:
             result = parse_dynamic_item(self.dynamic_id, dynamic_detail_resp)
             if not result.is_valid():
@@ -109,8 +119,12 @@ class BiliDynamicItem:
                 get_others_lot_log.error(
                     f"API返回的动态ID与期望的不匹配，将强制通过API重新获取，dynamic_id={self.dynamic_id}"
                 )
-                new_req = await self._get_dyn_detail_resp(force_api=True)
-                return await self.__solve_dynamic_item_detail(new_req)
+                new_req = await self._get_dyn_detail_resp(
+                    force_api=True, _retry_depth=_retry_depth + 1
+                )
+                return await self.__solve_dynamic_item_detail(
+                    new_req, _retry_depth=_retry_depth + 1
+                )
             return result
         except Exception as e:
             # ERROR 只留「异常 + code/message/关键 id」；完整响应属于排查细节，
@@ -131,8 +145,12 @@ class BiliDynamicItem:
             if code == -412:
                 get_others_lot_log.info("触发B站412风控，等待10秒后重试")
                 await asyncio.sleep(10)
-                new_req = await self._get_dyn_detail_resp(force_api=True)
-                return await self.__solve_dynamic_item_detail(new_req)
+                new_req = await self._get_dyn_detail_resp(
+                    force_api=True, _retry_depth=_retry_depth + 1
+                )
+                return await self.__solve_dynamic_item_detail(
+                    new_req, _retry_depth=_retry_depth + 1
+                )
             elif code == 4101128:
                 get_others_lot_log.info(
                     f"动态被B站屏蔽或不可见，code=4101128，msg={dynamic_detail_resp.get('message')}"
@@ -141,15 +159,23 @@ class BiliDynamicItem:
                 get_others_lot_log.info(
                     "动态响应中缺少code字段，可能响应格式异常，将重新获取"
                 )
-                new_req = await self._get_dyn_detail_resp(force_api=True)
-                return await self.__solve_dynamic_item_detail(new_req)
+                new_req = await self._get_dyn_detail_resp(
+                    force_api=True, _retry_depth=_retry_depth + 1
+                )
+                return await self.__solve_dynamic_item_detail(
+                    new_req, _retry_depth=_retry_depth + 1
+                )
             else:
                 get_others_lot_log.error(
                     f"动态详情解析失败，未知错误码code={code}，dynamic_id={self.dynamic_id}，等待10秒后重试"
                 )
                 await asyncio.sleep(10)
-                new_req = await self._get_dyn_detail_resp(force_api=True)
-                return await self.__solve_dynamic_item_detail(new_req)
+                new_req = await self._get_dyn_detail_resp(
+                    force_api=True, _retry_depth=_retry_depth + 1
+                )
+                return await self.__solve_dynamic_item_detail(
+                    new_req, _retry_depth=_retry_depth + 1
+                )
             return DynamicDetailParsed()
 
     async def _solve_dynamic_item_detail(self):
@@ -161,7 +187,9 @@ class BiliDynamicItem:
         self.dynamic_raw_detail = dynamic_raw_detail
         return dynamic_raw_detail
 
-    async def _get_dyn_detail_resp(self, force_api: bool = False) -> dict:
+    async def _get_dyn_detail_resp(
+        self, force_api: bool = False, _retry_depth: int = 0
+    ) -> dict:
         """
         返回{
                         'code':0,
@@ -250,8 +278,15 @@ class BiliDynamicItem:
                     )
         except Exception as e:
             get_others_lot_log.exception(e)
+            if _retry_depth >= _MAX_DETAIL_RETRY:
+                get_others_lot_log.error(
+                    f"获取动态详情重试 {_retry_depth} 次仍失败，放弃：dynamic_id={self.dynamic_id}"
+                )
+                raise
             await asyncio.sleep(10)
-            return await self._get_dyn_detail_resp()
+            return await self._get_dyn_detail_resp(
+                force_api=force_api, _retry_depth=_retry_depth + 1
+            )
         self.dynamic_raw_resp = dynamic_req
         return dynamic_req
 
@@ -328,7 +363,7 @@ class BiliDynamicItem:
             )
 
     async def judge_lottery(
-        self, lotRound_id: int
+        self, lotRound_id: int, _retry_depth: int = 0
     ) -> BiliDynamicItemJudgeLotteryResult:
         """
         判断是否是抽奖 并且存储到数据库
@@ -567,8 +602,16 @@ class BiliDynamicItem:
                 subject="运行异常",
                 content=f"【fastapi】判断抽奖动态异常\ndynamic_id={dynamic_detail.dynamic_id if dynamic_detail else 'None'}\nerror={e}",
             )
+            if _retry_depth >= _MAX_DETAIL_RETRY:
+                get_others_lot_log.error(
+                    f"判断抽奖动态重试 {_retry_depth} 次仍失败，放弃："
+                    f"dynamic_id={dynamic_detail.dynamic_id if dynamic_detail else 'None'}"
+                )
+                raise
             await asyncio.sleep(30)
-            return await self.judge_lottery(lotRound_id)
+            return await self.judge_lottery(
+                lotRound_id, _retry_depth=_retry_depth + 1
+            )
         judge_result = BiliDynamicItemJudgeLotteryResult(
             cur_dynamic=cur_dynamic,
             orig_dynamic=orig_dynamic,

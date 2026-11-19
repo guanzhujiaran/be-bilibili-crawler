@@ -156,12 +156,4 @@ async def solve_return_lot(
     #     filtered_list
     # )
     get_others_lot_log.info(f"第三方抽奖动态过滤完成，共{len(filtered_list)}条有效抽奖")
-    ret_list = [sqlalchemy_model_2_dict(x) for x in filtered_list]
-    if ret_list:
-        # await a_pushme(
-        #     f"一般动态抽奖信息【{len(filtered_list)}】条", '\n'.join(
-        #         [str(x['dynId']) for x in ret_list]),
-        #     'text'
-        # )
-        ...
-    return ret_list
+    return [sqlalchemy_model_2_dict(x) for x in filtered_list]

@@ -1,12 +1,18 @@
+from __future__ import annotations
+
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List
+from typing import TYPE_CHECKING, List
 
 from pydantic import Field, PrivateAttr, computed_field
 
 from Models.base.custom_pydantic import CustomBaseModelHashable
-from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
+
+if TYPE_CHECKING:
+    # 仅用于类型标注：运行时导入会触发 Service.GetOthersLotDyn 包初始化，
+    # 而包初始化又会反向导入本模块，形成循环导入。
+    from Service.GetOthersLotDyn.Sql.models import TLotdyninfo
 
 
 @dataclass

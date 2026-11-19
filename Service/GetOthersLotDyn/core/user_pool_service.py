@@ -26,6 +26,9 @@ from Service.GetOthersLotDyn.Sql.sql_helper import (
     TargetUserItem,
     get_other_lot_redis_manager,
 )
+from Service.GetOthersLotDyn.parser.dynamic_detail_parser import (
+    comment_type_to_dynamic_type,
+)
 from Service.GrpcModule.Grpc.Bapi.BiliApi import get_reply_main
 from Utils.推送.PushMe import a_pushme
 from Utils.代理.mdoel.RequestConf import RequestConf
@@ -375,13 +378,7 @@ class LotUserPoolService:
             if raw_json:
                 basic = raw_json.get("basic") or {}
                 rid = basic.get("comment_id_str")
-                comment_type = str(basic.get("comment_type", ""))
-                _type = {
-                    "17": "4",
-                    "1": "8",
-                    "11": "2",
-                    "12": "64",
-                }.get(comment_type, "8")
+                _type = comment_type_to_dynamic_type(basic.get("comment_type"))
             if not rid or not _type:
                 get_others_lot_log.debug(
                     f"动态 dynamic_id={dyn_id} 的 rawJsonStr 中缺少 rid/type，跳过"

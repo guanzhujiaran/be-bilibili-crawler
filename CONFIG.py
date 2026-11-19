@@ -47,7 +47,7 @@ class ConcurrencyConfig(BaseModel):
     #   - 该爬虫是「gRPC 拉取 + 大 JSON 解析 + MySQL upsert」的混合负载，
     #     并发上去先打满的是 CPU 而不是带宽，所以不要按「网络 IO 型爬虫」调大；
     #   - 不要和其它爬虫同时调大：所有调度器共享同一个进程与同一次「首次立即执行」。
-    dyn_detail: int = 100
+    dyn_detail: int = 20
     rm_following: int = 40  # 取关对象
     reserve: int = 1  # 预约抽奖（串行：接口要求顺序执行）
     topic: int = 1  # 话题抽奖（串行）
@@ -55,7 +55,6 @@ class ConcurrencyConfig(BaseModel):
     refresh_lot_db: int = 1  # 刷新抽奖库（串行，避免与采集抢 DB）
     sams_club: int = 1  # 山姆分类
     sams_club_spu: int = 1  # 山姆 SPU 详情
-    bili_live: int = 20  # 直播监控
     get_others_lot_dyn: int = 1  # 第三方抽奖动态（初始 1，运行时按阶段切到下面两项）
 
     # ---- 第三方抽奖采集：按阶段切换（GetOthersLotDynRobot._set_concurrency）----
@@ -495,6 +494,12 @@ class ProxyHealthConfig(BaseModel):
     # 见 Utils/代理/mdoel/ProxyPrefix.py 与 docs/be-bilibili-crawler-代理选取与获取策略计划书.md 第 8 节。
     prefix_v4_length: int = Field(default=24, description="IPv4 归并前缀长度")
     prefix_v6_length: int = Field(default=64, description="IPv6 归并前缀长度")
+    allow_ipv6_pool: bool = Field(
+        default=False,
+        description="是否允许公共代理池采集 / 使用 IPv6 代理（默认关闭，保持历史行为）。"
+        "仅在宿主机有原生 IPv6 出口时开启；否则 IPv6 代理会全部记为网络失败，"
+        "可能被僵尸代理清理任务误删。关闭时 format_proxy 对 IPv6 串返回 None",
+    )
     prefix_inflight_limit: int = Field(
         default=2, description="同一前缀允许的在途并发上限（打满会整段被封，宁可变慢）"
     )
@@ -1145,7 +1150,7 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
 
         汇总口径：同一进程内所有爬虫的 worker 并发之和（``space_dyn`` / ``judge_dyn``
         按阶段切换，取较大者而不是相加），再按 1.2 倍留余量并夹在 [32, 256]。
-        默认值下为 128：20+20+1+1+20+1+1+1+20+1+max(20,20)=106，×1.2≈128。
+        默认值下为 128：20+40+1+1+1+1+1+1+1+max(40,40)=106，×1.2≈128。
         """
         explicit = self.web_session.pool_max_clients
         if explicit is not None:
@@ -1160,7 +1165,6 @@ class Settings(PushNotifySettingsMixin, BaseSettings):
             + c.refresh_lot_db
             + c.sams_club
             + c.sams_club_spu
-            + c.bili_live
             + c.get_others_lot_dyn
             + max(c.space_dyn, c.judge_dyn)
         )

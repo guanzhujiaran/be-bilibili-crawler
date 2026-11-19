@@ -82,16 +82,6 @@ class GenerateCvBase:
         """
         raise NotImplementedError(f"没有实现方法【{self.zhuanlan_date_sort.__name__}】")
 
-    @abc.abstractmethod
-    def zhuanlan_data_sort_by_date(self, zhuanlan_data: list) -> list:
-        """
-        将所有专栏抽奖数据按开奖日期日期排序
-        :return:
-        """
-        raise NotImplementedError(
-            f"没有实现方法【{self.zhuanlan_data_sort_by_date.__name__}】"
-        )
-
     # region 提交专栏方法，只有在api接口发送变动的情况下需要修改（已经是老的api接口了，悲T_T
     async def get_cv_aid(
         self,

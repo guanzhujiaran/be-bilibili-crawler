@@ -63,7 +63,7 @@ class BaseSuccCounter:
             return 0.0
 
     def show_text(self) -> str:
-        pass
+        return ""
 
 
 class ProgressCounter(BaseSuccCounter):

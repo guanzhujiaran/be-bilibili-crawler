@@ -191,13 +191,6 @@ class GenerateOfficialLotCv(GenerateCvBase):
             )  # 每一个日期里面的排序
         return ret_List
 
-    def zhuanlan_data_sort_by_date(self, zhuanlan_data: list) -> list:
-        """
-        将所有专栏抽奖数据按开奖日期日期排序
-        :return:
-        """
-        return sorted(zhuanlan_data, key=lambda x: x["etime"])
-
     async def main(
         self,
         all_official_lot_detail: List[LotDetail],

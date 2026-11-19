@@ -41,6 +41,24 @@ class TopicParams(CustomBaseModelHashable):
 TOPIC_TERMINAL_CODES: frozenset[int] = frozenset({404, -404})
 
 
+def _model_field_names(model, extra: tuple[str, ...] = ()) -> set[str]:
+    """模型列名 + 允许的额外字段（写进 json_data 的嵌套结构）。"""
+    return set(model.__table__.columns.keys()) | set(extra)
+
+
+def _unknown_fields(model, payload: dict, extra: tuple[str, ...] = ()) -> set[str]:
+    """payload 中不属于模型列 / 允许额外字段的键。"""
+    return set(payload) - _model_field_names(model, extra)
+
+
+def _filter_model_fields(
+    model, payload: dict, extra: tuple[str, ...] = ()
+) -> dict:
+    """只保留模型认识的字段，避免 B 站新增字段导致构造失败。"""
+    allowed = _model_field_names(model, extra)
+    return {key: value for key, value in payload.items() if key in allowed}
+
+
 class SuccCounter(BaseSuccCounter):
     first_topic_id = 0
     latest_succ_topic_id: int = 0  # 最后获取成功的话题id
@@ -123,53 +141,39 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
             if topic_id > self._latest_topic_id:
                 self._latest_topic_id = topic_id
             da = resp.get("data")
-            da_common_keys = ["click_area_card", "functional_card", "top_details"]
-            if extra_info := set(da_common_keys) & set(da.keys()) ^ set(da.keys()):
+            da_common_keys = {"click_area_card", "functional_card", "top_details"}
+            if extra_info := set(da.keys()) - da_common_keys:
                 self.log.error(
                     f"data字段不匹配，topic_id:{topic_id}\ndata:{da}\n不匹配字段：{extra_info}"
                 )
             top_details = da.get("top_details")
             if top_details:
-                allowed_keys = TTopDetails.__table__.columns.keys()
-                allowed_keys.extend(
-                    ["topic_item", "topic_creator", "operation_content"]
-                )
-                if extra_info := set(allowed_keys) & set(top_details.keys()) ^ set(
-                    top_details.keys()
+                if extra_info := _unknown_fields(
+                    TTopDetails,
+                    top_details,
+                    ("topic_item", "topic_creator", "operation_content"),
                 ):
                     self.log.error(
                         f"top_details字段不匹配，topic_id:{topic_id}\ntop_details:{top_details}\n不匹配字段：{extra_info}"
                     )
                 topic_creator = top_details.get("topic_creator")
                 if topic_creator:
-                    allowed_keys = TTopicCreator.__table__.columns.keys()
-                    if extra_info := set(allowed_keys) & set(
-                        topic_creator.keys()
-                    ) ^ set(topic_creator.keys()):
+                    if extra_info := _unknown_fields(TTopicCreator, topic_creator):
                         self.log.error(
                             f"topic_creator字段不匹配，topic_id:{topic_id}\ntopic_creator:{topic_creator}\n不匹配字段：{extra_info}"
                         )
-                    filtered_topic_creator = {
-                        key: value
-                        for key, value in topic_creator.items()
-                        if key in allowed_keys
-                    }
-                    tTopicCreator = TTopicCreator(**filtered_topic_creator)
+                    tTopicCreator = TTopicCreator(
+                        **_filter_model_fields(TTopicCreator, topic_creator)
+                    )
                 topic_item = top_details.get("topic_item")
                 if topic_item:
-                    allowed_keys = TTopicItem.__table__.columns.keys()
-                    if extra_info := set(allowed_keys) & set(topic_item.keys()) ^ set(
-                        topic_item.keys()
-                    ):
+                    if extra_info := _unknown_fields(TTopicItem, topic_item):
                         self.log.error(
                             f"topic_item字段不匹配，topic_id:{topic_id}\ntopic_item:{topic_item}\n不匹配字段：{extra_info}"
                         )
-                    filtered_topic_item = {
-                        key: value
-                        for key, value in topic_item.items()
-                        if key in allowed_keys
-                    }
-                    tTopicItem = TTopicItem(**filtered_topic_item)
+                    tTopicItem = TTopicItem(
+                        **_filter_model_fields(TTopicItem, topic_item)
+                    )
                     if type(topic_item.get("ctime")) is int:
                         if (
                             int(time.time()) - topic_item.get("ctime")
@@ -185,12 +189,12 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 )
             functional_card = da.get("functional_card")
             if functional_card:
-                allowed_keys = TFunctionalCard.__table__.columns.keys()
                 # game_card 等 B 站新增卡片类型没有独立表列，统一进 json_data 保存，
                 # 因此这里必须同步加入白名单，否则每次遇到都会误报“字段不匹配”。
-                allowed_keys.extend(["traffic_card", "capsules", "game_card"])
-                if extra_info := set(allowed_keys) & set(functional_card.keys()) ^ set(
-                    functional_card.keys()
+                if extra_info := _unknown_fields(
+                    TFunctionalCard,
+                    functional_card,
+                    ("traffic_card", "capsules", "game_card"),
                 ):
                     self.log.error(
                         f"functional_card字段不匹配，topic_id:{topic_id}\nfunctional_card:{functional_card}\n不匹配字段：{extra_info}"
@@ -198,32 +202,25 @@ class TopicRobot(UnlimitedCrawler[TopicParams]):
                 tFunctionalCard = TFunctionalCard(json_data=functional_card)
                 traffic_card = functional_card.get("traffic_card")
                 if traffic_card:
-                    allowed_keys = TTrafficCard.__table__.columns.keys()
-                    if extra_info := set(allowed_keys) & set(traffic_card.keys()) ^ set(
-                        traffic_card.keys()
-                    ):
+                    if extra_info := _unknown_fields(TTrafficCard, traffic_card):
                         self.log.error(
                             f"traffic_card字段不匹配，topic_id:{topic_id}\ntraffic_card:{traffic_card}\n不匹配字段：{extra_info}"
                         )
-                    filtered_traffic_card = {
-                        key: value
-                        for key, value in traffic_card.items()
-                        if key in allowed_keys
-                    }
-                    tTrafficCard = TTrafficCard(**filtered_traffic_card)
+                    tTrafficCard = TTrafficCard(
+                        **_filter_model_fields(TTrafficCard, traffic_card)
+                    )
 
                 capsules = functional_card.get("capsules")
                 if capsules:
-                    allowed_keys = TCapsule.__table__.columns.keys()
                     tCapsules = []
                     for capsule in capsules:
-                        if extra_info := set(allowed_keys) & set(capsule.keys()) ^ set(
-                            capsule.keys()
-                        ):
+                        if extra_info := _unknown_fields(TCapsule, capsule):
                             self.log.error(
                                 f"capsules字段不匹配，topic_id:{topic_id}\ncapsule:{capsule}\n不匹配字段：{extra_info}"
                             )
-                        tCapsules.append(TCapsule(**capsule))
+                        tCapsules.append(
+                            TCapsule(**_filter_model_fields(TCapsule, capsule))
+                        )
             click_area_card = da.get("click_area_card")
             if click_area_card:
                 tClickAreaCard = TClickAreaCard(json_data=click_area_card)

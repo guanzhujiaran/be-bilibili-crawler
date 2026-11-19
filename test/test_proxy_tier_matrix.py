@@ -20,7 +20,6 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from Service.BaseCrawler.config import (
-    BiliLiveCrawlerConfig,
     CRAWLER_CONFIG_REGISTRY,
     DynDetailScrapyConfig,
     GetOthersLotDynRobotConfig,
@@ -52,7 +51,6 @@ EXPECTED_TIERS = {
     RefreshBiliLotDatabaseConfig: ProxyTier.SLOW,
     SamsClubCrawlerConfig: ProxyTier.SLOW,
     SamsClubSPUDetailCrawlerConfig: ProxyTier.SLOW,
-    BiliLiveCrawlerConfig: ProxyTier.SLOW,
     GetOthersLotDynRobotConfig: ProxyTier.SLOW,
 }
 

@@ -11,7 +11,6 @@ from log.base_log import (
     topic_lot_logger,
     sams_club_logger,
     background_task_logger,
-    live_monitor_logger,
     get_others_lot_logger,
 )
 from Service.BaseCrawler.plugin.base import CrawlerPlugin
@@ -293,17 +292,6 @@ class SamsClubSPUDetailCrawlerConfig(CrawlerConfig):
     plugins: List[PluginConfig] = [PluginConfig("stats_plugin", StatsPlugin)]
 
 
-class BiliLiveCrawlerConfig(CrawlerConfig):
-    """直播监控爬虫配置（env: BILI_LIVE__*）"""
-
-    concurrency_key: str = "bili_live"
-    # 默认 slow 车道：轮询类任务可容忍退避等待，池子恢复后继续；
-    # 历史 fast 口径在池抖时只会快速耗尽预算并刷 -5。
-    proxy_tier: ProxyTier = ProxyTier.SLOW
-    logger: Any = live_monitor_logger
-    plugins: List[PluginConfig] = []
-
-
 class GetOthersLotDynRobotConfig(CrawlerConfig):
     """获取他人抽奖动态爬虫配置（直接构造，不依赖全局 Settings 注入）"""
 
@@ -343,7 +331,6 @@ CRAWLER_CONFIG_REGISTRY: dict[type[CrawlerConfig], CrawlerConfig] = {
     RefreshBiliLotDatabaseConfig: RefreshBiliLotDatabaseConfig(),
     SamsClubCrawlerConfig: SamsClubCrawlerConfig(),
     SamsClubSPUDetailCrawlerConfig: SamsClubSPUDetailCrawlerConfig(),
-    BiliLiveCrawlerConfig: BiliLiveCrawlerConfig(),
     GetOthersLotDynRobotConfig: GetOthersLotDynRobotConfig(),
 }
 

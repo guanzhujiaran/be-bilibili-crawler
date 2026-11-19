@@ -417,14 +417,15 @@ class BiliSpaceUserItem:
         try:
             data = spaceResp.get("data") or {}
             items = data.get("items") or []
-            # 过滤置顶动态并保存到数据库（单次遍历）
+            # 过滤置顶动态并保存到数据库（单次遍历 + 整页一次提交）
             ret_list = []
+            batch: list[TLotuserspaceresp] = []
             for i in items:
                 if _is_pinned_dynamic(i):
                     continue
                 space_resp_card_dynamic_id = i.get("id_str")
-                await SqlHelper.addSpaceResp(
-                    LotUserSpaceResp=TLotuserspaceresp(
+                batch.append(
+                    TLotuserspaceresp(
                         spaceUid=self.uid,
                         spaceOffset=space_resp_card_dynamic_id,
                         spaceRespJson=i,
@@ -432,6 +433,7 @@ class BiliSpaceUserItem:
                     )
                 )
                 ret_list.append(space_resp_card_dynamic_id)
+            await SqlHelper.addSpaceRespBatch(batch)
             return ret_list
         except Exception as _e:
             get_others_lot_log.error(

@@ -60,6 +60,40 @@ def get_latest_version_builds() -> list[LatestVersionBuild]:
     return [LatestVersionBuild(**item) for item in resp_dict["data"]]
 
 
+async def _bili_get(
+    url: str,
+    request_conf: RequestConf,
+    *,
+    params: dict | None = None,
+    extra_headers: dict | None = None,
+    cookie_include_list: list[str] | None = None,
+    use_cookies_kwarg: bool = False,
+) -> dict:
+    """统一的 GET 骨架：准备 cookie/headers 后走代理请求。
+
+    各接口只保留自己的参数构造 / 签名差异，不再重复 ``prepare_request_data`` +
+    ``request_with_proxy`` 这段模板。``use_cookies_kwarg`` 仅用于历史调用方
+    通过 ``cookies=`` 而非 ``cookie_data=`` 传 cookie 的场景。
+    """
+    cookie_data, headers = await prepare_request_data(
+        request_conf,
+        extra_headers,
+        cookie_include_list=cookie_include_list,
+    )
+    kwargs = {
+        "method": "GET",
+        "url": url,
+        "params": params,
+        "headers": headers,
+        "request_conf": request_conf,
+    }
+    if use_cookies_kwarg:
+        kwargs["cookies"] = cookie_data
+    else:
+        kwargs["cookie_data"] = cookie_data
+    return await request_with_proxy_internal.request_with_proxy(**kwargs)
+
+
 @request_wrapper
 async def get_reply_main(
     dynamic_id: int | None,
@@ -126,16 +160,7 @@ async def get_web_topic(
 ):
     url = URL_GET_WEB_TOPIC
     params = {"topic_id": topic_id, "source": "Web"}
-    cookie_data, headers = await prepare_request_data(request_conf)
-    resp = await request_with_proxy_internal.request_with_proxy(
-        method="GET",
-        url=url,
-        params=params,
-        headers=headers,
-        request_conf=request_conf,
-        cookie_data=cookie_data,
-    )
-    return resp
+    return await _bili_get(url, request_conf, params=params)
 
 
 @request_wrapper
@@ -254,16 +279,9 @@ async def reserve_relation_info(
         is_use_custom_proxy=True, is_use_available_proxy=False
     ),
 ) -> dict:
-    url = URL_RESERVE_RELATION_INFO
     params = {"ids": ids}
-    cookie_data, headers = await prepare_request_data(request_conf)
-    req_dict = await request_with_proxy_internal.request_with_proxy(
-        method="GET",
-        params=params,
-        url=url,
-        headers=headers,
-        request_conf=request_conf,
-        cookie_data=cookie_data,
+    req_dict = await _bili_get(
+        URL_RESERVE_RELATION_INFO, request_conf, params=params
     )
     check_reserve_relation_info(req_dict, ids=ids, params=params)
     return req_dict
@@ -357,25 +375,16 @@ async def gaia_gateway_ExGetAxe(
         is_return_raw_response=False,
     ),
 ):
-    url = URL_GAIA_GET_AXE
-    cookie_data, headers = await prepare_request_data(
+    return await _bili_get(
+        URL_GAIA_GET_AXE,
         request_conf,
-        {
+        extra_headers={
             "origin": "https://www.bilibili.com",
             "referer": URL_BILI_MAIN_PAGE,
             "cookie": cookie_str,
             "user-agent": ua,
         },
     )
-    resp = await request_with_proxy_internal.request_with_proxy(
-        url=url,
-        method="GET",
-        headers=headers,
-        request_conf=request_conf,
-        cookie_data=cookie_data,
-    )
-
-    return resp
 
 
 @request_wrapper
@@ -388,17 +397,14 @@ async def get_polymer_web_dynamic_detail(
     ),
 ):
     url = URL_DYNAMIC_DETAIL
-    cookie_data, headers = await prepare_request_data(
-        request_conf,
-        {
-            "origin": "https://t.bilibili.com",
-            "referer": (
-                f"https://t.bilibili.com/{dynamic_id}"
-                if dynamic_id
-                else f"https://t.bilibili.com/{rid}?type={dynamic_type}"
-            ),
-        },
-    )
+    extra_headers = {
+        "origin": "https://t.bilibili.com",
+        "referer": (
+            f"https://t.bilibili.com/{dynamic_id}"
+            if dynamic_id
+            else f"https://t.bilibili.com/{rid}?type={dynamic_type}"
+        ),
+    }
     if dynamic_id:
         data = {
             "timezone_offset": -480,
@@ -429,14 +435,9 @@ async def get_polymer_web_dynamic_detail(
     wbi_sign = await get_wbi_params(data)
     data.update({"w_rid": wbi_sign["w_rid"], "wts": wbi_sign["wts"]})
     url_with_params = url + "?" + urllib.parse.urlencode(data, safe="[],:")
-    resp = await request_with_proxy_internal.request_with_proxy(
-        method="GET",
-        url=url_with_params,
-        headers=headers,
-        request_conf=request_conf,
-        cookie_data=cookie_data,
+    return await _bili_get(
+        url_with_params, request_conf, extra_headers=extra_headers
     )
-    return resp
 
 
 @request_wrapper
@@ -517,22 +518,15 @@ async def xlive_web_interface_v1_index_getWebAreaList(
         is_use_custom_proxy=False, is_use_available_proxy=False
     ),
 ):
-    url = URL_GET_WEB_AREA_LIST
-    cookie_data, headers = await prepare_request_data(
+    return await _bili_get(
+        URL_GET_WEB_AREA_LIST,
         request_conf,
-        {
+        extra_headers={
             "origin": "https://live.bilibili.com",
             "referer": "https://live.bilibili.com/",
         },
+        use_cookies_kwarg=True,
     )
-    resp_json = await request_with_proxy_internal.request_with_proxy(
-        method="GET",
-        url=url,
-        headers=headers,
-        request_conf=request_conf,
-        cookies=cookie_data,
-    )
-    return resp_json
 
 
 if __name__ == "__main__":

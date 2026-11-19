@@ -150,6 +150,34 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
 
     # region 从api获取信息操作
 
+    async def _fetch_official_lot_data(
+        self,
+        business_type: int,
+        business_id: int | str,
+        origin_dynamic_id: int | str,
+    ) -> dict:
+        """拉取官方 / 预约 / 充电抽奖的 lottery_notice，返回 data。"""
+        lot_notice_res = await get_lot_notice(
+            business_type=business_type,
+            business_id=business_id,
+            origin_dynamic_id=origin_dynamic_id,
+        )
+        return lot_notice_res.get("data") or {}
+
+    async def _publish_lot_data(self, lot_data: dict) -> None:
+        """将抽奖数据投递到落库与大奖判断两条 MQ 链路。"""
+        if not lot_data:
+            return
+        self.log.debug(f"抽奖动态！{lot_data}")
+        await self.BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
+            lot_data,
+            extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
+        )
+        await self.BiliLotDataPublisher.pub_prize_extract_from_lot_data(
+            lot_data_dict=lot_data,
+            extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
+        )
+
     async def resolve_dynamic_details_card(self, dynData: dict, is_running_scrapy=True):
         """
         解析grpc返回的data里面的东西
@@ -207,12 +235,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                             cardType = up.get("cardType")
                             if cardType == "upower_lottery":  # 12是充电抽奖
                                 lot_rid = up.get("dynamicId")
-                                lot_notice_res = await get_lot_notice(
-                                    business_type=12,
-                                    business_id=lot_rid,
-                                    origin_dynamic_id=dynamic_id,
+                                lot_data = await self._fetch_official_lot_data(
+                                    12, lot_rid, dynamic_id
                                 )
-                                lot_data = lot_notice_res.get("data")
                                 if lot_data:
                                     lot_id = lot_data.get("lottery_id")
                             elif cardType == "reserve":  # 所有的预约
@@ -226,10 +251,8 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                         f"非抽奖预约卡片，跳过：http://www.bilibili.com/opus/{dynamic_id}"
                                     )
                                     continue  # 跳过本次循环
-                                lot_notice_res = await get_lot_notice(
-                                    business_type=10,
-                                    business_id=lot_rid,
-                                    origin_dynamic_id=dynamic_id,
+                                lot_data = await self._fetch_official_lot_data(
+                                    10, lot_rid, dynamic_id
                                 )
                                 has_reserve_relation_ids = (
                                     await bili_reserve_sqlhelper.get_reserve_by_ids(
@@ -248,9 +271,6 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                                     await bili_reserve_sqlhelper.add_reserve_info_by_resp_dict(
                                         req1_dict, 1
                                     )  # 添加预约json到数据库
-                                # get_lot_notice 契约：拿不到抽奖信息时 data 为 {}（不会返回 None），
-                                # 这里再兜一层 or {}，避免上游改动后这里直接 AttributeError
-                                lot_data = lot_notice_res.get("data") or {}
                                 lot_id = lot_data.get("lottery_id")
                         else:
                             self.log.error(
@@ -298,12 +318,9 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                             ):  # 获取官方抽奖，这里的比较全
                                 lot_id = descNode.get("rid")
                                 lot_rid = dynData.get("extend").get("businessId")
-                                lot_notice_res = await get_lot_notice(
-                                    business_type=2,
-                                    business_id=lot_rid,
-                                    origin_dynamic_id=dynamic_id,
+                                lot_data = await self._fetch_official_lot_data(
+                                    2, lot_rid, dynamic_id
                                 )
-                                lot_data = lot_notice_res.get("data")
                                 if lot_data:
                                     lot_id = lot_data.get("lottery_id")
                 if module.get("moduleItemNull"):
@@ -317,25 +334,12 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
                     if descNode.get("type") == "desc_type_lottery":
                         lot_id = descNode.get("rid")
                         lot_rid = dynData.get("extend").get("businessId")
-                        lot_notice_res = await get_lot_notice(
-                            business_type=2,
-                            business_id=lot_rid,
-                            origin_dynamic_id=dynamic_id,
+                        lot_data = await self._fetch_official_lot_data(
+                            2, lot_rid, dynamic_id
                         )
-                        lot_data = lot_notice_res.get("data")
                         if lot_data:
                             lot_id = lot_data.get("lottery_id")
-            if lot_data:
-                self.log.debug(f"抽奖动态！{lot_data}")
-                await self.BiliLotDataPublisher.pub_upsert_official_reserve_charge_lot(
-                    lot_data,
-                    extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
-                )
-                # 获取抽奖数据后，异步触发大模型大奖判断链路（与落库解耦）
-                await self.BiliLotDataPublisher.pub_prize_extract_from_lot_data(
-                    lot_data_dict=lot_data,
-                    extra_routing_key="DynDetailScrapy.resolve_dynamic_details_card",
-                )
+            await self._publish_lot_data(lot_data)
             return temp_rid, lot_id, dynamic_id, dynamic_created_time
         except Exception as e:
             # 顺序很重要：先打异常（真正的原因），摘要另起一行放 debug。
@@ -356,119 +360,20 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             )
             return 0, 0, 0, self._timeshift(0)
 
-    async def get_grpc_dynDetails(self, rid_dyn_ids: list[dict]) -> list[dict]:
-        """
-        通过ridlist对grpc返回的动态详情内容进行处理，并查询抽奖动态，保存抽奖内容
-        :param rid_dyn_ids: [{'rid': rid:int, 'dynamic_id': doc_id_2_dynamic_id_resp.get('data').get('dynamic_id')}:str,...]
-        :return:
-        """
-        if len(rid_dyn_ids) == 0:
-            return []
-        ret_dict_list = []
-        dyn_ids = [x["dynamic_id"] for x in rid_dyn_ids if x["dynamic_id"] != -1]
-        rid_dyn_ids = [
-            {"rid": str(x["rid"]), "dynamic_id": x["dynamic_id"]} for x in rid_dyn_ids
-        ]
-        if len(dyn_ids) == 0:
-            return rid_dyn_ids
-        resp_list = await self.BiliGrpc.grpc_api_get_DynDetails(dyn_ids)
-        if resp_list.get("list"):
-            for resp_data in resp_list["list"]:
-                (
-                    temp_rid,
-                    lot_id,
-                    dynamic_id,
-                    dynamic_created_time,
-                ) = await self.resolve_dynamic_details_card(resp_data)
-                tempdetail_dict = dynAllDetail(
-                    rid=temp_rid,
-                    dynamic_id=dynamic_id,
-                    dynData=resp_data,
-                    lot_id=lot_id if lot_id else None,
-                    dynamic_created_time=dynamic_created_time,
-                )
-                ret_dict_list.append(tempdetail_dict.__dict__)
+    async def _finish_single_detail(
+        self,
+        resp_list: dict,
+        fallback_rid: int | str,
+        *,
+        mark_latest: bool = False,
+        int_first_id: bool = False,
+    ) -> list[dict]:
+        """把单条 gRPC 响应解析成 dynAllDetail 并更新成功计数。
 
-        has_detail_rid_str_list = [x["rid"] for x in ret_dict_list]
-        for rid_dyn in rid_dyn_ids:
-            if (
-                rid_dyn["rid"] not in has_detail_rid_str_list
-            ):  # 如果获取的动态详情里没有对应的动态id，那么就添加进去
-                ret_dict_list.append(rid_dyn)
-        ret_dict_list.sort(key=lambda x: x["rid"])
-        return ret_dict_list
-
-    async def get_grpc_single_dynDetail(
-        self, rid: int
-    ) -> list[dict[str, Any] | dict[str, int | str]]:
+        两个入口（按 rid / 按 dynamic_id）只有「调哪个 gRPC 方法」和计数细节不同，
+        解析与日志统一收敛到这里。
         """
-        获取单个grpc的动态详情
-        :param rid:
-        :return:
-        """
-        self.log.info(
-            f"当前获取rid：{rid}，跳转连接：http://t.bilibili.com/{rid}?type=2"
-        )
-        resp_list = await self.BiliGrpc.grpc_get_dynamic_detail_by_type_and_rid(
-            rid=rid, dynamic_type=2
-        )
-        ret_dict_list = []
-        dynamic_created_time = None
-        if resp_list.get("item"):
-            resp_data = resp_list.get("item")
-            (
-                temp_rid,
-                lot_id,
-                dynamic_id,
-                dynamic_created_time,
-            ) = await self.resolve_dynamic_details_card(resp_data)
-            tempdetail_dict = dynAllDetail(
-                rid=temp_rid,
-                dynamic_id=dynamic_id,
-                dynData=resp_data,
-                lot_id=lot_id if lot_id else None,
-                dynamic_created_time=dynamic_created_time,
-            )
-            ret_dict_list.append(tempdetail_dict.__dict__)
-        else:
-            ret_dict_list.append({"rid": rid, "dynamic_id": "-1"})
-        self.succ_times += 1
-        dynamic_id = ret_dict_list[0].get("dynamic_id")
-        if dynamic_id != "-1":
-            self.succ_counter.succ_count += 1
-            self.succ_counter.latest_succ_dyn_id = dynamic_id
-            self.succ_counter.first_dyn_id = (
-                dynamic_id
-                if not self.succ_counter.first_dyn_id
-                else self.succ_counter.first_dyn_id
-            )
-            self.log.info(
-                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t{rid} 获取单个动态详情成功！http://www.bilibili.com/opus/{dynamic_id} {dynamic_created_time if dynamic_created_time else ''}"
-            )
-        else:
-            self.succ_counter.succ_count += 1
-            self.log.info(
-                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t获取单个动态详情成功，但动态被删除了！\t{resp_list}\thttp://t.bilibili.com/{rid}?type=2"
-            )
-        return ret_dict_list
-
-    async def get_grpc_single_dynDetail_by_dynamic_id(
-        self, dynamic_id: int | str
-    ) -> dict:
-        """
-        获取单个grpc的动态详情
-        通过这个获取的rid是负数，防止干扰正常rid
-        :param dynamic_id: 动态id
-        :return:
-        """
-        self.log.info(
-            f"当前获取dynamic_id：{dynamic_id}，跳转连接：http://t.bilibili.com/{dynamic_id}"
-        )
-        rid = dynamic_id
-        resp_list = await self.BiliGrpc.grpc_get_dynamic_detail_by_dynamic_id(
-            dynamic_id=dynamic_id
-        )
-        ret_dict_list = []
+        ret_dict_list: list[dict] = []
         dynamic_created_time = None
         if resp_list.get("item"):
             resp_data = resp_list.get("item")
@@ -487,25 +392,69 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             )
             ret_dict_list.append(temp_detail_dict.__dict__)
         else:
-            ret_dict_list.append({"rid": rid, "dynamic_id": "-1"})
+            ret_dict_list.append({"rid": fallback_rid, "dynamic_id": "-1"})
+
         self.succ_times += 1
         dynamic_id = ret_dict_list[0].get("dynamic_id")
         if dynamic_id != "-1":
             self.succ_counter.succ_count += 1
-            self.succ_counter.first_dyn_id = int(
-                dynamic_id
-                if not self.succ_counter.first_dyn_id
-                else self.succ_counter.first_dyn_id
-            )
+            if mark_latest:
+                self.succ_counter.latest_succ_dyn_id = dynamic_id
+            if not self.succ_counter.first_dyn_id:
+                self.succ_counter.first_dyn_id = (
+                    int(dynamic_id) if int_first_id else dynamic_id
+                )
             self.log.info(
-                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t{rid} 获取单个动态详情成功！http://www.bilibili.com/opus/{dynamic_id} {dynamic_created_time if dynamic_created_time else ''}"
+                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t"
+                f"{fallback_rid} 获取单个动态详情成功！http://www.bilibili.com/opus/{dynamic_id} "
+                f"{dynamic_created_time if dynamic_created_time else ''}"
             )
         else:
             self.succ_counter.succ_count += 1
             self.log.info(
-                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t获取单个动态详情成功，但动态被删除了！\t{resp_list}\thttp://t.bilibili.com/{rid}?type=2"
+                f"{self.succ_counter.show_text()}\n总共成功获取{self.succ_times}次\t"
+                f"获取单个动态详情成功，但动态被删除了！\t{resp_list}\t"
+                f"http://t.bilibili.com/{fallback_rid}?type=2"
             )
-        return ret_dict_list[0]
+        return ret_dict_list
+
+    async def get_grpc_single_dynDetail(
+        self, rid: int
+    ) -> list[dict[str, Any] | dict[str, int | str]]:
+        """
+        获取单个grpc的动态详情
+        :param rid:
+        :return:
+        """
+        self.log.info(
+            f"当前获取rid：{rid}，跳转连接：http://t.bilibili.com/{rid}?type=2"
+        )
+        resp_list = await self.BiliGrpc.grpc_get_dynamic_detail_by_type_and_rid(
+            rid=rid, dynamic_type=2
+        )
+        return await self._finish_single_detail(
+            resp_list, rid, mark_latest=True
+        )
+
+    async def get_grpc_single_dynDetail_by_dynamic_id(
+        self, dynamic_id: int | str
+    ) -> dict:
+        """
+        获取单个grpc的动态详情
+        通过这个获取的rid是负数，防止干扰正常rid
+        :param dynamic_id: 动态id
+        :return:
+        """
+        self.log.info(
+            f"当前获取dynamic_id：{dynamic_id}，跳转连接：http://t.bilibili.com/{dynamic_id}"
+        )
+        resp_list = await self.BiliGrpc.grpc_get_dynamic_detail_by_dynamic_id(
+            dynamic_id=dynamic_id
+        )
+        ret = await self._finish_single_detail(
+            resp_list, dynamic_id, int_first_id=True
+        )
+        return ret[0]
 
     # endregion
     async def get_single_detail_by_rid_list(
@@ -735,36 +684,5 @@ class DynDetailScrapy(UnlimitedCrawler[DynDetailParams]):
             )
         finally:
             self.succ_counter.is_running = False
-
-    # region 测试用
-    async def _testget_dynamics_by_spec_rids(self, all_rids: list[int]):
-        """
-        根据指定的rid列表获取动态信息，并存到数据库里面
-        :param all_rids:
-        :return:
-        """
-        # all_rids = self.Sqlhelper.get_discountious_rids()
-        self.log.info(f"共有{len(all_rids)}条缺失动态")
-        task_args_list = []  # [[1,2,3,4,5,6,7,8],[9,10,11,12,13,14,15],...]
-        for rid_index in range(len(all_rids) // self.offset + 1):
-            rids_list = all_rids[
-                self.offset * rid_index : self.offset * (rid_index + 1)
-            ]
-            task_args_list.append(rids_list)
-        thread_num = 50
-        task_list = []
-        for task_index in range(len(task_args_list) // thread_num + 1):
-            args_list = task_args_list[
-                thread_num * task_index : thread_num * (task_index + 1)
-            ]  # 将task切片成[[0...49],[50....99]]
-            for args in args_list:
-                self.log.info(args)
-                task = self.get_single_detail_by_rid_list(args)
-                task_list.append(task)
-        self.log.info(f"共创建{len(task_list)}个进程！")
-        await asyncio_gather(*task_list, log=self.log)
-
-    # endregion
-
 
 dyn_detail_scrapy = DynDetailScrapy()

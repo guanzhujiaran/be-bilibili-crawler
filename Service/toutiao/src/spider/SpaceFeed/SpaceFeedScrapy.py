@@ -186,9 +186,9 @@ class ToutiaoSpaceFeedSpider:
             user_id
         ].latest_id_list
         duplicatedIdDict = set(id_list) & set(last_id_list)
-        uniqueFeedDataList = list(
-            map(lambda x: x.id not in list(duplicatedIdDict), resp.UsefulInfo.data)
-        )
+        uniqueFeedDataList = [
+            x for x in resp.UsefulInfo.data if x.id not in duplicatedIdDict
+        ]
         if duplicatedIdDict:
             return True, len(duplicatedIdDict), uniqueFeedDataList, id_list
         return False, 0, uniqueFeedDataList, id_list

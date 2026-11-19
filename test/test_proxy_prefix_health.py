@@ -28,8 +28,37 @@ from Utils.代理.mdoel.ProxyPrefix import (
     prefix_of_endpoint,
     proxy_prefix,
 )
+from Utils.代理.数据库操作.comm import format_proxy
 
 _store = ProxyHealthStore()
+
+
+# ---------------------------------------------------------------------------
+# 代理串格式化（IPv6 默认关闭，显式开关才接受）
+# ---------------------------------------------------------------------------
+
+
+def test_format_proxy_ipv4_unchanged():
+    assert format_proxy("1.2.3.4:8080") == {
+        "http": "http://1.2.3.4:8080",
+        "https": "http://1.2.3.4:8080",
+    }
+    assert format_proxy("socks5://1.2.3.4:1080") == {
+        "sock5": "socks5://1.2.3.4:1080",
+        "socks5": "socks5://1.2.3.4:1080",
+    }
+
+
+def test_format_proxy_ipv6_gated_by_switch():
+    # 默认 / 显式关闭：与改造前一致，IPv6 直接丢弃
+    assert format_proxy("[2001:db8::1]:8080", allow_ipv6=False) is None
+    # 打开后输出方括号形式，供 curl_cffi 直接使用
+    assert format_proxy("http://[2001:db8::1]:8080", allow_ipv6=True) == {
+        "http": "http://[2001:db8::1]:8080",
+        "https": "http://[2001:db8::1]:8080",
+    }
+    # 形状匹配但地址非法：必须拒绝
+    assert format_proxy("[2001:::1]:8080", allow_ipv6=True) is None
 
 
 # ---------------------------------------------------------------------------

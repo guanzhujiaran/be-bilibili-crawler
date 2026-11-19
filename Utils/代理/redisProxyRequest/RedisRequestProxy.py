@@ -880,8 +880,6 @@ class RequestWithProxy:
                         f"{mask_text(_clip(str(req.headers), 300))}"
                         f"{local_tag}"
                     )
-                    if req_dict.get("code") == 65539:
-                        pass
                     if req_dict.get("code") == -412:
                         raise Request412Error(err_msg, -412)
                     elif req_dict.get("code") == -352:

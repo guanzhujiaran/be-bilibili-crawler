@@ -45,7 +45,6 @@ be-bilibili-crawler/
 │   ├── opus新版官方抽奖/         # 官方抽奖（opus）专用
 │   ├── GetOthersLotDyn/          # 第三方用户抽奖动态挖掘
 │   ├── samsclub/                 # 山姆会员店
-│   ├── BiliLiveScrape/           # 直播抓取
 │   ├── PlayWright/  CaptchaGen/  # 浏览器自动化 / 验证码
 │   ├── GrpcModule/               # 极验 grpc 调用
 │   ├── MQ/  Auth/  BackgroundService/  # 消息队列 / 鉴权 / 后台任务

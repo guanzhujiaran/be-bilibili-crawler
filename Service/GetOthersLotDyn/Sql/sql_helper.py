@@ -832,6 +832,21 @@ class __SqlHelper(SqlHelperBase):
             await session.commit()
 
     @log_sql_retry_wrapper()
+    async def addSpaceRespBatch(self, items: list[TLotuserspaceresp]) -> None:
+        """一页空间动态只开一次会话 / 一次提交。
+
+        历史实现逐条 ``addSpaceResp``，每页 10~20 条就是 10~20 次 commit，
+        单用户翻页时会把大量时间花在事务开销上。merge 语义保持不变
+        （``spaceOffset`` 主键冲突时更新）。
+        """
+        if not items:
+            return
+        async with self.async_session() as session:
+            for item in items:
+                await session.merge(item)
+            await session.commit()
+
+    @log_sql_retry_wrapper()
     async def getOldestSpaceDynInfoByUid(self, uid: int) -> int:
         async with self.async_session() as session:
             sql = (

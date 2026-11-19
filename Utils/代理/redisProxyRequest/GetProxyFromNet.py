@@ -154,9 +154,20 @@ class _EmptySourceResponse:
 
 
 # 行首的 [协议://]ip:port（容忍尾部追加内容，如 hideip.me 的 "ip:port:国家"）
+# IPv6 只接受方括号形式：[2001:db8::1]:8080（裸 IPv6 与端口无法区分）。
 _PROXY_PREFIX_RE = re.compile(
-    r"^((?:[a-z][a-z0-9]{3,6}://)?(?:\d{1,3}\.){3}\d{1,3}:\d{1,5})(?:\b.*)?$"
+    r"^((?:[a-z][a-z0-9]{3,6}://)?"
+    r"(?:\[[0-9a-fA-F:.]+\]|(?:\d{1,3}\.){3}\d{1,3})"
+    r":\d{1,5})(?:\b.*)?$"
 )
+
+
+def _format_host_port(ip: str, port: str | int) -> str:
+    """把 IP + 端口拼成 format_proxy 能识别的形式（IPv6 自动加方括号）。"""
+    text = str(ip).strip().strip("[]")
+    if ":" in text:
+        text = f"[{text}]"
+    return f"{text}:{port}"
 
 
 class MirrorAwareHttpx:
@@ -525,6 +536,382 @@ SUPPLEMENT_SOURCES: tuple[ProxySourceSpec, ...] = (
         url="https://proxyspace.pro/socks5.txt",
         protocol="socks5",
     ),
+    # ===== 原 get_proxy_from_* 纯 URL 包装方法（2026-11-19 数据化迁移）=====
+    ProxySourceSpec(
+        name="get_proxy_from_ALIILAPRO_Proxy_http",
+        url="https://raw.githubusercontent.com/ALIILAPRO/Proxy/refs/heads/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_andigwandi_free_proxy",
+        url="https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_api_openproxylist_xyz_https",
+        url="https://api.openproxylist.xyz/http.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_BreakingTechFr_Proxy_Free_http",
+        url="https://raw.githubusercontent.com/BreakingTechFr/Proxy_Free/refs/heads/main/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_BreakingTechFr_Proxy_Free_socks5",
+        url="https://raw.githubusercontent.com/BreakingTechFr/Proxy_Free/refs/heads/main/proxies/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_casa_ls_proxy_list_http",
+        url="https://raw.githubusercontent.com/casa-ls/proxy-list/refs/heads/main/http",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_casa_ls_proxy_list_socks5",
+        url="https://raw.githubusercontent.com/casa-ls/proxy-list/refs/heads/main/socks5",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_claude89757_free_https_proxies",
+        url="https://raw.githubusercontent.com/claude89757/free_https_proxies/refs/heads/main/free_https_proxies.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_databay_labs_lists_http",
+        url="https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_databay_labs_lists_socks5",
+        url="https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_dpangestuw_Free_Proxy",
+        url="https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/All_proxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_elliottophellia_yakumo",
+        url="https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/http/global/http_checked.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Free_Proxies_blob_main_proxy_files_http_proxies",
+        url="https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Free_Proxies_blob_main_proxy_files_https_proxies",
+        url="https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/https_proxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_fyvri_fresh_proxy_list_http",
+        url="https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_fyvri_fresh_proxy_list_https",
+        url="https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_fyvri_fresh_proxy_list_socks5",
+        url="https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_gh_proxifly_free_proxy_list",
+        url="https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_gitrecon1455_fresh_proxy_list",
+        url="https://raw.githubusercontent.com/gitrecon1455/fresh-proxy-list/refs/heads/main/proxylist.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_im_razvan_proxy_list",
+        url="https://raw.githubusercontent.com/im-razvan/proxy_list/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_lalifeier_proxy_scraper_http",
+        url="https://raw.githubusercontent.com/lalifeier/proxy-scraper/main/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_lalifeier_proxy_scraper_https",
+        url="https://raw.githubusercontent.com/lalifeier/proxy-scraper/main/proxies/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_M_logique_Proxies_http",
+        url="https://raw.githubusercontent.com/M-logique/Proxies/refs/heads/main/proxies/regular/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_M_logique_Proxies_socks5",
+        url="https://raw.githubusercontent.com/M-logique/Proxies/refs/heads/main/proxies/regular/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_mmpx12_proxy_list",
+        url="https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_http",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_http2",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/http2.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_https",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_https2",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/https2.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_socks5",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MohammadHosseinkargar_proxy_socks5_2",
+        url="https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/socks5_2.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_MuRongPIG_Proxy_Master",
+        url="https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_nhan0o22_proxy",
+        url="https://raw.githubusercontent.com/nhan0o22/proxy/refs/heads/master/proxy.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_officialputuid_KangProxy_KangProxy_http",
+        url="https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_officialputuid_KangProxy_KangProxy_https",
+        url="https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_openproxylist",
+        url="https://openproxylist.xyz/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxifly_free_proxy_list_main_proxies_protocols_http_data",
+        url="https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxy4parsing_proxy_list",
+        url="https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxy_casals_ar_main_http",
+        url="https://raw.githubusercontent.com/casals-ar/proxy.casals.ar/main/http",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxy_list_download_http",
+        url="https://www.proxy-list.download/api/v1/get?type=http",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxy_list_download_socks5",
+        url="https://www.proxy-list.download/api/v1/get?type=socks5",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_proxy_scdn_http",
+        url="https://proxy.scdn.io/text.php",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_prxchk_proxy_list",
+        url="https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_r00tee_Proxy_List",
+        url="https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_r00tee_Proxy_List_socks5",
+        url="https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_RioMMO_http",
+        url="https://raw.githubusercontent.com/RioMMO/ProxyFree/refs/heads/main/HTTP.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_RioMMO_socks5",
+        url="https://raw.githubusercontent.com/RioMMO/ProxyFree/refs/heads/main/SOCKS5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_roosterkid_openproxylist_main_HTTPS_RAW",
+        url="https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_saisuiu_Lionkings_Http_Proxys_Proxies",
+        url="https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/refs/heads/main/free.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_sarperavci_freeCheckedHttpProxies",
+        url="https://raw.githubusercontent.com/sarperavci/freeCheckedHttpProxies/main/freshHttpProxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_SevenworksDev_proxy_list_http",
+        url="https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_SevenworksDev_proxy_list_https",
+        url="https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_SevenworksDev_proxy_list_socks5",
+        url="https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_sunny9577_http",
+        url="https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_sunny9577_socks5",
+        url="https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks5_proxies.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_themiralay_Proxy_List_World",
+        url="https://raw.githubusercontent.com/themiralay/Proxy-List-World/refs/heads/master/data.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_theriturajps_proxy_list_http",
+        url="https://raw.githubusercontent.com/theriturajps/proxy-list/refs/heads/main/proxies.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_TheSpeedX_PROXY_List_master_http",
+        url="https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_trio666_proxy_checker",
+        url="https://raw.githubusercontent.com/trio666/proxy-checker/refs/heads/main/all.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Tsprnay_Proxy_lists_http",
+        url="https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Tsprnay_Proxy_lists_https",
+        url="https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Tsprnay_Proxy_lists_socks5",
+        url="https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Vadim287_http",
+        url="https://raw.githubusercontent.com/Vadim287/free-proxy/refs/heads/main/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Vadim287_socks5",
+        url="https://raw.githubusercontent.com/Vadim287/free-proxy/refs/heads/main/proxies/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_VMHeaven_http",
+        url="https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_VMHeaven_https",
+        url="https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_VMHeaven_socks5",
+        url="https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_yemixzy_proxy_list_main_proxies_http",
+        url="https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxies/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_http",
+        url="https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_https",
+        url="https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_socks5",
+        url="https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt",
+        protocol="socks5",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_zloi_user_hideip_me_connect",
+        url="https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/connect.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_zloi_user_hideip_me_http",
+        url="https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/http.txt",
+        protocol="http",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_zloi_user_hideip_me_https",
+        url="https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/https.txt",
+        protocol="https",
+    ),
+    ProxySourceSpec(
+        name="get_proxy_from_zloi_user_hideip_me_socks5",
+        url="https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks5.txt",
+        protocol="socks5",
+    ),
 )
 # 单个补充源的请求超时（秒）：各源并行，整体不超过这个量级
 _SUPPLEMENT_SOURCE_TIMEOUT = 20
@@ -557,7 +944,9 @@ def _parse_geonode_json(payload: str) -> list[dict[str, str]]:
         for protocol in _GEONODE_PROTOCOL_PREFERENCE:
             if protocol not in protocols:
                 continue
-            if proxy_dict := format_proxy(f"{ip}:{port}", protocol=protocol):
+            if proxy_dict := format_proxy(
+                _format_host_port(ip, port), protocol=protocol
+            ):
                 proxies.append(proxy_dict)
             break
     return proxies
@@ -1530,13 +1919,6 @@ class GetProxyMethods:
         if proxy_queue:
             yield proxy_queue
 
-    async def get_proxy_from_openproxylist(self) -> AsyncGenerator[list, None]:
-        url = f"https://openproxylist.xyz/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
     async def get_proxy_from_proxyhub(self) -> AsyncGenerator[list, None]:
         headers = {
             "user-agent": CONFIG.rand_ua,
@@ -1581,104 +1963,6 @@ class GetProxyMethods:
     # endregion
 
     # region Github获取的text格式的代理，每行格式为ip:port
-    async def get_proxy_from_proxy_scdn_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://proxy.scdn.io/text.php"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_proxy_list_download_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://www.proxy-list.download/api/v1/get?type=http"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_proxy_list_download_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://www.proxy-list.download/api/v1/get?type=socks5"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_sunny9577_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/socks5_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_sunny9577_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/sunny9577/proxy-scraper/refs/heads/master/generated/http_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Vadim287_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Vadim287/free-proxy/refs/heads/main/proxies/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_Vadim287_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Vadim287/free-proxy/refs/heads/main/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_VMHeaven_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_VMHeaven_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_VMHeaven_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/refs/heads/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_RioMMO_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/RioMMO/ProxyFree/refs/heads/main/HTTP.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_RioMMO_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/RioMMO/ProxyFree/refs/heads/main/SOCKS5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_databay_labs_lists_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_saisuiu_Lionkings_Http_Proxys_Proxies(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/saisuiu/Lionkings-Http-Proxys-Proxies/refs/heads/main/free.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
     async def get_proxy_from_Xnidada_proxylist(self) -> AsyncGenerator[list, None]:
         headers = {"user-agent": CONFIG.rand_ua}
         req = ""
@@ -1704,209 +1988,6 @@ class GetProxyMethods:
 
         if proxy_queue:
             yield proxy_queue
-
-    async def get_proxy_from_databay_labs_lists_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/databay-labs/free-proxy-list/refs/heads/master/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Tsprnay_Proxy_lists_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_Tsprnay_Proxy_lists_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_Tsprnay_Proxy_lists_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Tsprnay/Proxy-lists/master/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_M_logique_Proxies_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/M-logique/Proxies/refs/heads/main/proxies/regular/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_M_logique_Proxies_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/M-logique/Proxies/refs/heads/main/proxies/regular/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_ALIILAPRO_Proxy_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/ALIILAPRO/Proxy/refs/heads/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_theriturajps_proxy_list_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/theriturajps/proxy-list/refs/heads/main/proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_SevenworksDev_proxy_list_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_SevenworksDev_proxy_list_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_SevenworksDev_proxy_list_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/SevenworksDev/proxy-list/refs/heads/main/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_gh_proxifly_free_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/all/data.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_fyvri_fresh_proxy_list_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_fyvri_fresh_proxy_list_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_fyvri_fresh_proxy_list_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/fyvri/fresh-proxy-list/archive/storage/classic/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_BreakingTechFr_Proxy_Free_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/BreakingTechFr/Proxy_Free/refs/heads/main/proxies/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_BreakingTechFr_Proxy_Free_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/BreakingTechFr/Proxy_Free/refs/heads/main/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_zloi_user_hideip_me_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_zloi_user_hideip_me_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_zloi_user_hideip_me_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_zloi_user_hideip_me_connect(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/zloi-user/hideip.me/refs/heads/master/connect.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_trio666_proxy_checker(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/trio666/proxy-checker/refs/heads/main/all.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_https2(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/https2.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_socks5_2(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/socks5_2.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_http2(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/http2.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_MohammadHosseinkargar_proxy_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MohammadHosseinkargar/proxylist/refs/heads/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_nhan0o22_proxy(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/nhan0o22/proxy/refs/heads/master/proxy.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
 
     async def get_proxy_from_parserpp_ip_ports(self) -> AsyncGenerator[list, None]:
         headers = {"user-agent": CONFIG.rand_ua}
@@ -1939,83 +2020,6 @@ class GetProxyMethods:
 
         if proxy_queue:
             yield proxy_queue
-
-    async def get_proxy_from_gitrecon1455_fresh_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/gitrecon1455/fresh-proxy-list/refs/heads/main/proxylist.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_api_openproxylist_xyz_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://api.openproxylist.xyz/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_dpangestuw_Free_Proxy(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/dpangestuw/Free-Proxy/refs/heads/main/All_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_casa_ls_proxy_list_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/casa-ls/proxy-list/refs/heads/main/socks5"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_casa_ls_proxy_list_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/casa-ls/proxy-list/refs/heads/main/http"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_r00tee_Proxy_List_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/r00tee/Proxy-List/main/Socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_r00tee_Proxy_List(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/r00tee/Proxy-List/main/Https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_themiralay_Proxy_List_World(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/themiralay/Proxy-List-World/refs/heads/master/data.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_lalifeier_proxy_scraper_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/lalifeier/proxy-scraper/main/proxies/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_lalifeier_proxy_scraper_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/lalifeier/proxy-scraper/main/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_claude89757_free_https_proxies(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/claude89757/free_https_proxies/refs/heads/main/free_https_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
 
     async def get_proxy_from_Simatwa_free_proxies_http(self) -> AsyncGenerator[list, None]:
         headers = {"user-agent": CONFIG.rand_ua}
@@ -2102,146 +2106,6 @@ class GetProxyMethods:
     #         get_proxy_success = False
     #     return proxy_queue, get_proxy_success
 
-    async def get_proxy_from_officialputuid_KangProxy_KangProxy_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/https/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_officialputuid_KangProxy_KangProxy_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/officialputuid/KangProxy/KangProxy/http/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_MuRongPIG_Proxy_Master(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_roosterkid_openproxylist_main_HTTPS_RAW(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_proxy_casals_ar_main_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/casals-ar/proxy.casals.ar/main/http"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_socks5(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="socks5"
-        ):
-            yield batch
-
-    async def get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Zaeem20_FREE_PROXIES_LIST_master_https(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="https"
-        ):
-            yield batch
-
-    async def get_proxy_from_TheSpeedX_PROXY_List_master_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_yemixzy_proxy_list_main_proxies_http(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxies/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Free_Proxies_blob_main_proxy_files_http_proxies(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/http_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_Free_Proxies_blob_main_proxy_files_https_proxies(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/Anonym0usWork1221/Free-Proxies/main/proxy_files/https_proxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_proxifly_free_proxy_list_main_proxies_protocols_http_data(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_sarperavci_freeCheckedHttpProxies(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/sarperavci/freeCheckedHttpProxies/main/freshHttpProxies.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_prxchk_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/prxchk/proxy-list/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_andigwandi_free_proxy(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/andigwandi/free-proxy/main/proxy_list.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_elliottophellia_yakumo(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/elliottophellia/yakumo/master/results/http/global/http_checked.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_im_razvan_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/im-razvan/proxy_list/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_proxy4parsing_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
-    async def get_proxy_from_mmpx12_proxy_list(self) -> AsyncGenerator[list, None]:
-        url = f"https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt"
-        async for batch in self._iter_raw_list_source(
-            url, protocol="http"
-        ):
-            yield batch
-
     # endregion
 
     # region json格式代理（每个函数的json响应可能都不一样，要换里面解析json的方式）
@@ -2277,7 +2141,9 @@ class GetProxyMethods:
                         protocol = "socks5"
                     else:
                         protocol = "http"
-                    proxy_queue.append(format_proxy(f"{ip}:{port}", protocol=protocol))
+                    proxy_queue.append(
+                        format_proxy(_format_host_port(ip, port), protocol=protocol)
+                    )
                 self.log.info(f"总共有{len(proxy_queue)}个代理需要检查")
             else:
                 self.log.info(f"{req.text}, {url}")
@@ -2314,7 +2180,9 @@ class GetProxyMethods:
                     protocol = "socks5"
                 else:
                     protocol = "http"
-                proxy_queue.append(format_proxy(f"{ip}:{port}", protocol=protocol))
+                proxy_queue.append(
+                    format_proxy(_format_host_port(ip, port), protocol=protocol)
+                )
             if len(proxy_queue) < 10:
                 self.log.info(f"{req.text}, {url}")
             self.log.info(f"总共有{len(proxy_queue)}个代理需要检查")
@@ -2356,7 +2224,8 @@ class GetProxyMethods:
                         if ip and port and protocol:
                             proxy_queue.append(
                                 format_proxy(
-                                    f"{protocol}://{ip}:{port}", protocol=protocol
+                                    f"{protocol}://{_format_host_port(ip, port)}",
+                                    protocol=protocol,
                                 )
                             )
                 if len(proxy_queue) < 10:
