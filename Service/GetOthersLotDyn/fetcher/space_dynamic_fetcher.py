@@ -343,7 +343,7 @@ class BiliSpaceUserItem:
                         f"uid={self.uid} 空间动态完整响应：{format_full_response(dyreq_dict)}"
                     )
                 break
-            if time.time() - time_list[-1] >= SpareTime:
+            if time_list and time.time() - time_list[-1] >= SpareTime:
                 get_others_lot_log.info(
                     f"用户uid={self.uid}空间动态已超过时间限制({SpareTime // 86400}天)，获取结束，当前时间={BAPI.timeshift(time.time())}"
                 )
@@ -396,7 +396,14 @@ class BiliSpaceUserItem:
         # 因此重新启动续爬时不会被上一轮的历史动态放大，也不会因为本轮只爬了一部分而误报
         if not secondRound:
             self.fetched_dyn_count = n
-        if (
+        if not time_list:
+            # 空 items / 全置顶 / 解析异常时 __add_space_card_to_db 返回空列表，
+            # 本轮没有可用于「动态过少」判断的发布时间戳，跳过告警正常结束。
+            get_others_lot_log.debug(
+                f"用户uid={self.uid}空间动态响应中未提取到任何发布时间戳，"
+                f"跳过本轮动态数量过少告警"
+            )
+        elif (
             n <= 50
             and time.time() - time_list[-1] >= SpareTime
             and secondRound == False
