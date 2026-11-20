@@ -15,6 +15,7 @@ import asyncio
 import datetime
 from copy import deepcopy
 from dataclasses import field
+from types import SimpleNamespace
 
 import pytest
 
@@ -824,10 +825,21 @@ class _FakeTargetUidRedisManager:
 
 
 class _FakeUserPoolSqlHelper:
-    """只实现用户池管理用到的只读查询，返回预置的窗口命中统计。"""
+    """只实现用户池管理用到的只读查询，返回预置的窗口命中统计。
 
-    def __init__(self, stats: list[LotUserFetchStat] | None = None):
+    ``latest_round`` / ``round_stats`` 用于验证 ``zero_output_rounds`` 的逐轮累计；
+    默认都是空，与历史用例（只验证剔除 / 容量）保持一致。
+    """
+
+    def __init__(
+        self,
+        stats: list[LotUserFetchStat] | None = None,
+        latest_round=None,
+        round_stats: list[LotUserFetchStat] | None = None,
+    ):
         self.stats = list(stats) if stats else []
+        self.latest_round = latest_round
+        self.round_stats = list(round_stats) if round_stats else []
 
     async def getUserLotHitStats(
         self, uid_list: list[int], days: int = 7
@@ -836,7 +848,7 @@ class _FakeUserPoolSqlHelper:
         return [stat for stat in self.stats if stat.uid in wanted]
 
     async def getLatestFinishedRound(self):
-        return None
+        return self.latest_round
 
     async def getLatestLotDynInfoByUidList(self, uid_list):
         return []
@@ -845,7 +857,8 @@ class _FakeUserPoolSqlHelper:
         return {}
 
     async def getUserLotHitStatsByRound(self, uid_list, lot_round_id):
-        return []
+        wanted = set(uid_list)
+        return [stat for stat in self.round_stats if stat.uid in wanted]
 
     async def getRecentHotLotDyns(self, days, top_n):
         return []
@@ -856,10 +869,16 @@ def _patch_user_pool(
     redis: _FakeTargetUidRedisManager,
     stats: list[LotUserFetchStat] | None = None,
     comment_users: list[TargetUserItem] | None = None,
+    latest_round=None,
+    round_stats: list[LotUserFetchStat] | None = None,
 ) -> ups.LotUserPoolService:
     """把用户池服务的外部依赖替换成内存实现。"""
     monkeypatch.setattr(ups, "get_other_lot_redis_manager", redis)
-    monkeypatch.setattr(ups, "SqlHelper", _FakeUserPoolSqlHelper(stats))
+    monkeypatch.setattr(
+        ups,
+        "SqlHelper",
+        _FakeUserPoolSqlHelper(stats, latest_round, round_stats),
+    )
 
     async def _fake_comment_users(self, pick_count=5, exclude_uids=None):
         return list(comment_users) if comment_users else []
@@ -1039,6 +1058,239 @@ class TestUserPoolCapacity:
         assert "剔除" in content and "2个" in content
         assert "超容量裁剪" in content and "3个" in content
         assert "新补充" in content and "1个" in content
+
+
+class TestUserPoolZeroOutputCull:
+    """连续 total=0 的存量用户按 zero_output_rounds 阈值剔除，首轮仍豁免。"""
+
+    @pytest.mark.asyncio
+    async def test_cull_zero_output_users_after_threshold(self, monkeypatch):
+        threshold = max(1, settings.get_others_lot.zero_output_cull_rounds)
+        # 阈值至少为 2 才能同时覆盖「首轮豁免」和「未达阈值」；环境把它调到 1 时跳过
+        if threshold < 2:
+            pytest.skip("zero_output_cull_rounds < 2，无法覆盖首轮豁免语义")
+
+        stale = TargetUserItem(uid=1_001, zero_output_rounds=threshold)
+        borderline = TargetUserItem(uid=1_002, zero_output_rounds=threshold - 1)
+        fresh = TargetUserItem(uid=1_003, zero_output_rounds=0)
+        # 统计缺失等价于 total == 0，同样按连续轮次剔除
+        no_stat = TargetUserItem(uid=1_004, zero_output_rounds=threshold)
+        # 老口径：窗口内抓到过动态但命中不足
+        low_lot = TargetUserItem(uid=1_005)
+        # 本轮因代理池不可用未取到数：两个口径都豁免
+        excluded = TargetUserItem(uid=1_006, zero_output_rounds=threshold)
+
+        items = [stale, borderline, fresh, no_stat, low_lot, excluded]
+        stats = [
+            LotUserFetchStat(uid=1_001, total=0, lot=0),
+            LotUserFetchStat(uid=1_002, total=0, lot=0),
+            LotUserFetchStat(uid=1_003, total=0, lot=0),
+            LotUserFetchStat(uid=1_005, total=5, lot=1),
+            LotUserFetchStat(uid=1_006, total=0, lot=0),
+        ]
+        redis = _FakeTargetUidRedisManager(items)
+        service = _patch_user_pool(monkeypatch, redis, stats)
+
+        summary = await service.cull_users(exclude_uids={1_006})
+
+        assert set(summary.removed) == {1_001, 1_004, 1_005}
+        assert summary.before_count == 6
+        assert summary.after_count == 3
+        assert {item.uid for item in redis.items} == {1_002, 1_003, 1_006}
+
+    @pytest.mark.asyncio
+    async def test_enrich_counts_zero_output_rounds(self, monkeypatch):
+        """每轮 enrich：total=0 累加、有产出清零；新用户与代理豁免用户不累加。"""
+        round_obj = SimpleNamespace(
+            lotRound_id=381, allNum=100, lotNum=80, uselessNum=20
+        )
+        stale = TargetUserItem(uid=2_001, zero_output_rounds=1)
+        active = TargetUserItem(uid=2_002, zero_output_rounds=2)
+        excluded = TargetUserItem(uid=2_003, zero_output_rounds=2)
+
+        items = [stale, active, excluded]
+        round_stats = [
+            LotUserFetchStat(uid=2_001, total=0, lot=0),
+            LotUserFetchStat(uid=2_002, total=5, lot=3),
+            LotUserFetchStat(uid=2_003, total=0, lot=0),
+            # 新用户在本轮补入，本轮统计里必然是 0
+            LotUserFetchStat(uid=2_004, total=0, lot=0),
+        ]
+        redis = _FakeTargetUidRedisManager(items)
+        service = _patch_user_pool(
+            monkeypatch,
+            redis,
+            latest_round=round_obj,
+            round_stats=round_stats,
+            comment_users=[TargetUserItem(uid=2_004, uname="评论区新用户")],
+        )
+
+        await service.supplement_users(exclude_uids={2_003})
+
+        by_uid = {item.uid: item for item in redis.items}
+        assert by_uid[2_001].zero_output_rounds == 2
+        assert by_uid[2_002].zero_output_rounds == 0
+        assert by_uid[2_003].zero_output_rounds == 2, "代理豁免用户不累加"
+        assert by_uid[2_004].zero_output_rounds == 0, "本轮新补用户首轮豁免"
+        assert all(item.added_ts > 0 for item in redis.items)
+
+
+class TestUserPoolSupplementSources:
+    """补充来源：转发列表优先、评论区兜底、合并去重后按 pick_count 截断。"""
+
+    @pytest.mark.asyncio
+    async def test_supplement_prefers_repost_then_comment(self, monkeypatch):
+        monkeypatch.setattr(settings.get_others_lot, "repost_user_fetch", True)
+        redis = _FakeTargetUidRedisManager([])
+        service = _patch_user_pool(monkeypatch, redis)
+        max_size = settings.get_others_lot.max_user_list_size
+
+        repost_users = [
+            TargetUserItem(uid=7_001, uname="转发用户1"),
+            TargetUserItem(uid=7_002, uname="转发用户2"),
+        ]
+        comment_users = [
+            TargetUserItem(uid=7_002, uname="重复用户"),
+            TargetUserItem(uid=7_003, uname="评论用户"),
+        ]
+        calls: list[tuple[str, int, set[int]]] = []
+
+        async def _fake_repost(self, pick_count=5, exclude_uids=None):
+            calls.append(("repost", pick_count, set(exclude_uids or ())))
+            return list(repost_users)
+
+        async def _fake_comment(self, pick_count=5, exclude_uids=None):
+            calls.append(("comment", pick_count, set(exclude_uids or ())))
+            return list(comment_users)
+
+        monkeypatch.setattr(
+            ups.LotUserPoolService,
+            "_get_users_from_latest_lot_dyn_repost",
+            _fake_repost,
+        )
+        monkeypatch.setattr(
+            ups.LotUserPoolService,
+            "_get_users_from_latest_lot_dyn_comment",
+            _fake_comment,
+        )
+
+        summary = await service.supplement_users()
+
+        # 转发列表先跑满额，评论区只拿剩余名额，并且已经排除转发用户
+        assert [c[0] for c in calls] == ["repost", "comment"]
+        assert calls[0][1] == max_size
+        assert calls[1][1] == max_size - len(repost_users)
+        assert {7_001, 7_002}.issubset(calls[1][2])
+        assert summary.added == [7_001, 7_002, 7_003]
+        assert summary.after_count == 3
+        assert [item.uid for item in redis.items] == [7_001, 7_002, 7_003]
+        # 新补用户都回填了入池时间
+        assert all(item.added_ts > 0 for item in redis.items)
+
+    @pytest.mark.asyncio
+    async def test_repost_failure_falls_back_to_comment(self, monkeypatch):
+        monkeypatch.setattr(settings.get_others_lot, "repost_user_fetch", True)
+        redis = _FakeTargetUidRedisManager([])
+        service = _patch_user_pool(monkeypatch, redis)
+
+        async def _broken_repost(self, pick_count=5, exclude_uids=None):
+            # 真实实现内部吞掉异常并返回空列表，这里模拟「不可用」
+            return []
+
+        comment_users = [TargetUserItem(uid=8_001, uname="评论兜底用户")]
+
+        async def _fake_comment(self, pick_count=5, exclude_uids=None):
+            return list(comment_users)
+
+        monkeypatch.setattr(
+            ups.LotUserPoolService,
+            "_get_users_from_latest_lot_dyn_repost",
+            _broken_repost,
+        )
+        monkeypatch.setattr(
+            ups.LotUserPoolService,
+            "_get_users_from_latest_lot_dyn_comment",
+            _fake_comment,
+        )
+
+        summary = await service.supplement_users()
+
+        assert summary.added == [8_001]
+        assert summary.after_count == 1
+
+
+class TestRepostListParsing:
+    """转发列表请求构造与响应解析（不触网）。"""
+
+    def test_build_repost_list_req_only_needs_dynamic_id(self):
+        req = ups.LotUserPoolService._build_repost_list_req(123456789)
+        assert req.dynamic_id == "123456789"
+        # 不传 rid / dyn_type，避免评论业务类型与动态类型编码混用
+        assert req.rid == 0
+        assert req.dyn_type == 0
+
+    def test_extract_repost_user_camel_and_snake_case(self):
+        camel = {
+            "modules": [
+                {"moduleAuthor": {"mid": "700001", "author": {"name": "转发者"}}}
+            ]
+        }
+        snake = {
+            "modules": [
+                {"module_author": {"mid": "700002", "author": {"name": "转发者2"}}}
+            ]
+        }
+        user = ups.LotUserPoolService._extract_repost_user(camel)
+        assert user is not None and user.uid == 700001 and user.uname == "转发者"
+        assert ups.LotUserPoolService._extract_repost_user(snake).uid == 700002
+
+        # uid 非法 / uname 为空 / 无 moduleAuthor 均丢弃
+        assert (
+            ups.LotUserPoolService._extract_repost_user(
+                {"modules": [{"moduleAuthor": {"mid": "0", "author": {"name": "x"}}}]}
+            )
+            is None
+        )
+        assert (
+            ups.LotUserPoolService._extract_repost_user(
+                {"modules": [{"moduleAuthor": {"mid": "700003", "author": {}}}]}
+            )
+            is None
+        )
+        assert ups.LotUserPoolService._extract_repost_user({"modules": []}) is None
+
+
+class TestTargetUserItemLegacyJson:
+    """旧 Redis JSON 没有 zero_output_rounds / added_ts，必须用默认值兼容。"""
+
+    def test_model_validate_old_json_uses_defaults(self):
+        legacy = {
+            "uid": 3546740766541963,
+            "uname": "旧版用户",
+            "last_dyn_pub_ts": 1_700_000_000,
+            "last_dyn_pub_datetime": "2023-11-15T06:13:20",
+            "last_round_lot_count": 2,
+            "last_round_total_count": 5,
+        }
+        item = TargetUserItem.model_validate(legacy)
+
+        assert item.uid == legacy["uid"]
+        assert item.last_round_total_count == 5
+        assert item.zero_output_rounds == 0
+        assert item.added_ts == 0
+
+        # 新字段可正常序列化 / 反序列化，不影响旧字段
+        dumped = item.model_dump(mode="json")
+        assert dumped["zero_output_rounds"] == 0
+        again = TargetUserItem.model_validate(dumped)
+        assert again == item
+
+    def test_new_user_validation(self):
+        assert ups.LotUserPoolService._is_valid_user(0, "用户") is False
+        assert ups.LotUserPoolService._is_valid_user(123, "   ") is False
+        assert ups.LotUserPoolService._is_valid_user(123456789, "用户") is True
+        # 超过 int64 范围 / 位数异常的 uid 直接丢弃
+        assert ups.LotUserPoolService._is_valid_user(10**20, "用户") is False
 
 
 # ============================================================================

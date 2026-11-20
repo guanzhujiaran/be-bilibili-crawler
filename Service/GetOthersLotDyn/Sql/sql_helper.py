@@ -37,6 +37,11 @@ class TargetUserItem(BaseModel):
     last_dyn_pub_datetime: datetime | None = None  # 最后一条抽奖动态发布时间(人类可读)
     last_round_lot_count: int = 0  # 最后一轮有效抽奖次数
     last_round_total_count: int = 0  # 最后一轮总动态数
+    # 连续多少轮「本轮抓到 0 条动态」：首轮 total==0 视为新用户 / 抓取失败并豁免，
+    # 连续多轮 0 才按 GetOthersLotDynConfig.zero_output_cull_rounds 剔除
+    zero_output_rounds: int = 0
+    # 入池时间（Unix 秒）：旧 Redis JSON 没有该字段，由 _enrich_user_info 首次回填
+    added_ts: int = 0
 
 
 class LotUserFetchStat(BaseModel):

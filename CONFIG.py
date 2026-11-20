@@ -225,8 +225,14 @@ class GetOthersLotDynConfig(BaseModel):
     min_valid_lot_threshold: int = 1
     # 单轮最多补充的新用户数，不得超过 max_user_list_size，避免语义不一致
     supplement_max_per_round: int = 40
-    hot_lot_dyn_count: int = 5  # 从评论区挖掘用户时选取的高互动动态数量
+    hot_lot_dyn_count: int = 5  # 从评论区 / 转发列表挖掘用户时选取的高互动动态数量
     hot_lot_dyn_days: int = 7  # 高互动动态的时间范围(天)
+    # 连续多少轮「本轮抓到 0 条动态」才剔除；首轮 total==0 仍豁免，避免误杀
+    # 新补用户 / 抓取失败（可用 GET_OTHERS_LOT__ZERO_OUTPUT_CULL_ROUNDS 覆盖）
+    zero_output_cull_rounds: int = 3
+    # 补充用户时优先从转发列表挖人（转发用户才是真实参与者），失败回退评论区。
+    # 默认关闭：灰度验证转发列表接口可用性与用户质量后再开启。
+    repost_user_fetch: bool = False
     # 用户列表为空且无法从评论区补充时使用的默认用户 uid 列表
     default_user_uids: list[int] = [
         319857159,
