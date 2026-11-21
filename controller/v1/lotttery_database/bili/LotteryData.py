@@ -914,8 +914,17 @@ async def api_Search(
     result: List[Lotdata] = await search_lottery_text(
         pagination.keyword, limit=pagination.page_size, offset=offset
     )
-    total = await get_lottery_entity_num()
-    return CommonResponseModel(data=ResponsePaginationItems(items=result, total=total))
+    # ORM 行必须显式转成 LotdataResp：ResponsePaginationItems 不参数化时泛型 T 退化为 Any，
+    # 不会对 items 做 from_attributes 转换，直接塞 ORM 对象会在序列化阶段抛
+    # PydanticSerializationError（unknown type Lotdata）
+    items = [LotdataResp.model_validate(r) for r in result]
+    # 命中总数只能拿到当前页（Milvus group_by lottery_id 不返回去重后的总数），
+    # 这里按分页语义自洽推导 total，不再返回与关键词结果无关的全库行数：
+    # 本页未取满即末页；取满则至少还有下一页，额外 +1 保证前端「还有更多」成立
+    total = offset + len(items) + (1 if len(items) >= pagination.page_size else 0)
+    return CommonResponseModel(
+        data=ResponsePaginationItems[LotdataResp](items=items, total=total)
+    )
 
 
 @query_router.get(

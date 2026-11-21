@@ -139,7 +139,7 @@ class Sqlhelper:
             filter=f"lottery_time >= {int(time.time())}",
             limit=limit,
             output_fields=["lottery_id", "prize_cmt", "lottery_time"],
-            offset=10,
+            offset=offset,
         )
         return res
 
