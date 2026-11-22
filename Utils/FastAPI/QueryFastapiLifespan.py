@@ -35,8 +35,33 @@ from log.base_log import myfastapi_logger
 _DB_CONNECT_TIMEOUT_SECONDS = 10
 
 
+async def _warm_up_search_embedding() -> None:
+    """后台预热关键词搜索用的向量模型（llama.cpp e5）。
+
+    llama.cpp 只在首次 embedding 请求时加载模型（实测 7-9s）；混合检索里
+    关键词路径不依赖它，但语义召回需要。启动时后台预热，避免第一个搜索
+    请求承担冷启动；llama.cpp 晚就绪时按退避重试，不影响服务启动。
+    """
+    from Service.LangChainCompo.text_embed import _create_embedding
+
+    for attempt in range(1, 4):
+        try:
+            if await _create_embedding("抽奖"):
+                myfastapi_logger.info("查询向量模型预热完成")
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            myfastapi_logger.warning(
+                f"查询向量模型预热失败（第 {attempt}/3 次）: {type(e).__name__}: {e}"
+            )
+        await asyncio.sleep(5 * attempt)
+
+
 @contextlib.asynccontextmanager
 async def query_life_span(app: FastAPI):
+    # 先起预热任务（不阻塞启动）：e5 模型加载与下面的数据库探活并行执行
+    warmup_task = asyncio.create_task(_warm_up_search_embedding())
     # 与爬虫角色保持同一份 LLM 配置（只读）：本角色不调用 LLM、也不提供 /llm/* 写接口，
     # 加载只为「两容器看到同一份列表」；读不到文件时回退 .env，不影响启动。
     # 只读角色不写共享配置文件，脱敏 token 自愈由 crawler 角色负责
@@ -47,6 +72,9 @@ async def query_life_span(app: FastAPI):
         "FastapiApp.rpc.* 只读取数 RPC 服务端已随 router 挂载；写库走 MQ）"
     )
     yield
+    warmup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await warmup_task
     myfastapi_logger.info("查询服务正在退出")
 
 

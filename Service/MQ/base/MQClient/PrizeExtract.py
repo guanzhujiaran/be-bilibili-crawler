@@ -40,8 +40,10 @@ from faststream.rabbit.fastapi import RabbitMessage, RabbitRouter
 
 from CONFIG import CONFIG, settings
 from Models.MQ.PrizeExtractMQModel import (
+    OFFICIAL_JUDGE_VERSION,
     PrizeExtractParams,
     PrizeExtractTargetEnum,
+    official_input_hash,
 )
 from Models.MQ.PrizeExtractResult import (
     OfficialPrizeExtractResult,
@@ -186,12 +188,21 @@ async def _wait_own_lock(
 
 
 async def _already_stored(params: PrizeExtractParams) -> bool:
-    """直接查对应数据库是否已存在该记录的提取信息（不判断「最近」）。"""
+    """直接查对应数据库是否已存在该记录的提取信息（不判断「最近」）。
+
+    官方/充电抽奖额外要求「判定版本 + 输入指纹」一致才跳过：
+    prompt 或输入格式升级后，旧记录（版本/指纹不一致）会被自动重判，
+    而不是因为「行存在」被永久跳过。
+    """
     if params.target_db == PrizeExtractTargetEnum.DYNDETAIL:
         lottery_id = params.lottery_id
         if lottery_id is None:
             return False
-        return await grpc_sql_helper.is_extra_info_exists(lottery_id=lottery_id)
+        return await grpc_sql_helper.is_extra_info_exists(
+            lottery_id=lottery_id,
+            judge_version=OFFICIAL_JUDGE_VERSION,
+            input_hash=official_input_hash(params.lottery_text),
+        )
     ref_id = params.ref_id
     if ref_id is None:
         return False
@@ -224,6 +235,9 @@ async def _do_extract_and_store(
         await grpc_sql_helper.save_extra_info(
             lottery_id=lottery_id,
             is_grand_prize=int(result.result.is_grand_prize),
+            judge_version=OFFICIAL_JUDGE_VERSION,
+            input_hash=official_input_hash(params.lottery_text),
+            judge_reason=result.result.judge_reason,
         )
         return result.result
     else:

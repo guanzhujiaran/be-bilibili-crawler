@@ -59,6 +59,12 @@ _project_root = Path(__file__).resolve().parent.parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
+# protobuf 生成的模块内部使用 `bilibili.xxx` 绝对导入，必须把 GrpcProto 加入 sys.path
+# （与 main.py / query_main.py / backfill_missing.py 的启动头保持一致）
+_grpc_proto_path = str(_project_root / "Service" / "GrpcModule" / "Grpc" / "GrpcProto")
+if _grpc_proto_path not in sys.path:
+    sys.path.insert(0, _grpc_proto_path)
+
 
 def _make_chat_openai_client(headers: dict | None) -> ChatOpenAI | None:
     """根据当前 settings.llm_apis 配置 + 自定义 headers 构造一个 ChatOpenAI 实例。
@@ -397,6 +403,11 @@ async def judge_official_lottery(
 
     返回统计信息。
     """
+    from Models.MQ.PrizeExtractMQModel import (
+        OFFICIAL_JUDGE_VERSION,
+        build_official_lottery_text,
+        official_input_hash,
+    )
     from Service.GetOthersLotDyn.parser.prize_extractor import (
         extract_prize_info_for_lotdata,
     )
@@ -431,19 +442,32 @@ async def judge_official_lottery(
         print("没有找到 lotdata 记录。")
         return stats
 
-    record_map: dict[int, tuple] = {}
+    record_map: dict[int, tuple[str, str, object]] = {}
     skipped_no_bid = 0
     skipped_no_text = 0
     for r in all_records:
         if not r.business_id:
             skipped_no_bid += 1
             continue
-        prize_cmts = [r.first_prize_cmt, r.second_prize_cmt, r.third_prize_cmt]
-        lottery_text = " ".join(filter(lambda a: a, prize_cmts)).strip()
+        # 与 MQ 发布侧共用同一套输入拼装：类型 + 人数 + 各档奖品名与数量，
+        # 保证手动重判与线上下发/消费的输入指纹一致。
+        lottery_text = build_official_lottery_text(
+            business_type=r.business_type,
+            participants=r.participants,
+            prizes=[
+                (r.first_prize_cmt, r.first_prize),
+                (r.second_prize_cmt, r.second_prize),
+                (r.third_prize_cmt, r.third_prize),
+            ],
+        )
         if not lottery_text:
             skipped_no_text += 1
             continue
-        record_map[r.lottery_id] = (lottery_text, r)
+        record_map[r.lottery_id] = (
+            lottery_text,
+            official_input_hash(lottery_text),
+            r,
+        )
 
     print(f"总 lotdata 记录数: {len(all_records)}")
     print(f"  无 business_id 跳过: {skipped_no_bid}")
@@ -456,7 +480,14 @@ async def judge_official_lottery(
 
     target_ids = list(record_map.keys())
     if not force_update:
-        existing_ids = await grpc_sql_helper.batch_check_existing_extra_info(target_ids)
+        # 只有「判定版本 + 输入指纹都一致」才跳过；prompt/输入升级后会自动重判旧记录。
+        existing_ids = await grpc_sql_helper.batch_check_existing_extra_info(
+            target_ids,
+            judge_version=OFFICIAL_JUDGE_VERSION,
+            input_hash_by_id={
+                bid: value[1] for bid, value in record_map.items()
+            },
+        )
         target_ids = [bid for bid in target_ids if bid not in existing_ids]
         stats["skipped"] = len(record_map) - len(target_ids)
 
@@ -480,14 +511,19 @@ async def judge_official_lottery(
 
     async def _judge_one(bid: int) -> str:
         try:
-            lottery_text = record_map[bid][0]
+            lottery_text, input_hash, _row = record_map[bid]
             result = await extract_prize_info_for_lotdata(
                 dyn_content=lottery_text, chat_openai_client=chat_openai_client
             )
             is_grand = int(result.result.is_grand_prize)
-            # 处理完一个立即保存一个，防止批量写入中途失败丢失结果
+            # 处理完一个立即保存一个，防止批量写入中途失败丢失结果；
+            # 同时写入判定版本/输入指纹/理由，供下次重判与回溯。
             await grpc_sql_helper.save_extra_info(
-                lottery_id=bid, is_grand_prize=is_grand
+                lottery_id=bid,
+                is_grand_prize=is_grand,
+                judge_version=OFFICIAL_JUDGE_VERSION,
+                input_hash=input_hash,
+                judge_reason=result.result.judge_reason,
             )
             return "grand" if is_grand == 1 else "not_grand"
         except Exception as e:

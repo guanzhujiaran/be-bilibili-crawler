@@ -38,9 +38,21 @@ class OfficialPrizeExtractResult(BaseModel):
 
     官方抽奖的抽奖方式（是否需转发/评论、是否话题抽奖等）已由 lottery_type 固定，
     无需再用大模型提取 is_lot / need_comment / need_repost 等字段，也无需落库，
-    因此本结果仅保留需要大模型判断的大奖标记 is_grand_prize。
+    因此本结果仅保留需要大模型判断的大奖标记 is_grand_prize 与判定理由。
     """
 
     is_grand_prize: bool = Field(
-        default=False, description="是否大奖，奖品价值高/知名品牌/电子产品"
+        default=False,
+        description=(
+            "是否大奖：任一奖品单价 ≥ 2000 元，或奖品总价值（单价×数量）≥ 5000 元，"
+            "或为高价值知名品牌商品/高面值虚拟权益"
+        ),
+    )
+    judge_reason: str = Field(
+        default="",
+        description=(
+            "判定理由（一句中文），必须给出估算依据，例如"
+            "「RTX 5070 显卡单价约 4500 元 ≥ 2000 元」或"
+            "「均为低价周边，总价值约 300 元 < 5000 元」"
+        ),
     )

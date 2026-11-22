@@ -59,7 +59,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
 from Models.base.str_int import StrInt
 from Service.LangChainCompo.text_embed import (
     get_lottery_entity_num,
-    search_lottery_text,
+    search_lottery_by_keyword,
 )
 from Service.GrpcModule.GrpcSrc.SQLObject.models import Lotdata
 from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
@@ -73,6 +73,7 @@ from Service.lottery_database.bili_lotterty import (
     get_charge_lottery,
     get_topic_lottery,
     get_live_lottery,
+    get_top_lottery_by_participants,
     add_dynamic_lottery_by_dynamic_id,
     add_topic_lottery,
     add_others_lot_dyn_by_dynamic_id,
@@ -673,6 +674,8 @@ async def _build_upcoming_items(rows: list[Lotdata]) -> list[UpcomingLotteryItem
                 OfficialLotExtraInfoResp(
                     lottery_type=int(r.business_type),
                     is_grand_prize=bool(extra_map[int(r.lottery_id)].is_grand_prize),
+                    judge_reason=extra_map[int(r.lottery_id)].judge_reason,
+                    judge_version=extra_map[int(r.lottery_id)].judge_version,
                 )
                 if int(r.lottery_id) in extra_map
                 else None
@@ -936,17 +939,16 @@ async def api_Search(
     # 转换为 offset-limit 形式传递给底层函数
     # max(0, ...) 防止 page_num=0 时 offset 为负数导致 SQL 语法错误
     offset = max(0, (pagination.page_num - 1) * pagination.page_size)
-    result: List[Lotdata] = await search_lottery_text(
+    # 字面匹配（含 2-gram 拆词）：结果一定包含关键词或其中文片段；
+    # 不做向量兜底，避免短中文关键词被 e5 排到无关奖品上。
+    # 命中总数由底层返回真实值，不再用分页推导。
+    result, total = await search_lottery_by_keyword(
         pagination.keyword, limit=pagination.page_size, offset=offset
     )
     # ORM 行必须显式转成 LotdataResp：ResponsePaginationItems 不参数化时泛型 T 退化为 Any，
     # 不会对 items 做 from_attributes 转换，直接塞 ORM 对象会在序列化阶段抛
     # PydanticSerializationError（unknown type Lotdata）
     items = [LotdataResp.model_validate(r) for r in result]
-    # 命中总数只能拿到当前页（Milvus group_by lottery_id 不返回去重后的总数），
-    # 这里按分页语义自洽推导 total，不再返回与关键词结果无关的全库行数：
-    # 本页未取满即末页；取满则至少还有下一页，额外 +1 保证前端「还有更多」成立
-    total = offset + len(items) + (1 if len(items) >= pagination.page_size else 0)
     return CommonResponseModel(
         data=ResponsePaginationItems[LotdataResp](items=items, total=total)
     )
@@ -1131,6 +1133,8 @@ async def api_GetLotteryDetail(
                 OfficialLotExtraInfoResp(
                     lottery_type=row.business_type,
                     is_grand_prize=bool(_ei.is_grand_prize),
+                    judge_reason=_ei.judge_reason,
+                    judge_version=_ei.judge_version,
                 )
                 if _ei
                 else None
@@ -1209,6 +1213,8 @@ async def api_GetLotteryDetailList(
                     OfficialLotExtraInfoResp(
                         lottery_type=row.business_type,
                         is_grand_prize=bool(_ei.is_grand_prize),
+                        judge_reason=_ei.judge_reason,
+                        judge_version=_ei.judge_version,
                     )
                     if _ei
                     else None
@@ -1217,6 +1223,30 @@ async def api_GetLotteryDetailList(
         )
     return CommonResponseModel(
         data=LotteryDetailListResp(items=items, missing_ids=missing_ids)
+    )
+
+
+@query_router.get(
+    RouterPaths.GET_TOP_LOTTERY_BY_PARTICIPANTS,
+    name=RouterNames.GET_TOP_LOTTERY_BY_PARTICIPANTS,
+    summary="按抓取时参与人数获取进行中的热门抽奖卡片",
+    response_model=CommonResponseModel[LotteryDetailListResp],
+    response_model_exclude_none=True,
+    description="""按 lotdata.participants（爬虫抓取时快照）降序返回进行中的抽奖卡片。
+
+- 仅 status=unfinished 且未过开奖时间，避免历史抽奖霸榜；
+- 覆盖官方 / 预约 / 充电抽奖；预约会过滤已取消 / 已失效记录；
+- 返回形态与 GetLotteryDetailList 的 items 完全一致（raw + extra_info）；
+- 参与人数为抓取时快照，可能不是实时值。""",
+)
+@cache(expire=60)
+async def api_GetTopLotteryByParticipants(
+    limit: int = Query(default=10, ge=1, le=50, description="返回条数上限"),
+    t: NoCacheTs = None,
+):
+    items = await get_top_lottery_by_participants(limit)
+    return CommonResponseModel(
+        data=LotteryDetailListResp(items=items, missing_ids=[])
     )
 
 

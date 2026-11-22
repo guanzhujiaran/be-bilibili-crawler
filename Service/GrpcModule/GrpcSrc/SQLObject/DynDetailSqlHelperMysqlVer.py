@@ -642,6 +642,161 @@ class SQLHelper(SqlHelperBase):
             return records, total_count
 
     @log_sql_retry_wrapper()
+    async def search_lottery_fulltext(
+        self, keyword: str, limit: int = 500, offset: int = 0
+    ) -> tuple[Sequence[Lotdata], int]:
+        """MySQL FULLTEXT(ngram) 关键词召回（进行中 / 未开奖抽奖）。
+
+        依赖迁移 ``d5e6f7a8b9c0`` 创建的
+        ``ft_lot_prize_cmt(first_prize_cmt, second_prize_cmt, third_prize_cmt)``
+        FULLTEXT 索引（WITH PARSER ngram）。相比 LIKE：
+        - 支持多关键词/中文子串召回，并按 BM25 相关性排序；
+        - 12 万行全表也有索引可用，不会退化成逐行 LIKE。
+
+        单字查询（如「卡」）低于 ngram_token_size=2，MATCH 不会命中，
+        由调用方回退到 LIKE/2-gram 路径。
+        """
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return [], 0
+        now_ts = int(time.time())
+        match_expr = (
+            "MATCH(first_prize_cmt, second_prize_cmt, third_prize_cmt) "
+            "AGAINST(:keyword IN NATURAL LANGUAGE MODE)"
+        )
+        count_stmt = text(
+            f"""
+            SELECT COUNT(*) FROM lotdata
+            WHERE status = 0 AND lottery_time > :now_ts AND {match_expr}
+            """
+        )
+        select_stmt = text(
+            f"""
+            SELECT *, {match_expr} AS ft_score
+            FROM lotdata
+            WHERE status = 0 AND lottery_time > :now_ts AND {match_expr}
+            ORDER BY ft_score DESC, lottery_time ASC, lottery_id DESC
+            LIMIT :limit OFFSET :offset
+            """
+        )
+        async with self.async_session() as session:
+            total = (
+                await session.execute(
+                    count_stmt, {"keyword": keyword, "now_ts": now_ts}
+                )
+            ).scalar_one()
+            if total <= 0:
+                return [], 0
+            rows = (
+                await session.execute(
+                    select_stmt,
+                    {
+                        "keyword": keyword,
+                        "now_ts": now_ts,
+                        "limit": max(1, limit),
+                        "offset": max(0, offset),
+                    },
+                )
+            ).mappings().all()
+            return [
+                Lotdata(**{k: v for k, v in row.items() if k != "ft_score"})
+                for row in rows
+            ], int(total)
+
+    @log_sql_retry_wrapper()
+    async def search_lottery_by_keyword(
+        self, keyword: str, limit: int = 10, offset: int = 0
+    ) -> tuple[Sequence[Lotdata], int]:
+        """按奖品文案字面匹配「进行中 / 未开奖」的抽奖（关键词搜索主路径）。
+
+        只扫描 ``status=0`` 且未到开奖时间的少量行（生产约数百行），对一/二/三等奖
+        文案做 LIKE；命中结果一定包含关键词，不会出现「搜显卡返回购物卡」。
+        排序把「一等奖命中」放在最前，保证前端卡片标题（取一等奖）尽量就是用户
+        搜到的奖品；同档按开奖时间升序。
+
+        Args:
+            keyword: 用户输入关键词（已由接口层做长度校验）。
+            limit: 本页条数。
+            offset: 跳过条数。
+
+        Returns:
+            (当前页 ORM 行, 命中总数)；无命中返回 ``([], 0)``。
+        """
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return [], 0
+        now_ts = int(time.time())
+
+        def _escaped_like(text: str) -> str:
+            # 转义 LIKE 通配符：用户输入 % / _ 时按字面匹配，避免「%」命中全表
+            escaped = (
+                text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            return f"%{escaped}%"
+
+        def _prize_conditions(pattern: str):
+            return or_(
+                Lotdata.first_prize_cmt.like(pattern, escape="\\"),
+                Lotdata.second_prize_cmt.like(pattern, escape="\\"),
+                Lotdata.third_prize_cmt.like(pattern, escape="\\"),
+            )
+
+        async def _count_and_page(conditions, order_by):
+            async with self.async_session() as session:
+                total = (
+                    await session.execute(
+                        select(func.count()).select_from(Lotdata).where(*conditions)
+                    )
+                ).scalar_one()
+                if total <= 0:
+                    return [], 0
+                stmt = (
+                    select(Lotdata)
+                    .where(*conditions)
+                    .order_by(*order_by)
+                    .offset(max(0, offset))
+                    .limit(max(1, limit))
+                )
+                rows = (await session.execute(stmt)).scalars().all()
+                return list(rows), int(total)
+
+        # 1) 完整关键词匹配
+        full_pattern = _escaped_like(keyword)
+        rows, total = await _count_and_page(
+            [
+                Lotdata.status == 0,
+                Lotdata.lottery_time > now_ts,
+                _prize_conditions(full_pattern),
+            ],
+            [
+                # 一等奖命中优先，其次二等奖、三等奖
+                case(
+                    (Lotdata.first_prize_cmt.like(full_pattern, escape="\\"), 0),
+                    (Lotdata.second_prize_cmt.like(full_pattern, escape="\\"), 1),
+                    else_=2,
+                ).asc(),
+                Lotdata.lottery_time.asc(),
+                Lotdata.lottery_id.desc(),
+            ],
+        )
+        if total > 0 or len(keyword) <= 2:
+            return rows, total
+
+        # 2) 完整关键词无命中时按 2-gram 拆词再匹配：
+        #    「苹果手机」→ 苹果 / 果手 / 手机，能命中「iPhone 18Pro或同价位手机」；
+        #    「游戏笔记本」→ 游戏 / 戏笔 / 笔记 / 记本，避免直接落到语义检索的噪声结果。
+        bigrams = list(dict.fromkeys(keyword[i : i + 2] for i in range(len(keyword) - 1)))
+        bigram_conditions = [_prize_conditions(_escaped_like(bg)) for bg in bigrams]
+        return await _count_and_page(
+            [
+                Lotdata.status == 0,
+                Lotdata.lottery_time > now_ts,
+                or_(*bigram_conditions),
+            ],
+            [Lotdata.lottery_time.asc(), Lotdata.lottery_id.desc()],
+        )
+
+    @log_sql_retry_wrapper()
     async def query_official_lottery_by_timelimit_page_offset(
         self, q: BiliLotDataQueryModel
     ) -> tuple[Sequence[Lotdata], int]:
@@ -802,60 +957,88 @@ class SQLHelper(SqlHelperBase):
         """
 
     @log_sql_retry_wrapper()
-    async def is_extra_info_exists(self, lottery_id: int) -> bool:
-        """检查 dyndetail.t_lot_extra_info 是否已存在该 lottery_id 的提取记录。
+    async def is_extra_info_exists(
+        self,
+        lottery_id: int,
+        *,
+        judge_version: int | None = None,
+        input_hash: str | None = None,
+    ) -> bool:
+        """检查 dyndetail.t_lot_extra_info 是否已有可复用的判定结果。
 
-        仅判断「是否存在」，不判断时间（与入库队列的去重语义一致）。
+        默认只判断「是否存在」；传入 ``judge_version`` / ``input_hash`` 时，
+        还要求库里的版本与输入指纹一致——prompt 或输入升级后旧记录会被重判，
+        而不是因为行已存在被永久跳过。
         """
+        conditions = [LotExtraInfo.lottery_id == lottery_id]
+        if judge_version is not None:
+            conditions.append(LotExtraInfo.judge_version == judge_version)
+        if input_hash is not None:
+            conditions.append(LotExtraInfo.input_hash == input_hash)
         async with self.async_session() as session:
-            stmt = (
-                select(LotExtraInfo.lottery_id)
-                .where(LotExtraInfo.lottery_id == lottery_id)
-                .limit(1)
-            )
-            res = await session.execute(stmt)
-            return res.scalars().first() is not None
-        async with self.async_session() as session:
-            threshold = datetime.datetime.now() - datetime.timedelta(
-                seconds=within_seconds
-            )
-            stmt = (
-                select(LotExtraInfo.lottery_id)
-                .where(
-                    and_(
-                        LotExtraInfo.lottery_id == lottery_id,
-                        LotExtraInfo.updated_at >= threshold,
-                    )
-                )
-                .limit(1)
-            )
+            stmt = select(LotExtraInfo.lottery_id).where(and_(*conditions)).limit(1)
             res = await session.execute(stmt)
             return res.scalars().first() is not None
 
     @staticmethod
-    async def _upsert_extra_info(session, lottery_id: int, is_grand_prize: int) -> None:
-        """原子 upsert：将 SVM 大奖判断结果写入 t_lot_extra_info"""
+    async def _upsert_extra_info(
+        session,
+        lottery_id: int,
+        is_grand_prize: int,
+        judge_version: int = 0,
+        input_hash: str | None = None,
+        judge_reason: str | None = None,
+    ) -> None:
+        """原子 upsert：将大奖判断结果（含版本/输入指纹/理由）写入 t_lot_extra_info"""
         stmt = insert(LotExtraInfo).values(
             lottery_id=lottery_id,
             is_grand_prize=is_grand_prize,
+            judge_version=judge_version,
+            input_hash=input_hash,
+            judge_reason=judge_reason,
         )
         stmt = stmt.on_duplicate_key_update(
             is_grand_prize=stmt.inserted.is_grand_prize,
+            judge_version=stmt.inserted.judge_version,
+            input_hash=stmt.inserted.input_hash,
+            judge_reason=stmt.inserted.judge_reason,
             updated_at=text("CURRENT_TIMESTAMP"),
         )
         await session.execute(stmt)
 
     @log_sql_retry_wrapper()
-    async def batch_check_existing_extra_info(self, lottery_ids: list[int]) -> set[int]:
-        """批量查询已存在附加信息的 lottery_id 集合（用于手动回填脚本跳过已判记录）"""
+    async def batch_check_existing_extra_info(
+        self,
+        lottery_ids: list[int],
+        *,
+        judge_version: int | None = None,
+        input_hash_by_id: dict[int, str] | None = None,
+    ) -> set[int]:
+        """批量查询「已有可复用判定结果」的 lottery_id 集合。
+
+        传入 ``judge_version`` / ``input_hash_by_id`` 时按版本与输入指纹过滤，
+        与 :meth:`is_extra_info_exists` 的跳过语义保持一致，供手动脚本使用。
+        """
         if not lottery_ids:
             return set()
         async with self.async_session() as session:
-            stmt = select(LotExtraInfo.lottery_id).where(
-                LotExtraInfo.lottery_id.in_(lottery_ids)
-            )
+            stmt = select(
+                LotExtraInfo.lottery_id,
+                LotExtraInfo.judge_version,
+                LotExtraInfo.input_hash,
+            ).where(LotExtraInfo.lottery_id.in_(lottery_ids))
             res = await session.execute(stmt)
-            return {row[0] for row in res.all()}
+            reusable: set[int] = set()
+            for row in res.all():
+                lottery_id, row_version, row_hash = row
+                if judge_version is not None and row_version != judge_version:
+                    continue
+                if input_hash_by_id is not None and row_hash != (
+                    input_hash_by_id.get(lottery_id)
+                ):
+                    continue
+                reusable.add(lottery_id)
+            return reusable
 
     @log_sql_retry_wrapper()
     async def batch_save_extra_info(self, flags: dict[int, int]) -> None:
@@ -872,17 +1055,30 @@ class SQLHelper(SqlHelperBase):
                     )
 
     @log_sql_retry_wrapper()
-    async def save_extra_info(self, lottery_id: int, is_grand_prize: int) -> None:
+    async def save_extra_info(
+        self,
+        lottery_id: int,
+        is_grand_prize: int,
+        *,
+        judge_version: int = 0,
+        input_hash: str | None = None,
+        judge_reason: str | None = None,
+    ) -> None:
         """保存/更新单条附加信息到 t_lot_extra_info（原子 upsert）。
 
         逐条保存，便于手动回填脚本“处理完一个立即保存一个”，
         避免批量写入中途失败时丢失已判断的结果。
+        ``judge_version`` / ``input_hash`` 用于入库队列的「版本/输入指纹一致才跳过」判断，
+        ``judge_reason`` 保存 LLM 给出的判定理由，便于回溯。
         """
         async with self.async_session() as session:
             await self._upsert_extra_info(
                 session=session,
                 lottery_id=int(lottery_id),
                 is_grand_prize=is_grand_prize,
+                judge_version=judge_version,
+                input_hash=input_hash,
+                judge_reason=judge_reason,
             )
             await session.commit()
 

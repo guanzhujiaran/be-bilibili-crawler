@@ -301,9 +301,9 @@ class TestSearchLotteryByKeyword:
     async def test_search(self, client):
         with (
             mock.patch(
-                "controller.v1.lotttery_database.bili.LotteryData.search_lottery_text",
+                "controller.v1.lotttery_database.bili.LotteryData.search_lottery_by_keyword",
                 new_callable=mock.AsyncMock,
-                return_value=[],
+                return_value=([], 0),
             ),
             mock.patch(
                 "controller.v1.lotttery_database.bili.LotteryData.get_lottery_entity_num",

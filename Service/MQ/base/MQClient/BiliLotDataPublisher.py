@@ -9,6 +9,7 @@ from Models.lottery_database.bili.LotteryDataModels import LotExtraInfoLotType
 from Models.MQ.PrizeExtractMQModel import (
     PrizeExtractParams,
     PrizeExtractTargetEnum,
+    build_official_lottery_text,
 )
 from Service.MQ.base.BasicAsyncClient import _mq_retry_wrapper
 from Service.MQ.base.MQClient.base import (
@@ -213,17 +214,31 @@ class BiliLotDataPublisher:
     async def pub_prize_extract_from_lot_data(
         lot_data_dict: dict, extra_routing_key: str = "", **kwargs
     ):
-        """从 lottery_notice 的 data 中抽取 lottery_id 与奖品文案，发布入库请求（dyndetail 队列）。
+        """从 lottery_notice 的 data 中抽取 lottery_id 与完整判定输入，发布入库请求。
 
-        无 lottery_id 或抽奖文案为空时直接跳过。
+        判定输入不再只有三个奖品名，而是补齐每档奖品数量、参与人数与 business_type
+        （见 build_official_lottery_text），让模型能按「单价 × 数量」估算总价值。
+        无 lottery_id 或没有任何奖品名时直接跳过。
         """
         lottery_id = lot_data_dict.get("lottery_id")
-        prize_cmts = [
-            lot_data_dict.get("first_prize_cmt"),
-            lot_data_dict.get("second_prize_cmt"),
-            lot_data_dict.get("third_prize_cmt"),
-        ]
-        lottery_text = " ".join(filter(lambda a: a, prize_cmts)).strip()
+        lottery_text = build_official_lottery_text(
+            business_type=lot_data_dict.get("business_type"),
+            participants=lot_data_dict.get("participants"),
+            prizes=[
+                (
+                    lot_data_dict.get("first_prize_cmt"),
+                    lot_data_dict.get("first_prize"),
+                ),
+                (
+                    lot_data_dict.get("second_prize_cmt"),
+                    lot_data_dict.get("second_prize"),
+                ),
+                (
+                    lot_data_dict.get("third_prize_cmt"),
+                    lot_data_dict.get("third_prize"),
+                ),
+            ],
+        )
         if lottery_id is None or not lottery_text:
             return None
         return await BiliLotDataPublisher.pub_prize_extract(

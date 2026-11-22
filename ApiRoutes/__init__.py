@@ -120,6 +120,9 @@ class RouterPaths(StrEnumAutoDoc):
     GET_UPCOMING_LOTTERY = (
         "/GetUpcomingLottery"  # 即将开奖明细（分页，默认 24 小时内）
     )
+    GET_TOP_LOTTERY_BY_PARTICIPANTS = (
+        "/GetTopLotteryByParticipants"  # 按抓取参与人数获取进行中的抽奖卡片
+    )
 
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "/AddDynamicLottery"  # 提交抽奖动态
@@ -245,6 +248,9 @@ class RouterNames(StrEnumAutoDoc):
     )
     GET_LOTTERY_DATA_SUMMARY = "get_lottery_data_summary"  # 获取管理端抽奖数据汇总
     GET_UPCOMING_LOTTERY = "get_upcoming_lottery"  # 即将开奖明细（分页）
+    GET_TOP_LOTTERY_BY_PARTICIPANTS = (
+        "get_top_lottery_by_participants"  # 按抓取参与人数获取进行中的抽奖卡片
+    )
 
     # --- 提交类路由 ---
     ADD_DYNAMIC_LOTTERY = "add_dynamic_lottery"  # 提交抽奖动态

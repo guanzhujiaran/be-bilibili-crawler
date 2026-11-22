@@ -192,7 +192,7 @@ class OfficialLotExtraInfoResp(BaseModel):
     官方抽奖的抽奖方式（是否需转发/评论、是否话题抽奖等）已由 lottery_type
     （即 lotdata.business_type）固定，无需落库，因此 is_lot / need_comment /
     need_repost 不再作为存储字段，而是在响应中根据 lottery_type 由 property 计算得出。
-    仅 is_grand_prize 由大模型判断并落库。
+    is_grand_prize / judge_reason / judge_version 由大模型判断并落库。
     """
 
     # lottery_type 即 lotdata.business_type：1-官方/转发抽奖, 10-预约抽奖, 12-充电抽奖
@@ -202,6 +202,13 @@ class OfficialLotExtraInfoResp(BaseModel):
     )
     is_grand_prize: bool | None = Field(
         default=None, description="大奖标志: true-大奖, false-非大奖, null-未判断"
+    )
+    judge_reason: str | None = Field(
+        default=None, description="大奖判定理由（LLM 输出，便于回溯）"
+    )
+    judge_version: int | None = Field(
+        default=None,
+        description="大奖判定规则/输入版本号；版本或输入指纹变化后会自动重判",
     )
 
     @computed_field

@@ -7,6 +7,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    String,
     TIMESTAMP,
     UniqueConstraint,
     text,
@@ -52,6 +53,15 @@ class Lotdata(Base):
         Index("idx_bt_first_prize", "business_type", "first_prize"),
         Index("idx_bt_created_at", "business_type", "created_at"),
         Index("idx_bt_status_lottery_time", "business_type", "status", "lottery_time"),
+        # 关键词搜索：中文 ngram 全文索引（迁移 d5e6f7a8b9c0 同步创建）
+        Index(
+            "ft_lot_prize_cmt",
+            "first_prize_cmt",
+            "second_prize_cmt",
+            "third_prize_cmt",
+            mysql_prefix="FULLTEXT",
+            mysql_with_parser="ngram",
+        ),
     )
 
     lottery_id = mapped_column(BigInteger, primary_key=True)
@@ -133,6 +143,20 @@ class LotExtraInfo(Base):
         nullable=False,
         server_default=text("0"),
         comment="是否大奖: 1-是, 0-否",
+    )
+    judge_version = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=text("0"),
+        comment="大奖判定规则/输入版本号，0=历史未版本化",
+    )
+    input_hash = mapped_column(
+        String(32),
+        comment="判定输入文本 MD5，用于输入变化时自动重判",
+    )
+    judge_reason = mapped_column(
+        TEXT,
+        comment="大奖判定理由（LLM 输出，便于回溯）",
     )
     created_at = mapped_column(TIMESTAMP, server_default=text("CURRENT_TIMESTAMP"))
     updated_at = mapped_column(

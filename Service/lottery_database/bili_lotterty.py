@@ -20,6 +20,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     TopicLotteryResp,
     LiveLotteryResp,
     LotdataResp,
+    LotteryDetailResp,
     AddTopicLotteryResp,
     TimePresetEnum,
     OfficialLotExtraInfoResp,
@@ -41,6 +42,7 @@ from Service.GrpcModule.GrpcSrc.SQLObject.DynDetailSqlHelperMysqlVer import (
 )
 import asyncio
 from fastapi import BackgroundTasks
+from sqlalchemy import select
 from Service.GetOthersLotDyn.core.bili_dynamic_item import BiliDynamicItem
 from CONFIG import settings
 
@@ -48,6 +50,40 @@ bds = bili_dynamic_sqlhelper  # 获取普通抽奖（主要是非官方的
 brs = bili_reserve_sqlhelper
 bos = bili_official_sqlhelper
 bts = bili_topic_sqlhelper
+
+# 预约有效性查询跨库且较慢（实测 6~10s），不能放在热门榜请求热路径：
+# 请求只读缓存，过期后由后台任务刷新；冷启动时先不展示预约，刷新完成后自动生效。
+_AVAILABLE_RESERVE_IDS_TTL = 300
+_available_reserve_ids: set[int] = set()
+_available_reserve_ids_expires_at: float = 0.0
+_available_reserve_ids_task: "asyncio.Task[None] | None" = None
+
+
+async def _refresh_available_reserve_ids() -> None:
+    """后台刷新有效预约 id 缓存（弱依赖：失败保留旧缓存）。"""
+    global _available_reserve_ids, _available_reserve_ids_expires_at
+    try:
+        ids = await brs.get_available_reserve_ids()
+        _available_reserve_ids = set(ids)
+        _available_reserve_ids_expires_at = (
+            time.monotonic() + _AVAILABLE_RESERVE_IDS_TTL
+        )
+    except Exception as e:
+        # 失败后 30s 内不再重试，避免每个请求都触发一次跨库慢查询
+        _available_reserve_ids_expires_at = time.monotonic() + 30
+        bos.log.warning(f"刷新有效预约 id 缓存失败（保留旧缓存）: {e}")
+
+
+def _current_available_reserve_ids() -> set[int]:
+    """读取有效预约 id 缓存；过期时触发后台刷新，请求路径不等待慢查询。"""
+    global _available_reserve_ids_task
+    if time.monotonic() >= _available_reserve_ids_expires_at and (
+        _available_reserve_ids_task is None or _available_reserve_ids_task.done()
+    ):
+        _available_reserve_ids_task = asyncio.create_task(
+            _refresh_available_reserve_ids()
+        )
+    return _available_reserve_ids
 
 
 async def get_common_lottery(
@@ -215,6 +251,8 @@ async def get_reserve_lottery(
                 OfficialLotExtraInfoResp(
                     lottery_type=i.business_type,
                     is_grand_prize=bool(_ei.is_grand_prize),
+                    judge_reason=_ei.judge_reason,
+                    judge_version=_ei.judge_version,
                 )
                 if (_ei := extra_map.get(i.lottery_id))
                 else None
@@ -222,6 +260,98 @@ async def get_reserve_lottery(
         )
         ret_reserve_infos.append(reserve_info)
     return ret_reserve_infos, total_num
+
+
+async def get_top_lottery_by_participants(limit: int) -> list[LotteryDetailResp]:
+    """按抓取时的参与人数获取进行中的抽奖卡片（官方 / 预约 / 充电）。
+
+    口径：
+    - 仅 ``status=UNFINISHED`` 且 ``lottery_time > now``，避免历史抽奖霸榜；
+    - 按 ``lotdata.participants`` 降序（爬虫抓取时快照，可能非实时）；
+    - 预约抽奖额外用预约关系表过滤已取消 / 已失效记录（两库不同，无法 join）。
+    """
+    now_ts = int(time.time())
+    business_types = [
+        int(LotteryBusinessType.Official),
+        int(LotteryBusinessType.Reserve),
+        int(LotteryBusinessType.Charge),
+    ]
+    base_conditions = (
+        Lotdata.status == BiliLotDataStatusEnum.UNFINISHED,
+        Lotdata.lottery_time > now_ts,
+        Lotdata.participants.is_not(None),
+        Lotdata.business_type.in_(business_types),
+    )
+
+    # 非预约类型直接按参与人数取 TopN
+    async with bos.async_session() as session:
+        non_reserve_rows = (
+            (
+                await session.execute(
+                    select(Lotdata)
+                    .where(
+                        *base_conditions,
+                        Lotdata.business_type != LotteryBusinessType.Reserve,
+                    )
+                    .order_by(
+                        Lotdata.participants.desc(),
+                        Lotdata.lottery_id.desc(),
+                    )
+                    .limit(limit)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    # 预约有效性不在 lotdata.status 上，依赖预约关系表；只取有效预约 id 下推过滤。
+    # 该查询很慢，只读后台刷新的缓存，避免热门榜请求被拖到 6~10s。
+    available_ids = _current_available_reserve_ids()
+    reserve_rows = []
+    if available_ids:
+        async with bos.async_session() as session:
+            reserve_rows = (
+                (
+                    await session.execute(
+                        select(Lotdata)
+                        .where(
+                            *base_conditions,
+                            Lotdata.business_type == LotteryBusinessType.Reserve,
+                            Lotdata.business_id.in_(available_ids),
+                        )
+                        .order_by(
+                            Lotdata.participants.desc(),
+                            Lotdata.lottery_id.desc(),
+                        )
+                        .limit(limit)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+    rows = sorted(
+        [*non_reserve_rows, *reserve_rows],
+        key=lambda row: (row.participants or 0, row.lottery_id),
+        reverse=True,
+    )[:limit]
+    extra_map = await bos.get_extra_info_map([row.lottery_id for row in rows])
+    return [
+        LotteryDetailResp(
+            raw=LotdataResp.model_validate(row),
+            extra_info=(
+                OfficialLotExtraInfoResp(
+                    lottery_type=row.business_type,
+                    is_grand_prize=bool(_ei.is_grand_prize),
+                    judge_reason=_ei.judge_reason,
+                    judge_version=_ei.judge_version,
+                )
+                if (_ei := extra_map.get(row.lottery_id))
+                else None
+            ),
+        )
+        for row in rows
+    ]
 
 
 async def get_official_lottery(
@@ -254,6 +384,8 @@ async def get_official_lottery(
                 OfficialLotExtraInfoResp(
                     lottery_type=x.business_type,
                     is_grand_prize=bool(_ei.is_grand_prize),
+                    judge_reason=_ei.judge_reason,
+                    judge_version=_ei.judge_version,
                 )
                 if (_ei := extra_map.get(x.lottery_id))
                 else None
@@ -300,6 +432,8 @@ async def get_charge_lottery(
                     OfficialLotExtraInfoResp(
                         lottery_type=x.business_type,
                         is_grand_prize=bool(_ei.is_grand_prize),
+                        judge_reason=_ei.judge_reason,
+                        judge_version=_ei.judge_version,
                     )
                     if (_ei := extra_map.get(x.lottery_id))
                     else None

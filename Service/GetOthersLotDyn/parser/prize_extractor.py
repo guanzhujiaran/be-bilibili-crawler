@@ -137,8 +137,51 @@ _COMMON_LOTTERY_SYSTEM_PROMPT = """从文本中提取抽奖信息。
 
 
 # 官方/充电抽奖专用：抽奖方式已由 lottery_type 固定，无需判断 is_lot / need_comment /
-# need_repost，也无需落库，故只让大模型判断大奖标记。
-_OFFICIAL_SYSTEM_PROMPT = """官方/充电抽奖，抽奖方式由 lottery_type 固定。只判断 is_grand_prize：奖品价值高/数量多/知名品牌即为大奖，返回 true/false。"""
+# need_repost，也无需落库，故只让大模型判断大奖标记，并输出可回溯的判定理由。
+# 输入由 Models.MQ.PrizeExtractMQModel.build_official_lottery_text 统一拼装：
+# 抽奖类型 + 参与人数 + 一/二/三等奖的奖品名与数量（不再只有三个奖品名）。
+_OFFICIAL_SYSTEM_PROMPT = """你是 B 站官方/充电抽奖的「大奖」判定器。输入是一场抽奖活动的结构化摘要，
+包含抽奖类型、参与人数，以及一/二/三等奖的奖品名称与数量（没有的档位会省略）。
+只判断 is_grand_prize，并给出可回溯的 judge_reason。
+
+判定为大奖（true），满足任意一条即可：
+1. 任一奖品单价 ≥ 2000 元；
+2. 全部奖品按「单价 × 数量」累计的总价值 ≥ 5000 元；
+3. 明确为高价值知名品牌商品，即使未标价也按市场价估算（如 RTX 40/50 系显卡、iPhone、
+   MacBook、游戏本、单反/微单、金条、整机等）；
+4. 高价值虚拟权益总价值 ≥ 5000 元（Q 币、现金红包、京东卡等按面值估算，1 Q 币≈1 元）。
+
+判定为非大奖（false），满足任意一条即为 false：
+1. 只有周边类奖品（徽章、立牌、钥匙扣、鼠标垫、贴纸、明信片等），且单价 < 500 元；
+2. 只有小额虚拟奖品（Q 币、点券、会员卡、优惠券、体验卡等），且总价值 < 5000 元；
+3. 奖品信息过少、无法估算价值，且不属于第 3 条中的高价值知名品牌；
+4. 只有参与奖/安慰奖/阳光普照奖等低价值奖品。
+
+注意：
+- 数量不单独构成大奖：低价奖品即使数量很多，也只按总价值判断；
+- 参与人数只作活动规模参考，不直接影响判定；
+- 只使用输入中出现的奖品，不要臆造；
+- 「100 Q币 ×10」按总面值 1000 元估算；「RTX 5070 显卡 ×1」按市场价约 4500 元估算。
+
+输出要求：
+- is_grand_prize: true / false
+- judge_reason: 一句中文理由，必须包含估算依据（引用单价、总价值、数量，或明确写「信息不足」）。
+
+正例：
+输入：
+抽奖类型：官方/转发抽奖（business_type=1）
+参与人数：2474
+一等奖：七彩虹 RTX 5070显卡 ×1
+二等奖：雷蛇 毒蝰V4Pro 鼠标 ×2
+三等奖：100 Q币 ×10
+输出：is_grand_prize=true，judge_reason="一等奖 RTX 5070 显卡单价约 4500 元 ≥ 2000 元，总价值约 7500 元 ≥ 5000 元"
+
+反例：
+输入：
+一等奖：亚克力立牌 ×5
+二等奖：徽章 ×10
+三等奖：5 Q币 ×20
+输出：is_grand_prize=false，judge_reason="均为低价周边与小额 Q 币，总价值约 300 元 < 5000 元\""""
 
 
 def _build_system_prompt(pub_time: datetime | None) -> str:
@@ -213,17 +256,24 @@ def _extract_json_object(text: str) -> str | None:
 
 
 def _build_model_from_scalar_bool(value: bool, result_model: type[_TResult]):
-    """把裸布尔映射到模型的唯一布尔字段。
+    """把裸布尔映射到模型里唯一的布尔字段。
 
-    仅当模型只有一个字段且该字段是 bool 时才认为可安全映射
-    （如 OfficialPrizeExtractResult 只有 is_grand_prize），
-    多字段模型（如 PrizeExtractResult）直接放弃，避免猜错语义。
+    允许模型额外带「有默认值」的非布尔字段（如官方判定结果的 judge_reason），
+    仅当恰有一个布尔字段且其余字段都有默认值时才映射；
+    多布尔字段模型（如 PrizeExtractResult）直接放弃，避免猜错语义。
     """
     fields = result_model.model_fields
-    if len(fields) != 1:
+    bool_fields = [
+        (name, info) for name, info in fields.items() if info.annotation is bool
+    ]
+    if len(bool_fields) != 1:
         return None
-    ((name, field_info),) = fields.items()
-    if field_info.annotation is not bool:
+    name, _ = bool_fields[0]
+    if any(
+        info.is_required()
+        for info in fields.values()
+        if info.annotation is not bool
+    ):
         return None
     try:
         return result_model.model_validate({name: value})
@@ -818,10 +868,14 @@ async def extract_prize_info_for_lotdata(
     面向 dyndetail (官方/充电抽奖) 的抽奖信息提取。
 
     官方抽奖的抽奖方式已由 lottery_type 固定，无需用大模型提取 is_lot /
-    need_comment / need_repost，也无需落库，因此 result 仅含 is_grand_prize，
-    用于 t_lot_extra_info (lottery_id 关联 lotdata)。
+    need_comment / need_repost，也无需落库，因此 result 仅含 is_grand_prize
+    与 judge_reason（判定理由），用于 t_lot_extra_info (lottery_id 关联 lotdata)。
 
-    调用方通常通过 grpc_sql_helper._upsert_extra_info() / batch_save_extra_info() 入库。
+    dyn_content 应为 build_official_lottery_text() 拼装的完整输入
+    （抽奖类型 + 参与人数 + 各档奖品名与数量），不要只传三个奖品名。
+
+    调用方通常通过 grpc_sql_helper.save_extra_info() 入库，并同时写入
+    judge_version / input_hash，供「prompt 或输入升级后自动重判」使用。
     仅使用云端 LLM；当所有云端 LLM 均失败时直接抛出 RuntimeError，
     不提供回退，由调用方跳过保存（留空待手动脚本 judge_grand_prize 回填）。
     """
