@@ -25,6 +25,54 @@ async def test_missing_topic_is_null_data():
         assert status is WorkerStatus.nullData
 
 
+async def test_topic_not_exist_4401031_is_null_data():
+    """4401031（话题不存在）是线上真实码：必须一次记终态，不能走 20 次重试。"""
+    status = await topic_robot.save_resp(
+        1342346, {"code": 4401031, "message": "话题不存在"}
+    )
+    assert status is WorkerStatus.nullData
+
+
+async def test_terminal_message_keyword_is_null_data():
+    """非标准 code 但文案是「话题不存在 / 已删除」时同样按终态处理。"""
+    for message in ("话题不存在", "该话题已删除", "活动已删除"):
+        status = await topic_robot.save_resp(
+            1342346, {"code": -400, "message": message}
+        )
+        assert status is WorkerStatus.nullData
+
+
+async def test_retry_round_generator_is_bounded():
+    """补跑轮（init_params=None）不产出任何自增 id，只跑 pre_params。"""
+    params = [param async for param in topic_robot.key_params_gen(None)]
+    assert params == []
+
+
+async def test_is_stop_when_beyond_known_head():
+    """自增越过「已知 head + buffer」直接停止（不依赖 ctime）。"""
+    origin = (
+        topic_robot._known_head,
+        topic_robot._head_buffer,
+        topic_robot._generated_topic_id,
+        topic_robot._cur_stop_times,
+    )
+    try:
+        topic_robot._known_head = 1351803
+        topic_robot._head_buffer = 5000
+        topic_robot._cur_stop_times = 0
+        topic_robot._generated_topic_id = 1351803 + 5000
+        assert await topic_robot.is_stop() is False
+        topic_robot._generated_topic_id += 1
+        assert await topic_robot.is_stop() is True
+    finally:
+        (
+            topic_robot._known_head,
+            topic_robot._head_buffer,
+            topic_robot._generated_topic_id,
+            topic_robot._cur_stop_times,
+        ) = origin
+
+
 async def test_risk_control_code_is_retryable_failure():
     """-412 / -352 是风控，不是"话题不存在"：必须 fail，交给重试队列。"""
     for code in (-412, -352):

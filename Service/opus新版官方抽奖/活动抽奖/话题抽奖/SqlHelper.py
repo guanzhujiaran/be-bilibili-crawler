@@ -106,6 +106,20 @@ class SqlHelper(SqlHelperBase):
                 offset += 1
 
     @log_sql_retry_wrapper(log=log)
+    async def get_known_head_topic_id(self) -> int:
+        """已知的最大话题 id（**不论有没有详情**），供增量轮判断「是否已越过 head」。
+
+        ``get_max_topic_id()`` 只认「连续两行都有详情」的游标口径，空号缺口会把
+        游标卡在缺口之前；这里取全表最大值作为 head 口径，配合 buffer 形成
+        「自增越界即停」的硬边界（返回 0 表示表内无数据，禁用该边界）。
+        """
+        async with self.async_session() as session:
+            sql = select(func.max(TTopic.topic_id))
+            result = await session.execute(sql)
+            value = result.scalars().first()
+        return int(value) if value is not None else 0
+
+    @log_sql_retry_wrapper(log=log)
     async def get_capsules_by_jump_urls(self, jump_urls) -> Sequence[TCapsule]:
         async with self.async_session() as session:
             sql = (

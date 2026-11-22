@@ -38,7 +38,13 @@ class TopicParams(CustomBaseModelHashable):
 #: 话题接口的**终态**业务码：该话题不存在 / 已删除，重试也不会变。
 #: 只有这些码才记 ``nullData``；其余非 0 码（-352 / -412 / -500 / 超时等）都是
 #: 可重试失败，必须返回 fail，否则会被当成「空数据」直接丢掉（2026-11-16 的教训）。
-TOPIC_TERMINAL_CODES: frozenset[int] = frozenset({404, -404})
+#: 4401031 = 线上实际的「话题不存在」（2026-11-22 连续 9 小时重爬空号的直接原因：
+#: 不在终态集合里 → 走 fail → 每个 id 重试 20 次，且不产生 nullData）。
+TOPIC_TERMINAL_CODES: frozenset[int] = frozenset({404, -404, 4401031})
+
+#: 终态文案兜底：B 站偶尔用非标准 code 返回同样的「不存在 / 已删除」语义，
+#: 命中这些关键词时同样记 ``nullData``，避免再次退化成可重试失败。
+TOPIC_TERMINAL_MESSAGE_KEYWORDS: tuple[str, ...] = ("话题不存在", "已删除")
 
 
 def _model_field_names(model, extra: tuple[str, ...] = ()) -> set[str]:
@@ -80,20 +86,42 @@ class TopicRobot(IncrementalIdCrawler[TopicParams]):
         return TopicParams(topic_id=business_id)
 
     async def is_stop(self) -> bool:
+        """增量轮的停止条件。
+
+        补跑轮不经过本方法（``key_params_gen(None)`` 不产出任何 id），
+        因此 ctime 判据**只作用于增量轮**。除「最近时间命中 N 次」外，
+        再加一道「越过已知 head + buffer」的硬边界：空号区间 / 历史回补不会
+        命中 ctime，没有它就会一路自增下去。
+        """
+        if (
+            self._known_head > 0
+            and self._generated_topic_id > self._known_head + self._head_buffer
+        ):
+            self.log.warning(
+                f"自增 id {self._generated_topic_id} 已越过已知 head "
+                f"{self._known_head} + buffer {self._head_buffer}，"
+                "判定已越过真实 head，停止生成新任务。"
+            )
+            return True
         return self._cur_stop_times >= self.__max_stop_times
 
     async def key_params_gen(
-        self, params: TopicParams
+        self, params: TopicParams | None
     ) -> AsyncGenerator[TopicParams, None]:
-        if self.has_get_failed_topic_ids:
-            topic_id = params.topic_id
-            while 1:
-                yield TopicParams(topic_id=topic_id)
-                topic_id += 1
-        else:
-            for i in self.get_failed_topic_ids:
-                yield TopicParams(topic_id=i)
+        """按轮次生成任务参数。
+
+        - 补跑轮：``params is None``，任务全部由 ``run(pre_params=...)`` 入队，
+          这里**不生成任何 id**（有界，绝不退化成自增）；
+        - 增量轮：从 ``params.topic_id``（游标 ``get_max_topic_id()``）起自增。
+        """
+        if params is None:
             return
+        topic_id = params.topic_id
+        while True:
+            # 供 is_stop() 判断是否已越过「已知 head + buffer」
+            self._generated_topic_id = topic_id
+            yield TopicParams(topic_id=topic_id)
+            topic_id += 1
 
     async def handle_fetch(self, params: TopicParams) -> WorkerStatus:
         return await self.pipeline(params.topic_id)
@@ -108,13 +136,14 @@ class TopicRobot(IncrementalIdCrawler[TopicParams]):
         self.null_stop_max_consecutive = self._max_stop_count
         self.sql = topic_sqlhelper
         self._latest_topic_id = 0
+        # 增量轮当前生成的 id / 本轮开始前的已知 head（含无详情行）+ 越界余量
+        self._generated_topic_id: int = 0
+        self._known_head: int = 0
+        self._head_buffer: int = 5000
         self._traffic_card_lock = asyncio.Lock()  # 活动数据锁
         # 配置（logger / 超时 / 重试 / 插件等）统一由 TopicRobotConfig 控制；
         # 其中的插件会按 PluginConfig.plugin_name 自动绑定到 self（stats_plugin / null_stop_plugin）
         super().__init__()
-
-        self.has_get_failed_topic_ids = False
-        self.get_failed_topic_ids = []
 
     @property
     def cur_stop_times(self):
@@ -227,18 +256,22 @@ class TopicRobot(IncrementalIdCrawler[TopicParams]):
             # - 话题确实不存在（终态）→ nullData，否则会永久 pending 在重试队列里；
             # - 其余（风控 / 服务端 5xx / 返回体异常）→ fail，落 crawl_failed_task 重试。
             code = resp.get("code")
+            message = str(resp.get("message") or "")
             try:
                 code_int = int(code)
             except (TypeError, ValueError):
                 code_int = None
-            if code_int in TOPIC_TERMINAL_CODES:
+            is_terminal = code_int in TOPIC_TERMINAL_CODES or any(
+                keyword in message for keyword in TOPIC_TERMINAL_MESSAGE_KEYWORDS
+            )
+            if is_terminal:
                 self.log.warning(
-                    f"话题不存在（code={code} message={resp.get('message')}），"
+                    f"话题不存在（code={code} message={message}），"
                     f"按空数据记终态：topic_id:{topic_id}"
                 )
                 return WorkerStatus.nullData
             self.log.error(
-                f"获取话题失败（code={code} message={resp.get('message')}），"
+                f"获取话题失败（code={code} message={message}），"
                 f"按可重试失败处理（会落 crawl_failed_task）：topic_id:{topic_id}"
             )
             return WorkerStatus.fail
@@ -266,30 +299,46 @@ class TopicRobot(IncrementalIdCrawler[TopicParams]):
 
     async def main(self, start_topic_id=0):
         try:
-            # 先取「上一轮没写成功」的话题 id：它们在任务生成器之前入队。
-            # 没有待补任务时**不再空跑一轮**（历史实现固定连跑两次 run()，第一轮
-            # 刚结束立刻开第二轮，把上一轮的失败任务反复重排）。
-            retry_params = await self.load_retry_params()
-            self.get_failed_topic_ids = await self.sql.get_recent_failed_topic_id(
+            # ===== 补跑轮：严格有界，只遍历「上一轮没写成功」的话题 =====
+            # 来源两处（可能重叠，按 topic_id 去重）：
+            # 1) crawl_failed_task 里 pending 的任务（进程重启 / 杀旧开新 / 上轮用尽）；
+            # 2) t_topic 里没有详情的 id（历史回补缺口）。
+            # 全部通过 pre_params 入队，且 init_params=None → key_params_gen 不产出
+            # 任何 id。历史实现用「补跑轮自增」跨轮残留的标记把这里变成无界重爬，
+            # run() 永不返回，增量轮（start=get_max_topic_id()）永远执行不到。
+            retry_params = list(await self.load_retry_params())
+            retry_queue_count = len(retry_params)
+            failed_topic_ids = await self.sql.get_recent_failed_topic_id(
                 self._max_stop_count + self.sem_limit + 5000
             )
-            if retry_params or self.get_failed_topic_ids:
-                seed_topic_id = (
-                    self.get_failed_topic_ids[0] if self.get_failed_topic_ids else 0
+            seen: set[int] = {param.topic_id for param in retry_params}
+            for failed_topic_id in failed_topic_ids:
+                if failed_topic_id in seen:
+                    continue
+                seen.add(failed_topic_id)
+                retry_params.append(self.make_params(failed_topic_id))
+            if retry_params:
+                self.log.warning(
+                    f"补跑轮开始：共 {len(retry_params)} 条（有界），"
+                    f"其中重试队列 {retry_queue_count} 条 / "
+                    f"空详情 {len(failed_topic_ids)} 个（重叠已去重）"
                 )
-                await self.run(
-                    TopicParams(topic_id=seed_topic_id),
-                    pre_params=retry_params,
-                )
-                self.has_get_failed_topic_ids = True  # 获取失败的话题完成
-                self._cur_stop_times = 0
+                await self.run(init_params=None, pre_params=retry_params)
             else:
                 self.log.info("没有上一轮待补跑的话题，跳过补跑轮")
 
+            # ===== 增量轮：从游标自增；is_stop() 的 ctime 判据只在这一轮生效 =====
             if start_topic_id:
                 self.start_topic_id = start_topic_id
             else:
                 self.start_topic_id = await self.sql.get_max_topic_id()
+            # 已知 head 在本轮开始前取一次（含无详情行），作为「越过 head + buffer」的硬边界
+            self._known_head = await self.sql.get_known_head_topic_id()
+            # 跨轮不残留：上一轮（含补跑轮）累计的 ctime 命中不能停掉本轮
+            self._cur_stop_times = 0
+            self.log.info(
+                f"增量轮开始：游标 {self.start_topic_id}，已知 head {self._known_head}"
+            )
             await self.run(TopicParams(topic_id=self.start_topic_id))
         except Exception as e:
             self.log.error(f"发生异常！{e}")
