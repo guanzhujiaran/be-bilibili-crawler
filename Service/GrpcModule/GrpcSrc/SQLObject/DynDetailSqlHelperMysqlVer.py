@@ -1076,6 +1076,31 @@ class SQLHelper(SqlHelperBase):
             return [(str(row[0]), int(row[1]), int(row[2])) for row in res.all()]
 
     @log_sql_retry_wrapper()
+    async def get_lottery_daily_draw_trend(
+        self, start_ts: int, end_ts: int
+    ) -> list[tuple[str, int, int]]:
+        """近 N 天每日开奖趋势：返回 (日期字符串 YYYY-MM-DD, business_type, 数量)。
+
+        口径：`status=FINISHED` 且 `lottery_time` 落在 [start_ts, end_ts) 的记录，
+        按开奖时间所在自然日分组。`lottery_time` 有独立索引，只扫窗口内的行。
+        """
+        day_expr = func.date_format(
+            func.from_unixtime(Lotdata.lottery_time), "%Y-%m-%d"
+        )
+        stmt = (
+            select(day_expr.label("d"), Lotdata.business_type, func.count())
+            .where(
+                Lotdata.status == int(BiliLotDataStatusEnum.FINISHED),
+                Lotdata.lottery_time >= start_ts,
+                Lotdata.lottery_time < end_ts,
+            )
+            .group_by(day_expr, Lotdata.business_type)
+        )
+        async with self.async_session() as session:
+            res = await session.execute(stmt)
+            return [(str(row[0]), int(row[1]), int(row[2])) for row in res.all()]
+
+    @log_sql_retry_wrapper()
     async def get_upcoming_lottery(
         self,
         now_ts: int,

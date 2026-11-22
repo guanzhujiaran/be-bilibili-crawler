@@ -118,6 +118,9 @@ _BUSINESS_TYPE_NAME = {bt: name for bt, _, name in _LOTDATA_TYPE_KEYS}
 _BUSINESS_TYPE_KEY = {bt: key for bt, key, _ in _LOTDATA_TYPE_KEYS}
 # 趋势图展示的数据源（话题/直播没有收录时间，无法按天统计新增）
 _SUMMARY_TREND_KEYS = ("official", "reserve", "charge", "others_dyn")
+# 开奖趋势只统计 lotdata 三类：它们有权威的开奖时间（lottery_time + status=FINISHED），
+# 第三方动态的开奖时间只是 LLM 从文本提取的字符串，口径不可靠，故不纳入。
+_SUMMARY_DRAW_TREND_KEYS = ("official", "reserve", "charge")
 
 
 def _day_keys(range_start: datetime.datetime, days: int) -> list[str]:
@@ -450,7 +453,7 @@ async def api_GetTopicLottery(
     response_model=CommonResponseModel[LotteryDataSummaryResp],
     description="""按抽奖类型汇总 bili-crawler 的抽奖数据（管理端使用）：
 未开奖数（还没到开奖时间）、昨日/本周/本月新增、累计总量、24 小时内即将开奖、
-待抓开奖结果积压、大奖数量、参与人数分布、近 14 天新增趋势与即将开奖明细，
+待抓开奖结果积压、大奖数量、参与人数分布、近 14 天新增趋势、近 14 天开奖趋势，
 并额外汇总话题抽奖 / 直播抽奖 / 第三方动态抽奖等独立数据源。
 GET 查询，前端每次请求附带 t 时间戳防浏览器缓存（后端不使用该值）。""",
 )
@@ -467,7 +470,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
     now_ts = int(time.time())
     business_types = [bt for bt, _, _ in _LOTDATA_TYPE_KEYS]
 
-    # 11 个数据源互不依赖，全部并发；asyncio_gather 内部捕获异常并返回 None，
+    # 12 个数据源互不依赖，全部并发；asyncio_gather 内部捕获异常并返回 None，
     # 单个查询失败只让对应指标缺省，与原「逐段 try/except」的降级口径一致。
     (
         base_stats,
@@ -477,6 +480,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
         grand_by_bt,
         latest_created_at,
         daily_trend,
+        daily_draw_trend,
         others_summary,
         others_trend,
         topic_stats,
@@ -496,6 +500,9 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
         grpc_sql_helper.get_lottery_grand_prize_stats(),
         grpc_sql_helper.get_lottery_latest_created_at(),
         grpc_sql_helper.get_lottery_daily_new_trend(trend_start),
+        grpc_sql_helper.get_lottery_daily_draw_trend(
+            int(trend_start.timestamp()), now_ts + 1
+        ),
         SqlHelper.get_others_lot_summary(
             yesterday_start=yesterday_start,
             prev_day_start=prev_day_start,
@@ -615,6 +622,23 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
         for day in _day_keys(trend_start, SUMMARY_TREND_DAYS)
     ]
 
+    # ---- 近 N 天开奖趋势（按开奖时间所在自然日聚合，缺失的天补 0） ----
+    draw_trend_counts: dict[str, dict[str, int]] = {}
+    for day, business_type, cnt in daily_draw_trend or []:
+        key = _BUSINESS_TYPE_KEY.get(int(business_type))
+        if key:
+            draw_trend_counts.setdefault(str(day), {})[key] = int(cnt)
+    draw_trend = [
+        LotteryTrendPoint(
+            date=day,
+            counts={
+                key: draw_trend_counts.get(day, {}).get(key, 0)
+                for key in _SUMMARY_DRAW_TREND_KEYS
+            },
+        )
+        for day in _day_keys(trend_start, SUMMARY_TREND_DAYS)
+    ]
+
     return CommonResponseModel(
         data=LotteryDataSummaryResp(
             generated_at=now_ts,
@@ -623,6 +647,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
             else None,
             rows=rows,
             trend=trend,
+            draw_trend=draw_trend,
         )
     )
 

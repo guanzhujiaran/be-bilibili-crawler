@@ -900,7 +900,7 @@ class LotterySummaryRow(BaseModel):
 
 
 class LotteryTrendPoint(BaseModel):
-    """近 N 天每日新增趋势点；counts 的 key 与 LotterySummaryRow.key 对应。"""
+    """近 N 天每日趋势点（新增 / 开奖）；counts 的 key 与 LotterySummaryRow.key 对应。"""
 
     date: str  # YYYY-MM-DD
     counts: dict[str, int] = Field(default_factory=dict)
@@ -935,7 +935,9 @@ class LotteryDataSummaryResp(BaseModel):
     generated_at: int  # 生成时间（Unix 秒）
     latest_created_at: int | None = None  # 全表最新收录时间（判断爬虫是否在跑）
     rows: list[LotterySummaryRow] = Field(default_factory=list)
-    trend: list[LotteryTrendPoint] = Field(default_factory=list)
+    trend: list[LotteryTrendPoint] = Field(default_factory=list)  # 近 N 天每日新增
+    # 近 N 天每日开奖（status=FINISHED 且开奖时间落在当天；仅 official/reserve/charge）
+    draw_trend: list[LotteryTrendPoint] = Field(default_factory=list)
 
 
 # endregion
