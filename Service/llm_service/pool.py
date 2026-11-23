@@ -424,6 +424,24 @@ def get_llm_configs() -> list[dict[str, Any]]:
     return configs
 
 
+def get_llm_configs_export() -> list[dict[str, Any]]:
+    """导出完整人工配置列表（token 为**明文**），仅供管理端「导出 JSON」。
+
+    与 :func:`get_llm_configs` 的唯一区别是 token 不脱敏：导出文件要能直接备份 /
+    迁移 / 重新导入，脱敏值无法还原。因此本函数只允许被内部接口
+    ``GET /llm/config/export`` 调用，该路径不在网关转发白名单内。
+    """
+    return [
+        {
+            "base_url": normalize_base_url(cfg.base_url),
+            "model_name": cfg.model_name,
+            "token": cfg.token,
+            "requests_per_second": cfg.requests_per_second,
+        }
+        for cfg in settings.llm_apis
+    ]
+
+
 def _usable_token(cfg: LLMApiConfig) -> str:
     """取一条配置里「可以沿用的明文密钥」；脱敏值 / 空值一律视为没有。"""
     token = cfg.token

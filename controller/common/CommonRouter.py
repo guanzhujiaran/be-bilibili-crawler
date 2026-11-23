@@ -17,6 +17,7 @@ from Service.llm_service import (
     delete_llm_api,
     get_llm_config,
     get_llm_configs,
+    get_llm_configs_export,
     get_llm_stats,
     patch_llm_api,
     restore_llm_apis_from_env,
@@ -235,6 +236,18 @@ async def _run_llm_config_write_op(op):
 )
 async def api_list_llm_config():
     return _run_llm_config_op(get_llm_configs)
+
+
+@router.get(
+    RouterPaths.LLM_CONFIG_EXPORT,
+    name=RouterNames.EXPORT_LLM_CONFIG,
+    response_model=list[dict],
+    description=f"{_LLM_CONFIG_DESC} 导出完整配置（token 为明文），仅供管理端「导出 JSON」；"
+    "本路径不在网关转发白名单内，不对外公开。",
+)
+async def api_export_llm_config():
+    """导出可备份 / 迁移的完整配置：token 不脱敏，调用方负责保管文件。"""
+    return _run_llm_config_op(get_llm_configs_export)
 
 
 @router.post(

@@ -202,6 +202,8 @@ class RouterPaths(StrEnumAutoDoc):
     LLM_CONFIG_OVERRIDE = "/llm/config/override"
     # 单实例连通性测试（管理端「测试」按钮）：同样要声明在 LLM_CONFIG_ITEM 之前
     LLM_CONFIG_TEST = "/llm/config/test"
+    # 导出完整配置（token 为明文，仅管理端「导出 JSON」使用；必须声明在 LLM_CONFIG_ITEM 之前）
+    LLM_CONFIG_EXPORT = "/llm/config/export"
     # 拉取上游 `/models` 模型列表（管理端「获取模型列表」按钮，内部接口）
     LLM_MODELS = "/llm/models"
     LLM_CONFIG_ITEM = "/llm/config/{index}"  # 云端LLM配置单条：按索引读取/更新/删除
@@ -328,6 +330,7 @@ class RouterNames(StrEnumAutoDoc):
     DELETE_LLM_CONFIG = "delete_llm_config"  # 删除单条云端LLM配置
     DELETE_LLM_CONFIG_OVERRIDE = "delete_llm_config_override"  # 撤销人工保存，切回环境变量
     TEST_LLM_CONFIG = "test_llm_config"  # 单实例连通性测试（最小 completion 探测）
+    EXPORT_LLM_CONFIG = "export_llm_config"  # 导出完整配置（token 明文，内部接口）
     GET_LLM_MODELS = "get_llm_models"  # 拉取上游模型列表（管理端下拉候选）
 
 
