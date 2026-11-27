@@ -51,6 +51,7 @@ from Models.lottery_database.bili.LotteryDataModels import (
     pydantic_model_to_filter_params,
     LotteryDetailResp,
     LotteryDetailListResp,
+    OthersLotDynDetailListResp,
     LotteryDataSummaryResp,
     LotterySummaryRow,
     LotteryTrendPoint,
@@ -86,6 +87,7 @@ from ApiRoutes import RouterPaths, RouterNames
 from fastapi import BackgroundTasks
 from sqlalchemy import select
 from Service.GetOthersLotDyn.Sql.sql_helper import SqlHelper
+from Service.GetOthersLotDyn.Sql.models import TLotExtraInfo
 from Models.lottery_database.redisModel.biliRedisModel import (
     bili_live_lottery_redis,
     BiliLiveLotteryRedis,
@@ -104,6 +106,8 @@ query_router = new_router()
 
 # 管理端数据汇总（GetLotteryDataSummary）：趋势天数 / 即将开奖时间窗口
 SUMMARY_TREND_DAYS = 14
+# 新增趋势回看过去 N 天；开奖趋势看未来 N 天（含今天），两者方向相反
+SUMMARY_DRAW_TREND_DAYS = 14
 # 即将开奖明细走独立分页接口（GetUpcomingLottery）：24h 窗口、不设条数上限，
 # page_size 由调用方决定（UPCOMING_PAGE_SIZE_MAX 仅防恶意大页），与普通抽奖列表同范式
 SUMMARY_UPCOMING_HOURS = 24
@@ -119,7 +123,7 @@ _BUSINESS_TYPE_NAME = {bt: name for bt, _, name in _LOTDATA_TYPE_KEYS}
 _BUSINESS_TYPE_KEY = {bt: key for bt, key, _ in _LOTDATA_TYPE_KEYS}
 # 趋势图展示的数据源（话题/直播没有收录时间，无法按天统计新增）
 _SUMMARY_TREND_KEYS = ("official", "reserve", "charge", "others_dyn")
-# 开奖趋势只统计 lotdata 三类：它们有权威的开奖时间（lottery_time + status=FINISHED），
+# 开奖趋势只统计 lotdata 三类：它们有权威的开奖时间（lottery_time），
 # 第三方动态的开奖时间只是 LLM 从文本提取的字符串，口径不可靠，故不纳入。
 _SUMMARY_DRAW_TREND_KEYS = ("official", "reserve", "charge")
 
@@ -169,6 +173,28 @@ class _OthersLotDynDetailQuery(BaseModel):
 
     dyn_id: StrInt
     t: Optional[int] = None
+
+
+def _build_others_lot_dyn_extra_info(
+    cached: TLotExtraInfo | None,
+) -> CommonLotExtraInfoResp | None:
+    """``t_lot_extra_info`` 行 → 第三方抽奖动态卡片附加信息。
+
+    无记录时返回 None（不捏造默认值），与列表 / 详情接口口径一致。
+    """
+    if cached is None:
+        return None
+    return CommonLotExtraInfoResp(
+        is_lot=bool(cached.is_lot),
+        is_grand_prize=bool(cached.is_grand_prize),
+        need_comment=bool(cached.need_comment),
+        need_repost=bool(cached.need_repost),
+        required_topic_text=cached.required_topic_text,
+        prize_names=cached.prize_names or [],
+        lottery_time=cached.lottery_time,
+        lot_type=cached.lot_type,
+        predicted_at=cached.predicted_at,
+    )
 
 
 def _pagination_query(
@@ -454,7 +480,8 @@ async def api_GetTopicLottery(
     response_model=CommonResponseModel[LotteryDataSummaryResp],
     description="""按抽奖类型汇总 bili-crawler 的抽奖数据（管理端使用）：
 未开奖数（还没到开奖时间）、昨日/本周/本月新增、累计总量、24 小时内即将开奖、
-待抓开奖结果积压、大奖数量、参与人数分布、近 14 天新增趋势、近 14 天开奖趋势，
+待抓开奖结果积压、大奖数量、参与人数分布、近 14 天新增趋势、
+今天起未来 14 天开奖趋势（按开奖时间排期，含今天），
 并额外汇总话题抽奖 / 直播抽奖 / 第三方动态抽奖等独立数据源。
 GET 查询，前端每次请求附带 t 时间戳防浏览器缓存（后端不使用该值）。""",
 )
@@ -468,6 +495,9 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
     week_start = today_start - datetime.timedelta(days=today_start.weekday())
     month_start = today_start.replace(day=1)
     trend_start = today_start - datetime.timedelta(days=SUMMARY_TREND_DAYS - 1)
+    # 开奖趋势是「未来排期」：从今天 00:00 起连续 N 天
+    draw_trend_start = today_start
+    draw_trend_end = today_start + datetime.timedelta(days=SUMMARY_DRAW_TREND_DAYS)
     now_ts = int(time.time())
     business_types = [bt for bt, _, _ in _LOTDATA_TYPE_KEYS]
 
@@ -502,7 +532,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
         grpc_sql_helper.get_lottery_latest_created_at(),
         grpc_sql_helper.get_lottery_daily_new_trend(trend_start),
         grpc_sql_helper.get_lottery_daily_draw_trend(
-            int(trend_start.timestamp()), now_ts + 1
+            int(draw_trend_start.timestamp()), int(draw_trend_end.timestamp())
         ),
         SqlHelper.get_others_lot_summary(
             yesterday_start=yesterday_start,
@@ -623,7 +653,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
         for day in _day_keys(trend_start, SUMMARY_TREND_DAYS)
     ]
 
-    # ---- 近 N 天开奖趋势（按开奖时间所在自然日聚合，缺失的天补 0） ----
+    # ---- 未来 N 天开奖趋势（今天起，按开奖时间所在自然日聚合，缺失的天补 0） ----
     draw_trend_counts: dict[str, dict[str, int]] = {}
     for day, business_type, cnt in daily_draw_trend or []:
         key = _BUSINESS_TYPE_KEY.get(int(business_type))
@@ -637,7 +667,7 @@ async def api_GetLotteryDataSummary(t: NoCacheTs = None):
                 for key in _SUMMARY_DRAW_TREND_KEYS
             },
         )
-        for day in _day_keys(trend_start, SUMMARY_TREND_DAYS)
+        for day in _day_keys(draw_trend_start, SUMMARY_DRAW_TREND_DAYS)
     ]
 
     return CommonResponseModel(
@@ -1287,3 +1317,69 @@ async def api_GetOthersLotDynDetail(
             predicted_at=cached.predicted_at,
         )
     return CommonResponseModel(data=obj)
+
+
+#: 第三方动态批量详情单次上限（与 GetLotteryDetailList / interaction/status 的 50 口径一致）
+OTHERS_LOT_DYN_DETAIL_BATCH_LIMIT = 50
+
+
+@query_router.get(
+    RouterPaths.GET_OTHERS_LOT_DYN_DETAIL_LIST,
+    name=RouterNames.GET_OTHERS_LOT_DYN_DETAIL_LIST,
+    summary=f"按 dyn_ids 批量获取第三方抽奖动态详情（热门榜卡片回捞，限 {OTHERS_LOT_DYN_DETAIL_BATCH_LIMIT} 个）",
+    response_model=CommonResponseModel[OthersLotDynDetailListResp],
+    description=f"""热门榜「第三方动态」口径专用批量版本：一次查询多条第三方抽奖动态，
+替代逐条调用 GetOthersLotDynDetail。
+
+- 入参 dyn_ids 为逗号分隔的 dynId（19 位雪花 ID，请以字符串传；超过
+  {OTHERS_LOT_DYN_DETAIL_BATCH_LIMIT} 个按顺序截断，重复 id 只返回一次）；
+- 单次请求固定 2 条 SQL：t_lotdyninfo 一次 IN 查询 + t_lot_extra_info 一次批量查询，
+  与 id 数量无关（无 N+1）；
+- 返回 items 与请求顺序一致，元素形态与 GetOthersLotDynDetail 的 data 完全一致
+  （含 extra_info），前端 normalizeLotteryData 可直接识别为 THIRD_PARTY；
+  missing_ids 为未命中的 dynId；
+- 供服务端内部回捞使用，不做登录校验；GET 查询，附带 t 时间戳防浏览器缓存。""",
+)
+@cache(expire=60)
+async def api_GetOthersLotDynDetailList(
+    dyn_ids: str = Query(
+        ...,
+        description=f"逗号分隔的 dynId 列表（限 {OTHERS_LOT_DYN_DETAIL_BATCH_LIMIT} 个）",
+    ),
+    t: NoCacheTs = None,
+):
+    raw_ids = [part.strip() for part in dyn_ids.split(",") if part.strip()]
+    if not raw_ids:
+        return CommonResponseModel(code=400, msg="dyn_ids 不能为空")
+
+    # 去重保序后再截断：批量入参可能有重复 id，重复查询无意义且会打乱调用方顺序
+    ids: list[int] = []
+    seen: set[int] = set()
+    for part in raw_ids:
+        if not part.isdigit():
+            return CommonResponseModel(code=400, msg=f"dyn_ids 含非法 dynId：{part}")
+        _id = int(part)
+        if _id in seen:
+            continue
+        seen.add(_id)
+        ids.append(_id)
+        if len(ids) >= OTHERS_LOT_DYN_DETAIL_BATCH_LIMIT:
+            break
+
+    row_map = await SqlHelper.get_dyn_info_map_by_dyn_ids(ids)
+    extra_map = await SqlHelper.get_extra_info_map_by_ref_ids(ids, "common")
+
+    items: list[OthersLotDynItem] = []
+    missing_ids: list[int] = []
+    for _id in ids:
+        row = row_map.get(_id)
+        if row is None:
+            missing_ids.append(_id)
+            continue
+        obj = OthersLotDynItem.model_validate(row)
+        obj.extra_info = _build_others_lot_dyn_extra_info(extra_map.get(_id))
+        items.append(obj)
+
+    return CommonResponseModel(
+        data=OthersLotDynDetailListResp(items=items, missing_ids=missing_ids)
+    )

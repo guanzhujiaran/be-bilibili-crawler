@@ -704,6 +704,24 @@ class OthersLotDynItem(BaseModel):
         return bool(v)
 
 
+class OthersLotDynDetailListResp(BaseModel):
+    """批量第三方抽奖动态详情响应（热门榜卡片一次回捞，2.71.0）。
+
+    ``items`` 与请求的 ``dyn_ids`` 顺序一致（重复 id 只返回一次），元素形态与
+    ``GetOthersLotDynDetail`` / ``GetOthersLotDynList`` 的 item 完全一致（含
+    ``extra_info``），前端 ``normalizeLotteryData`` 可直接识别为 ``THIRD_PARTY``。
+
+    ``missing_ids`` 为请求里未在 ``t_lotdyninfo`` 命中的 dynId（已删除 / 不存在）。
+    """
+
+    items: list[OthersLotDynItem] = Field(
+        default_factory=list, description="命中的第三方抽奖动态（与请求顺序一致）"
+    )
+    missing_ids: list[int] = Field(
+        default_factory=list, description="未命中的 dynId 列表（t_lotdyninfo 中不存在）"
+    )
+
+
 class FilterParamTypeEnum(StrEnumAutoDoc):
     """筛选参数类型枚举"""
 
@@ -943,7 +961,8 @@ class LotteryDataSummaryResp(BaseModel):
     latest_created_at: int | None = None  # 全表最新收录时间（判断爬虫是否在跑）
     rows: list[LotterySummaryRow] = Field(default_factory=list)
     trend: list[LotteryTrendPoint] = Field(default_factory=list)  # 近 N 天每日新增
-    # 近 N 天每日开奖（status=FINISHED 且开奖时间落在当天；仅 official/reserve/charge）
+    # 今天起未来 N 天每日开奖排期（按 lottery_time 所在自然日，排除已取消/已删除；
+    # 仅 official/reserve/charge）
     draw_trend: list[LotteryTrendPoint] = Field(default_factory=list)
 
 

@@ -1275,10 +1275,12 @@ class SQLHelper(SqlHelperBase):
     async def get_lottery_daily_draw_trend(
         self, start_ts: int, end_ts: int
     ) -> list[tuple[str, int, int]]:
-        """近 N 天每日开奖趋势：返回 (日期字符串 YYYY-MM-DD, business_type, 数量)。
+        """未来 N 天每日开奖趋势：返回 (日期字符串 YYYY-MM-DD, business_type, 数量)。
 
-        口径：`status=FINISHED` 且 `lottery_time` 落在 [start_ts, end_ts) 的记录，
-        按开奖时间所在自然日分组。`lottery_time` 有独立索引，只扫窗口内的行。
+        口径：`lottery_time` 落在 [start_ts, end_ts) 的记录，按开奖时间所在自然日分组。
+        窗口是「今天起往后 N 天」，未来日期的行还没开奖（status=UNFINISHED），
+        因此不按 `status=FINISHED` 过滤，统计的是**按开奖时间的排期场次**（含今天已开奖 /
+        待开奖），仅排除已取消 / 已删除的记录。`lottery_time` 有独立索引，只扫窗口内的行。
         """
         day_expr = func.date_format(
             func.from_unixtime(Lotdata.lottery_time), "%Y-%m-%d"
@@ -1286,7 +1288,12 @@ class SQLHelper(SqlHelperBase):
         stmt = (
             select(day_expr.label("d"), Lotdata.business_type, func.count())
             .where(
-                Lotdata.status == int(BiliLotDataStatusEnum.FINISHED),
+                Lotdata.status.in_(
+                    (
+                        int(BiliLotDataStatusEnum.UNFINISHED),
+                        int(BiliLotDataStatusEnum.FINISHED),
+                    )
+                ),
                 Lotdata.lottery_time >= start_ts,
                 Lotdata.lottery_time < end_ts,
             )
